@@ -1,0 +1,24 @@
+{
+ "meta": {
+  "serial": "OGLO-R-TEST04",
+  "hw_rev": "RDR02_FLEX5_REV_D_TIA",
+  "fw_rev": "0.9.9",
+  "rate_hz": 250,
+  "imu_len": 25,
+  "has_mag": true
+ },
+ "decoded": {
+  "seq": 0,
+  "t_us": 12998398,
+  "field": [
+   -0.705057001,
+   -0.563724057,
+   1.241449868
+  ],
+  "raw": [
+   -4824,
+   -3857,
+   8494
+  ]
+ }
+}

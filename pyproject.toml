@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "oglo"
+version = "0.1.0rc1"
+description = "Python SDK for the OGLO five-finger tactile glove"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "OpenGraphLabs" }]
+keywords = ["tactile", "glove", "robotics", "sensors", "research"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = ["pyserial>=3.5", "numpy>=1.24", "bleak>=0.21"]
+
+[project.urls]
+Homepage = "https://github.com/OpenGraphLabs/oglo-python"
+Documentation = "https://github.com/OpenGraphLabs/oglo-python/tree/main/docs"
+Issues = "https://github.com/OpenGraphLabs/oglo-python/issues"
+Source = "https://github.com/OpenGraphLabs/oglo-python"
+
+[project.optional-dependencies]
+dev = ["build>=1", "pytest>=7", "twine>=5"]
+
+[project.scripts]
+oglo = "oglo.cli:main"
+
+[tool.hatch.build]
+exclude = [
+  "/.coverage",
+  "/.mypy_cache",
+  "/.pytest_cache",
+  "/.ruff_cache",
+  "/dist",
+  "**/__pycache__",
+  "**/*.pyc",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/oglo"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+markers = [
+  "hardware: needs the attached left/right USB glove pair; deselected by default",
+  "hardware_mutation: changes device state and restores it; requires --hardware-mutations",
+]
+addopts = "-m 'not hardware'"
