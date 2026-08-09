@@ -6,6 +6,20 @@ All notable user-facing changes are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- `oglo acceptance`, an owner-facing USB pair test that uses public SDK APIs,
+  separates read-only, interactive, reversible mutation, zero, and long-soak gates,
+  and writes non-overwriting Markdown/JSON evidence bundles
+
+### Changed
+
+- consolidated development, issues, tags, and releases in the public
+  `OpenGraphLabs/oglo-python` repository; private and staging repositories are no
+  longer active upstreams
+- documented firmware 0.9.10/schema 6 as the only supported live-glove baseline;
+  retained 0.9.9/schema-6 captures solely as historical decoder provenance
+
 ## [0.1.0rc1] - 2026-08-07
 
 First public release candidate.

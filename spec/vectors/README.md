@@ -11,6 +11,10 @@ frame, so it proves the real packet length/framing but does not independently ex
 every packed12 nibble. `tests/test_capture_vectors.py` therefore also pins a literal
 non-zero `0x123, 0xabc` pair through the independent reference decoder.
 
+Firmware 0.9.9 is not a supported live-glove target. These immutable captures remain
+only because they are physical provenance for the schema-6 decoder; supported live
+devices run firmware 0.9.10/schema 6.
+
 The capture tool requires tactile and IMU packets, plus magnetometer packets when the
 board reports `has_mag=true`. It writes nothing on an incomplete capture and removes
 obsolete `tag_*_<length>b` variants only after the replacement set is ready.

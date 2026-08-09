@@ -21,23 +21,23 @@ The IMU packet cadence is not the physical sensor ODR. Firmware configures the
 accelerometer/gyroscope at 200 Hz but polls/emits its latest value on a nominal 2 ms
 schedule, so adjacent 500-packet/s records may contain the same physical measurement.
 
-The SDK requires firmware 0.9.9 or newer and schema 6. It rejects any other wire contract at
-connect time instead of guessing packet lengths or silently changing stream rates.
+The supported live contract is firmware 0.9.10/schema 6. `0.1.0rc1` retains parser
+tolerance for historical 0.9.9/schema-6 vectors and recordings, but live collection
+must use 0.9.10. Other schemas and older firmware fail closed instead of inviting a
+best-effort packet guess.
 
-## Identity and pairing
+## Identity and side
 
 `g.info.serial` is the logical glove serial reported by CONFIG. It is distinct from
 the USB chip/descriptor serial and from a BLE address or advertisement name.
 `oglo.connect(serial=...)` matches this logical value and verifies it after opening a
 specific `port=` or BLE address.
 
-`g.info.side` chooses left versus right. `g.info.pair_id` names the intended two-glove
-set. `connect_pair()` requires one left, one right, distinct logical serials and the
-same non-empty pair ID. `allow_unpaired=True` bypasses only the empty-ID check for a
-deliberate bench setup; it does not allow mismatched IDs or sides.
+`g.info.side` chooses left versus right. `connect_pair()` requires one left glove,
+one right glove, and distinct logical serials.
 
 `g.info.has_mag` means firmware successfully initialised the magnetometer at boot.
-Firmware 0.9.9 cannot distinguish an intentionally absent part from one that failed
+Firmware 0.9.10 cannot distinguish an intentionally absent part from one that failed
 boot detection, and it has no runtime read-failure/freshness counter. Therefore a
 clean status snapshot is not proof that every magnetometer value is fresh; applications
 that require heading-quality data need a firmware freshness flag and a physical field
@@ -166,9 +166,9 @@ scheduling still contribute unknown delay.
 Recordings store both, plus a wall-clock anchor, because each answers a question the
 others cannot.
 
-## Integrity limit of firmware 0.9.9
+## Integrity limit of firmware 0.9.10
 
-The 0.9.9 tagged USB frame has a magic and length but no checksum/CRC. The TinyUSB
+The 0.9.10 tagged USB frame has a magic and length but no checksum/CRC. The TinyUSB
 whole-frame queue removes the known pre-0.9.9 truncation path, but the SDK cannot
 mathematically prove that every plausible payload bit is intact. A future protocol
 needs framed CRC protection for that guarantee.

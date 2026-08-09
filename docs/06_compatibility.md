@@ -8,15 +8,19 @@ physical gloves. They are different claims.
 | Component | Status in 0.1.0rc1 |
 | --- | --- |
 | Python | 3.10 or newer |
-| Firmware | 0.9.9 or newer |
+| Live-glove firmware | 0.9.10 |
 | CONFIG schema | exactly 6 |
 | USB tagged stream | supported and hardware-validated |
 | USB legacy interleaved frame | decoder and captured-vector compatibility |
 | BLE schema-6 notifications | experimental; parser-tested, not release-qualified |
+| Firmware 0.9.9 | historical parser/vector compatibility only; upgrade before live use |
 | Firmware 0.9.8 and older | rejected |
 
-Unknown schema versions and older firmware fail closed during connection. There is
-no best-effort decoder that guesses packet lengths.
+The `0.1.0rc1` parser floor remains 0.9.9 so historical schema-6 golden vectors and
+recordings stay readable. That tolerance is not a live-device support claim. The
+deployed fleet and physical release qualification use 0.9.10/schema 6; unknown
+schemas and firmware older than 0.9.9 fail closed rather than selecting a
+best-effort decoder.
 
 ## Physical validation for this release candidate
 
@@ -50,7 +54,7 @@ mutation through `GET ZERO`.
 - The two gloves do not share a hardware clock or trigger.
 - A nominal 500 IMU packets/s is transport cadence, not proof of 500 fresh physical
   sensor measurements per second.
-- Firmware 0.9.9/0.9.10 USB frames do not include an end-to-end payload CRC.
+- Firmware 0.9.10 USB frames do not include an end-to-end payload CRC.
 - Multi-hour recording, slow-storage stress, and device-clock rollover remain target
   deployment qualification items.
 

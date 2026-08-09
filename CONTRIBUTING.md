@@ -2,6 +2,10 @@
 
 Thank you for improving the OGLO Python SDK.
 
+[`OpenGraphLabs/oglo-python`](https://github.com/OpenGraphLabs/oglo-python) is the
+sole canonical repository. Fork and branch from its `main`; do not use a private,
+staging, or pre-public repository as an upstream.
+
 ## Set up
 
 ```bash
@@ -28,7 +32,9 @@ must not mutate attached devices.
 
 Hardware-specific changes should include the firmware revision, schema, host OS,
 test duration, and before/after loss counters. Do not present an automated test as
-physical validation unless a physical glove was actually exercised.
+physical validation unless a physical glove was actually exercised. New live-device
+qualification targets firmware 0.9.10/schema 6. Historical 0.9.9 captures may remain
+as decoder fixtures only and must be labelled as such.
 
 ## Hardware tests
 

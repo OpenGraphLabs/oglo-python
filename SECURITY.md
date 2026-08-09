@@ -4,12 +4,15 @@
 
 | Version | Security updates |
 | --- | --- |
-| 0.1.x | Yes |
+| 0.1.x with firmware 0.9.10/schema 6 | Yes |
 | development snapshots and older versions | No |
+
+Historical 0.9.9 wire captures are retained for decoder regression tests; they do
+not make a live 0.9.9 glove a supported deployment.
 
 ## Reporting a vulnerability
 
-Use GitHub's private vulnerability reporting for this repository:
+Use GitHub's private vulnerability reporting for the sole canonical repository:
 
 <https://github.com/OpenGraphLabs/oglo-python/security/advisories/new>
 
