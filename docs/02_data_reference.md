@@ -21,7 +21,7 @@ The IMU packet cadence is not the physical sensor ODR. Firmware configures the
 accelerometer/gyroscope at 200 Hz but polls/emits its latest value on a nominal 2 ms
 schedule, so adjacent 500-packet/s records may contain the same physical measurement.
 
-The supported live contract is firmware 0.9.10/schema 6. `0.1.0rc1` retains parser
+The supported live contract is firmware 0.9.10/schema 6. `0.1.0rc2` retains parser
 tolerance for historical 0.9.9/schema-6 vectors and recordings, but live collection
 must use 0.9.10. Other schemas and older firmware fail closed instead of inviting a
 best-effort packet guess.

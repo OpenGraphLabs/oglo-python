@@ -9,7 +9,7 @@ Python access to the OGLO five-finger tactile glove: 80 taxels per hand at a
 nominal 250 Hz over USB, plus accelerometer, gyroscope, and optional magnetometer
 streams.
 
-> **Release candidate:** `0.1.0rc1` is a USB-first research SDK for the supported
+> **Release candidate:** `0.1.0rc2` is a USB-first research SDK for the supported
 > live-glove baseline, firmware 0.9.10/schema 6. The decoder retains historical
 > 0.9.9/schema-6 vector compatibility, but 0.9.9 is not a deployment target. BLE
 > is available as an experimental transport and is not release-qualified.
@@ -34,14 +34,14 @@ private or staging repository is an active upstream.
 Download the wheel from the matching [GitHub Release](https://github.com/OpenGraphLabs/oglo-python/releases), then install it locally:
 
 ```bash
-python3 -m pip install ./oglo-0.1.0rc1-py3-none-any.whl
+python3 -m pip install ./oglo-0.1.0rc2-py3-none-any.whl
 ```
 
 To install the tagged source instead:
 
 ```bash
 python3 -m pip install \
-  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc1"
+  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc2"
 ```
 
 Python 3.10 or newer is required.

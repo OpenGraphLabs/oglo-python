@@ -6,18 +6,18 @@ Download the wheel from the matching
 [GitHub Release](https://github.com/OpenGraphLabs/oglo-python/releases), then:
 
 ```bash
-python3 -m pip install ./oglo-0.1.0rc1-py3-none-any.whl
+python3 -m pip install ./oglo-0.1.0rc2-py3-none-any.whl
 ```
 
 Or install the immutable source tag:
 
 ```bash
 python3 -m pip install \
-  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc1"
+  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc2"
 ```
 
 Python 3.10 or newer is required. Supported live gloves run firmware 0.9.10 with
-schema 6. `0.1.0rc1` can still parse historical 0.9.9/schema-6 captures, but that
+schema 6. `0.1.0rc2` can still parse historical 0.9.9/schema-6 captures, but that
 parser tolerance is not deployment support; upgrade a live 0.9.9 glove before use.
 
 ## Diagnose before collecting data

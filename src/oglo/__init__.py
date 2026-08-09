@@ -34,7 +34,7 @@ from ._usb import (DisconnectedError, NoGloveFound, PortBusyError, UsbError,
                    find_port, list_candidates, open_serial)
 from ._usb import UsbTransport as _UsbTransport
 
-__version__ = "0.1.0rc1"
+__version__ = "0.1.0rc2"
 
 __all__ = [
     "connect",

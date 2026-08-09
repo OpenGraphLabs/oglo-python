@@ -45,7 +45,7 @@ def _meta(counts=None):
     return {
         "schema": 2,
         "complete": True,
-        "sdk_version": "0.1.0rc1",
+        "sdk_version": "0.1.0rc2",
         "serial": "OGLO-L-TEST01",
         "side": "left",
         "hw_rev": "RDR02_FLEX5_REV_D_TIA",
