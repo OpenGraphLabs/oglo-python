@@ -147,7 +147,7 @@ def test_usb_discovery_identity_health_and_zero_readback(attached_pair):
         with oglo.connect(port=item.port.device) as glove:
             info = glove.info
             assert (info.serial, info.side, info.transport) == (item.serial, item.side, "usb")
-            assert _fw_at_least(info.fw_rev, (0, 9, 9))
+            assert _fw_at_least(info.fw_rev, (0, 9, 10))
             assert info.hw_rev and info.zero_valid and info.stream_clean
             assert info.rate_hz == 250 and info.has_mag
             assert info.channels == (

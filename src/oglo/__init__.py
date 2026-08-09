@@ -14,7 +14,7 @@ before calling `g.zero(...)`, `g.clean(...)`, or `g.raw()`.
 
 Two hands: `left, right = oglo.connect_pair()`. Use the host receive boundary only to
 relate them approximately; never align two gloves on `t_us` or `device_time_us`.
-Their device-clock origins and drift are unrelated, and firmware 0.9.9 provides no
+Their device-clock origins and drift are unrelated, and supported firmware provides no
 hardware time-synchronisation contract.
 """
 
@@ -34,7 +34,7 @@ from ._usb import (DisconnectedError, NoGloveFound, PortBusyError, UsbError,
                    find_port, list_candidates, open_serial)
 from ._usb import UsbTransport as _UsbTransport
 
-__version__ = "0.1.0rc2"
+__version__ = "0.1.0rc3"
 
 __all__ = [
     "connect",

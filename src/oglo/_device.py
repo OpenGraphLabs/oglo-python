@@ -312,7 +312,7 @@ class Glove:
         timeout = _validated_seconds(timeout, "timeout", allow_none=False, allow_zero=False)
         if not getattr(self._t, "replies_in_text", True):
             raise DeviceError(
-                "sweep zero requires USB in SDK 1.0: firmware 0.9.9 sends its "
+                "sweep zero requires USB in SDK 1.0: supported firmware sends its "
                 "completion recipe only on the USB text channel, so BLE cannot prove "
                 "that capture and persistence finished"
             )
@@ -435,7 +435,7 @@ class Glove:
                     self._info = replace(self._info, imu_period_ms=period_ms)
         except Exception:
             if period_ms is not None:
-                # The command may have partially applied, but 0.9.9 has no read-only
+                # The command may have partially applied, but supported firmware has no read-only
                 # IMU-period field. Unknown is safer than stale metadata.
                 self._info = replace(self._info, imu_period_ms=None)
             raise
@@ -629,7 +629,7 @@ class Glove:
 
 
 def _parse_zero_recipe(line: str) -> Dict[str, Any]:
-    """Parse and validate the complete 80-taxel recipe printed by firmware 0.9.9."""
+    """Parse and validate the complete 80-taxel recipe printed by supported firmware."""
     prefix = "#TZERO "
     if not line.startswith(prefix):
         raise DeviceError(f"malformed zero reply: {line[:80]!r}")

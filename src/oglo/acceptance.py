@@ -319,8 +319,8 @@ def _check_pair(report: AcceptanceReport, gloves: Sequence[Any]) -> None:
         raw = dict(getattr(info, "raw", {}) or {})
         fw = _version_tuple(str(info.fw_rev))
         report.add(
-            f"{info.serial}: firmware 0.9.10",
-            PASS if fw == (0, 9, 10) else FAIL,
+            f"{info.serial}: firmware 0.9.10 or newer",
+            PASS if fw is not None and fw >= (0, 9, 10) else FAIL,
             f"reported {info.fw_rev}",
         )
         report.add(
@@ -1130,7 +1130,7 @@ def _markdown_report(data: Mapping[str, Any]) -> str:
             "",
             "A PASS proves only the checks and duration listed above. It is not proof of "
             "hardware synchronisation, Newton calibration, BLE qualification, or payload "
-            "integrity beyond what firmware 0.9.10 exposes.",
+            "integrity beyond what supported firmware exposes.",
             "",
         ]
     )

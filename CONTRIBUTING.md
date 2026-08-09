@@ -32,9 +32,9 @@ must not mutate attached devices.
 
 Hardware-specific changes should include the firmware revision, schema, host OS,
 test duration, and before/after loss counters. Do not present an automated test as
-physical validation unless a physical glove was actually exercised. New live-device
-qualification targets firmware 0.9.10/schema 6. Historical 0.9.9 captures may remain
-as decoder fixtures only and must be labelled as such.
+physical validation unless a physical glove was actually exercised. Live-device
+qualification requires firmware 0.9.10 or newer with schema 6. Checked-in wire
+vectors must come from that same supported contract and redact real device serials.
 
 ## Hardware tests
 

@@ -745,7 +745,7 @@ def _status_issues(status: Any, *, has_mag: bool) -> List[str]:
 def _modality_freshness_issues(recorder: Recorder) -> List[str]:
     """Detect a modality that stopped while the other streams kept arriving.
 
-    Firmware 0.9.9 does not expose sensor read-failure counters.  A final STATUS can
+    Supported firmware does not expose sensor read-failure counters. A final STATUS can
     therefore remain healthy after USB IMU packets stop.  This host-side guard is
     deliberately lenient (at least three expected periods and never below 0.1 s) so
     scheduler/USB jitter does not reject good captures, while a sustained silent

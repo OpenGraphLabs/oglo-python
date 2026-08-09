@@ -67,7 +67,7 @@ capture path, carry it yourself.
 ## What is intended to survive a power cycle
 
 The firmware stores the zero and stream mode in device flash, and
-`g.info.zero_valid` reports the active state after connection. Firmware 0.9.10 does
+`g.info.zero_valid` reports the active state after connection. Supported firmware does
 not report the flash-write result or perform a power-cycle readback, so the SDK alone
 cannot prove persistence. Reboot, reconnect and compare the recipe when that is a
 release or factory gate.
@@ -77,7 +77,7 @@ release or factory gate.
 `clean()` and tactile-rate changes can be confirmed by re-reading config. Firmware
 does not expose the applied IMU period in BLE config, so `rates(imu=...)` is also
 USB-only rather than returning an unverified success.
-`zero()` is deliberately USB-only: firmware 0.9.10 sends the start/completion lines
+`zero()` is deliberately USB-only: supported firmware sends the start/completion lines
 and full `GET ZERO` recipe only over serial. Without those, BLE can send the command
 but cannot prove capture or persistence completed, so the SDK fails immediately
 instead of waiting and then pretending success.
@@ -86,7 +86,7 @@ Over USB, `zero()` requires the start acknowledgement, validates all 80 baseline
 noise values, re-reads them with `GET ZERO`, and finally verifies `zero_valid` in
 config before returning.
 
-That proves the active firmware recipe is consistent. Firmware 0.9.10 does not report
+That proves the active firmware recipe is consistent. Supported firmware does not report
 the NVS write result or re-read flash before replying, so the SDK cannot prove power-
 cycle persistence without an actual reboot/reconnect check. Do that as a release or
 factory gate; do not interpret a successful call as an atomic-flash guarantee.

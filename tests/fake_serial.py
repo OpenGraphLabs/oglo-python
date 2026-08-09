@@ -17,7 +17,7 @@ from oglo import _wire as w
 
 CFG_V6 = {
     "device": "oglo", "schema_ver": 6, "serial": "OGLO-L-TEST01", "side": "left",
-    "hw_rev": "RDR02_FLEX5_REV_D_TIA", "fw_rev": "0.9.9", "rate_hz": 250,
+    "hw_rev": "RDR02_FLEX5_REV_D_TIA", "fw_rev": "0.9.10", "rate_hz": 250,
     "samples_per_packet": 3, "imu_len": 25, "has_mag": True, "values_per_sample": 80,
     "sample_shape": [5, 4, 4],
     "channels": ["pinky", "ring", "middle", "index", "thumb"],

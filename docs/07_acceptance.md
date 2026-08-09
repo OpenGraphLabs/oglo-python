@@ -16,7 +16,7 @@ The default run does **not** change zero, threshold, RAW/CLEAN mode, or stream r
 It checks:
 
 - one left and one right glove with distinct logical serials
-- firmware 0.9.10, CONFIG schema 6, USB transport, dimensions, and finger order
+- firmware 0.9.10 or newer, CONFIG schema 6, USB transport, dimensions, and finger order
 - sensor health and existing zero state
 - public tactile, IMU, magnetometer, `stop()`, `start()`, and `read_batch()` paths
 - simultaneous two-hand rate, timestamps, sequence gaps, malformed data, and overflow
@@ -93,7 +93,7 @@ For each glove the runner prints the serial and requires typing `ZERO <serial>`.
 that glove, touch nothing, and repeatedly open and close the hand during the sweep.
 
 The SDK validates the completion recipe, all 80 baseline/noise entries, `GET ZERO`,
-and CONFIG `zero_valid`. Firmware 0.9.10 cannot prove that flash survived a power
+and CONFIG `zero_valid`. Supported firmware cannot prove that flash survived a power
 cycle, so the report leaves that gate as `SKIP`. Unplug/replug the glove and run the
 safe default again to provide separate read-back evidence.
 
@@ -124,7 +124,7 @@ It does not claim:
 - hardware synchronisation between the two gloves
 - Newton/force calibration
 - fused orientation or validated magnetometer axes
-- payload integrity beyond what firmware 0.9.10 exposes
+- payload integrity beyond what supported firmware exposes
 - power-cycle zero persistence unless that physical cycle was separately performed
 
 Run the default acceptance check before an important capture and attach its JSON

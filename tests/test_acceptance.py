@@ -108,7 +108,13 @@ def test_sample_stats_use_observed_host_timestamps_not_requested_rates():
 
 @pytest.mark.parametrize(
     ("text", "value"),
-    [("0.9.10", (0, 9, 10)), ("0.9.10-release", (0, 9, 10)), ("0.9", None), ("x", None)],
+    [
+        ("0.9.10", (0, 9, 10)),
+        ("0.9.11", (0, 9, 11)),
+        ("0.9.10-release", (0, 9, 10)),
+        ("0.9", None),
+        ("x", None),
+    ],
 )
 def test_live_firmware_comparison_is_numeric_and_exact(text, value):
     assert _version_tuple(text) == value
@@ -133,10 +139,11 @@ def test_connection_failure_still_leaves_a_machine_readable_report(tmp_path):
     assert data["result"] == FAIL
 
 
-def test_pair_contract_accepts_only_current_firmware_schema_and_usb(tmp_path):
+@pytest.mark.parametrize("fw_rev", ["0.9.10", "0.9.11"])
+def test_pair_contract_accepts_supported_firmware_schema_and_usb(tmp_path, fw_rev):
     from oglo.acceptance import _check_pair
 
-    cfg = {**CFG_V6, "fw_rev": "0.9.10"}
+    cfg = {**CFG_V6, "fw_rev": fw_rev}
     left_info, _ = parse_config(cfg)
     right_info = replace(
         left_info,

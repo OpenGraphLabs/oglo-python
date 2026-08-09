@@ -21,9 +21,6 @@ from oglo import _wire as w
 from oglo._config import MIN_FIRMWARE, _fw_at_least
 
 VECTORS = Path(__file__).resolve().parent.parent / "spec" / "vectors"
-# Only the strict runtime contracts are decoder gates. The directory also retains a
-# real 0.9.9 legacy BIN capture as provenance for browser/hardware work; this SDK
-# deliberately has no BIN compatibility decoder.
 CASES = (
     sorted([*VECTORS.glob("tag_*.bin"), *VECTORS.glob("ble_*.bin")])
     if VECTORS.exists()
@@ -98,7 +95,7 @@ def test_checked_in_capture_has_every_required_modality():
 
 @pytest.mark.skipif(not CASES, reason="no golden vectors yet")
 def test_every_checked_in_tactile_vector_is_packed12():
-    """The supported 0.9.9+ contract has a 120-byte packed12 tactile payload."""
+    """The supported 0.9.10+ contract has a 120-byte packed12 tactile payload."""
     tac = [p for p in CASES if p.stem.startswith("tag_tactile")]
     assert tac, "capture a tactile vector with tools/capture_vectors.py"
     for path in tac:

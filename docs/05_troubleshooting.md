@@ -36,7 +36,7 @@ In order of likelihood:
 3. Something else already holds the port. `doctor` lists non-glove serial devices it
    saw and skipped, which is often the clue.
 
-Supported firmware 0.9.10 appears to the OS as `OGLO` from `OpenGraphLabs`. A glove
+Supported firmware 0.9.10 or newer appears to the OS as `OGLO` from `OpenGraphLabs`. A glove
 that still appears as `XIAO_ESP32S3` from `Espressif Systems` is running an older
 build and must be upgraded. Discovery still proves identity with `GET CONFIG`; a
 different XIAO using the same VID can briefly appear as a candidate, but it is
@@ -55,7 +55,7 @@ network device and serves several subscribers at once.
 ## The board answers nothing at all
 
 If you are writing your own serial code rather than using this SDK: **assert DTR.**
-Firmware 0.9.10 uses TinyUSB, which will not transmit until the host raises DTR.
+Supported firmware uses TinyUSB, which will not transmit until the host raises DTR.
 With DTR low the board returns literally zero bytes and looks dead. It is not.
 
 Keep RTS low. The two together are what a USB-UART bridge decodes as a reset request.

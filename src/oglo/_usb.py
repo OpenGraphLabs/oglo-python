@@ -23,10 +23,9 @@ from . import _wire as w
 from ._config import Capabilities, Info, parse_config
 from ._status import DeviceStatus, parse_status
 
-#: Firmware 0.9.9 uses TinyUSB on the Seeed XIAO module. Its descriptors are still
-#: the core defaults ``XIAO_ESP32S3`` / ``Espressif Systems``; 0.9.10 changes only
-#: those strings to ``OGLO`` / ``OpenGraphLabs``. Discovery therefore keys on the
-#: VID and proves the actual device with strict GET CONFIG later.
+#: Supported firmware 0.9.10+ uses TinyUSB on the Seeed XIAO module with
+#: ``OGLO`` / ``OpenGraphLabs`` descriptors. Discovery keys on the stable VID and
+#: proves the actual device and firmware contract with strict GET CONFIG later.
 SEEED_VID = 0x2886
 GLOVE_VIDS = frozenset({SEEED_VID})
 
@@ -102,7 +101,7 @@ class PortCandidate:
 def list_candidates(*, strict: bool = True) -> List[PortCandidate]:
     """Serial ports that could be a glove. **Opens nothing.**
 
-    With `strict` (the default) only the firmware-0.9.9 Seeed VID is returned. With
+    With `strict` (the default) only the supported OGLO Seeed VID is returned. With
     `strict=False` anything not on the known-not-a-glove list is returned, which is
     the escape hatch for a board that enumerates under a VID we have not seen.
     """
@@ -191,7 +190,7 @@ def _owner_pid(device: str) -> Optional[int]:
 def open_serial(device: str, baud: int = 115200, *, settle: float = 0.8) -> SerialLike:
     """Open with DTR asserted and RTS low.
 
-    **DTR must be high or firmware 0.9.9 says nothing at all.** TinyUSB gates CDC
+    **DTR must be high or supported firmware says nothing at all.** TinyUSB gates CDC
     transmit on the host asserting DTR. Measured on OGLO-R-TEST04: dtr=False returns
     0 bytes to `GET CONFIG`, dtr=True returns 561.
 
@@ -361,7 +360,7 @@ class UsbTransport:
         return self._caps
 
     def start(self, *, reset_counters: bool = True) -> str:
-        """Begin the firmware-0.9.9 tagged stream."""
+        """Begin the supported firmware-0.9.10+ tagged stream."""
         self._buf = b""
         self._last_seq = {k: None for k in self._last_seq}
         if reset_counters:

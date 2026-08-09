@@ -59,7 +59,7 @@ def find_ports() -> list[str]:
 def open_port(port: str):
     """Use the SDK's opener so the DTR handling stays in one place.
 
-    Firmware 0.9.9 uses TinyUSB, which gates CDC transmit on DTR.
+    Supported firmware uses TinyUSB, which gates CDC transmit on DTR.
     """
     from oglo._usb import open_serial
 
@@ -127,8 +127,8 @@ def validate_capture_config(cfg: dict) -> bool:
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"invalid fw_rev={cfg.get('fw_rev')!r}") from exc
     version += (0,) * (3 - len(version))
-    if version < (0, 9, 9):
-        raise ValueError(f"firmware {cfg.get('fw_rev')} is older than 0.9.9")
+    if version < (0, 9, 10):
+        raise ValueError(f"firmware {cfg.get('fw_rev')} is older than 0.9.10")
     if cfg.get("schema_ver") != 6:
         raise ValueError(f"schema_ver={cfg.get('schema_ver')!r}; expected 6")
     if cfg.get("values_per_sample") != TAXELS:
@@ -142,6 +142,24 @@ def validate_capture_config(cfg: dict) -> bool:
     if not cfg.get("serial") or not cfg.get("hw_rev"):
         raise ValueError("config must include serial and hw_rev")
     return bool(cfg.get("has_mag", False))
+
+
+def capture_metadata(cfg: dict, *, include_serial: bool = False) -> dict:
+    """Return public-safe provenance for a captured vector set.
+
+    Logical device serials belong in private fleet records, not public decoder
+    fixtures. The side-qualified placeholder still catches mixed capture sets.
+    """
+    meta = {
+        k: cfg.get(k)
+        for k in ("serial", "side", "hw_rev", "fw_rev", "rate_hz", "imu_len", "has_mag")
+    }
+    if not include_serial:
+        side = str(cfg.get("side", "unknown")).strip().lower()
+        label = {"left": "L", "right": "R"}.get(side, "X")
+        meta["serial"] = f"OGLO-{label}-GOLDEN"
+        meta["serial_redacted"] = True
+    return meta
 
 
 def grab(s: serial.Serial, start: str, stop: str, seconds: float) -> bytes:
@@ -290,6 +308,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", help="serial port; omit to auto-detect")
     ap.add_argument("--seconds", type=float, default=2.0)
+    ap.add_argument(
+        "--include-serial",
+        action="store_true",
+        help="include the real logical serial in generated metadata (not for public commits)",
+    )
     args = ap.parse_args()
     if not math.isfinite(args.seconds) or args.seconds <= 0:
         raise SystemExit("--seconds must be a finite positive number")
@@ -313,10 +336,7 @@ def main() -> int:
             has_mag = validate_capture_config(cfg)
         except (TypeError, ValueError) as exc:
             raise SystemExit(f"board does not satisfy the SDK contract: {exc}") from exc
-        meta = {
-            k: cfg.get(k)
-            for k in ("serial", "hw_rev", "fw_rev", "rate_hz", "imu_len", "has_mag")
-        }
+        meta = capture_metadata(cfg, include_serial=args.include_serial)
         print(f"board: {meta}")
 
         # One vector per required modality. Nothing is written until the complete

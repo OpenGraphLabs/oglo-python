@@ -21,10 +21,10 @@ The IMU packet cadence is not the physical sensor ODR. Firmware configures the
 accelerometer/gyroscope at 200 Hz but polls/emits its latest value on a nominal 2 ms
 schedule, so adjacent 500-packet/s records may contain the same physical measurement.
 
-The supported live contract is firmware 0.9.10/schema 6. `0.1.0rc2` retains parser
-tolerance for historical 0.9.9/schema-6 vectors and recordings, but live collection
-must use 0.9.10. Other schemas and older firmware fail closed instead of inviting a
-best-effort packet guess.
+The supported contract is firmware 0.9.10 or newer with schema 6. The current
+golden firmware for new flashes is 0.9.11, while deployed 0.9.10 gloves remain
+supported. `0.1.0rc3` rejects older firmware in live connections, vector capture,
+and replay instead of selecting a best-effort decoder.
 
 ## Identity and side
 
@@ -37,7 +37,7 @@ specific `port=` or BLE address.
 one right glove, and distinct logical serials.
 
 `g.info.has_mag` means firmware successfully initialised the magnetometer at boot.
-Firmware 0.9.10 cannot distinguish an intentionally absent part from one that failed
+Supported firmware cannot distinguish an intentionally absent part from one that failed
 boot detection, and it has no runtime read-failure/freshness counter. Therefore a
 clean status snapshot is not proof that every magnetometer value is fresh; applications
 that require heading-quality data need a firmware freshness flag and a physical field
@@ -166,9 +166,10 @@ scheduling still contribute unknown delay.
 Recordings store both, plus a wall-clock anchor, because each answers a question the
 others cannot.
 
-## Integrity limit of firmware 0.9.10
+## Integrity limit of supported firmware
 
-The 0.9.10 tagged USB frame has a magic and length but no checksum/CRC. The TinyUSB
-whole-frame queue removes the known pre-0.9.9 truncation path, but the SDK cannot
-mathematically prove that every plausible payload bit is intact. A future protocol
+The supported tagged USB frame has a magic and length but no checksum/CRC. Firmware
+0.9.11 bounds TinyUSB writes so a stopped host cannot hold the TX path forever, but
+that deadline is not payload integrity. The SDK cannot mathematically prove that
+every plausible payload bit is intact. A future protocol
 needs framed CRC protection for that guarantee.

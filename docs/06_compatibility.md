@@ -5,26 +5,24 @@ physical gloves. They are different claims.
 
 ## Supported contract
 
-| Component | Status in 0.1.0rc2 |
+| Component | Status in 0.1.0rc3 |
 | --- | --- |
 | Python | 3.10 or newer |
-| Live-glove firmware | 0.9.10 |
+| Minimum supported firmware | 0.9.10 |
+| Current golden firmware for new flashes | 0.9.11 |
 | CONFIG schema | exactly 6 |
 | USB tagged stream | supported and hardware-validated |
-| USB legacy interleaved frame | decoder and captured-vector compatibility |
 | BLE schema-6 notifications | experimental; parser-tested, not release-qualified |
-| Firmware 0.9.9 | historical parser/vector compatibility only; upgrade before live use |
-| Firmware 0.9.8 and older | rejected |
+| Firmware older than 0.9.10 | rejected for connect, replay, and vector capture |
 
-The `0.1.0rc2` parser floor remains 0.9.9 so historical schema-6 golden vectors and
-recordings stay readable. That tolerance is not a live-device support claim. The
-deployed fleet and physical release qualification use 0.9.10/schema 6; unknown
-schemas and firmware older than 0.9.9 fail closed rather than selecting a
-best-effort decoder.
+`0.1.0rc3` has one firmware floor: 0.9.10. Live devices, checked-in vectors, and
+recorded episodes below that floor fail closed. Firmware 0.9.11 keeps schema 6 and
+the same SDK wire contract while adding a bounded TinyUSB write path; it is the
+current image for new flashes. Deployed 0.9.10 gloves remain compatible.
 
 ## Physical validation for this release candidate
 
-The release candidate was exercised on one left and one right glove running
+The release candidate was exercised on one left and one right deployed glove running
 firmware 0.9.10/schema 6 over USB on macOS. The measured default delivery was about
 250 tactile packets/s, 500 IMU packets/s, and 125 magnetometer packets/s per hand,
 with no capture-window sequence gaps, malformed frames, or host queue overflow in
@@ -54,7 +52,7 @@ mutation through `GET ZERO`.
 - The two gloves do not share a hardware clock or trigger.
 - A nominal 500 IMU packets/s is transport cadence, not proof of 500 fresh physical
   sensor measurements per second.
-- Firmware 0.9.10 USB frames do not include an end-to-end payload CRC.
+- Supported firmware USB frames do not include an end-to-end payload CRC.
 - Multi-hour recording, slow-storage stress, and device-clock rollover remain target
   deployment qualification items.
 

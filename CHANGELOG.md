@@ -6,6 +6,24 @@ All notable user-facing changes are recorded here. Versions follow
 
 ## [Unreleased]
 
+## [0.1.0rc3] - 2026-08-09
+
+### Changed
+
+- raised the single firmware floor to 0.9.10 for live connections, replay, hardware
+  vector capture, and acceptance while retaining schema 6 and accepting current
+  firmware 0.9.11
+- replaced the checked-in physical tagged-stream vectors with a redacted firmware
+  0.9.10 capture and removed the unsupported legacy interleaved BIN capture
+- synchronized README, quickstart, data, calibration, recording, troubleshooting,
+  compatibility, acceptance, contribution, and security documentation with the
+  current 0.9.10+ contract and 0.9.11 golden firmware
+
+### Fixed
+
+- made acceptance compare firmware numerically against a minimum so 0.9.11 does
+  not fail an exact-0.9.10 check
+
 ## [0.1.0rc2] - 2026-08-09
 
 ### Added
@@ -55,6 +73,7 @@ First public release candidate.
 - zero persistence requires a power-cycle read-back when it is a release gate
 - multi-hour and slow-storage target-host qualification remain deployment tasks
 
-[Unreleased]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc2...HEAD
+[Unreleased]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc3...HEAD
+[0.1.0rc3]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc2...v0.1.0rc3
 [0.1.0rc2]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc1...v0.1.0rc2
 [0.1.0rc1]: https://github.com/OpenGraphLabs/oglo-python/releases/tag/v0.1.0rc1

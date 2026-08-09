@@ -231,7 +231,7 @@ def test_info_json_is_one_parseable_document_with_two_gloves(monkeypatch, capsys
             side = "left" if port == "/dev/a" else "right"
             self.info = SimpleNamespace(
                 raw={"serial": f"OGLO-{side}"}, serial=f"OGLO-{side}", side=side,
-                transport="usb", hw_rev="D", fw_rev="0.9.9", rate_hz=250,
+                transport="usb", hw_rev="D", fw_rev="0.9.10", rate_hz=250,
                 channels=[], has_mag=True, zero_valid=True, stream_clean=True,
                 stream_thr=30,
             )
