@@ -6,6 +6,8 @@ All notable user-facing changes are recorded here. Versions follow
 
 ## [Unreleased]
 
+## [0.1.0rc2] - 2026-08-09
+
 ### Added
 
 - `oglo acceptance`, an owner-facing USB pair test that uses public SDK APIs,
@@ -19,6 +21,9 @@ All notable user-facing changes are recorded here. Versions follow
   longer active upstreams
 - documented firmware 0.9.10/schema 6 as the only supported live-glove baseline;
   retained 0.9.9/schema-6 captures solely as historical decoder provenance
+- removed the unused `pair_id` contract and `allow_unpaired` escape; two-glove
+  connection now relies on one left side, one right side, and distinct logical
+  serials
 
 ## [0.1.0rc1] - 2026-08-07
 
@@ -50,5 +55,6 @@ First public release candidate.
 - zero persistence requires a power-cycle read-back when it is a release gate
 - multi-hour and slow-storage target-host qualification remain deployment tasks
 
-[Unreleased]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc1...HEAD
+[Unreleased]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc2...HEAD
+[0.1.0rc2]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc1...v0.1.0rc2
 [0.1.0rc1]: https://github.com/OpenGraphLabs/oglo-python/releases/tag/v0.1.0rc1

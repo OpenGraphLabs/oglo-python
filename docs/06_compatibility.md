@@ -5,7 +5,7 @@ physical gloves. They are different claims.
 
 ## Supported contract
 
-| Component | Status in 0.1.0rc1 |
+| Component | Status in 0.1.0rc2 |
 | --- | --- |
 | Python | 3.10 or newer |
 | Live-glove firmware | 0.9.10 |
@@ -16,7 +16,7 @@ physical gloves. They are different claims.
 | Firmware 0.9.9 | historical parser/vector compatibility only; upgrade before live use |
 | Firmware 0.9.8 and older | rejected |
 
-The `0.1.0rc1` parser floor remains 0.9.9 so historical schema-6 golden vectors and
+The `0.1.0rc2` parser floor remains 0.9.9 so historical schema-6 golden vectors and
 recordings stay readable. That tolerance is not a live-device support claim. The
 deployed fleet and physical release qualification use 0.9.10/schema 6; unknown
 schemas and firmware older than 0.9.9 fail closed rather than selecting a
