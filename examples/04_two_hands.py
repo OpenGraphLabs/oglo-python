@@ -21,11 +21,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import oglo
 
-# Production/default: one left, one right, and the same non-empty pair_id.
-# For two deliberately unprovisioned bench units only, pass allow_unpaired=True.
 left, right = oglo.connect_pair()
-print(f"left  {left.info.serial}  pair {left.info.pair_id}  fingers {left.info.channels}")
-print(f"right {right.info.serial}  pair {right.info.pair_id}  fingers {right.info.channels}")
+print(f"left  {left.info.serial}  fingers {left.info.channels}")
+print(f"right {right.info.serial}  fingers {right.info.channels}")
 
 try:
     with ThreadPoolExecutor(max_workers=2) as pool:

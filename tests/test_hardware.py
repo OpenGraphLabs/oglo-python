@@ -42,7 +42,6 @@ class AttachedGlove:
     port: PortCandidate
     serial: str
     side: str
-    pair_id: str
 
 
 @pytest.fixture(scope="module")
@@ -60,7 +59,6 @@ def attached_pair() -> Sequence[AttachedGlove]:
                     port=candidate,
                     serial=glove.info.serial,
                     side=glove.info.side,
-                    pair_id=glove.info.pair_id,
                 )
             )
     assert {item.side for item in found} == {"left", "right"}
@@ -174,15 +172,8 @@ def test_logical_serial_selection_never_returns_the_other_hand(attached_pair):
             assert glove.info.side == item.side
 
 
-def test_pair_gate_and_explicit_unprovisioned_bench_pair(attached_pair):
-    pair_ids = {item.pair_id for item in attached_pair}
-    assert len(pair_ids) == 1, f"attached left/right devices have different pair IDs: {pair_ids}"
-    if pair_ids == {""}:
-        with pytest.raises(oglo.UsbError, match="empty pair_id"):
-            oglo.connect_pair()
-        left, right = oglo.connect_pair(allow_unpaired=True)
-    else:
-        left, right = oglo.connect_pair()
+def test_pair_connects_one_left_and_one_right(attached_pair):
+    left, right = oglo.connect_pair()
     try:
         assert (left.info.side, right.info.side) == ("left", "right")
         assert left.info.serial != right.info.serial
@@ -241,8 +232,7 @@ def test_repeated_streaming_context_close_does_not_reboot_a_glove(attached_pair)
 
 
 def test_two_hands_stream_concurrently_without_cross_throttling(attached_pair, hardware_seconds):
-    allow_unpaired = {item.pair_id for item in attached_pair} == {""}
-    left, right = oglo.connect_pair(allow_unpaired=allow_unpaired)
+    left, right = oglo.connect_pair()
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = {
@@ -281,8 +271,7 @@ def _assert_episode(path: Path, *, serial: str, side: str) -> None:
 
 
 def test_two_hand_record_replay_round_trip(attached_pair, tmp_path):
-    allow_unpaired = {item.pair_id for item in attached_pair} == {""}
-    left, right = oglo.connect_pair(allow_unpaired=allow_unpaired)
+    left, right = oglo.connect_pair()
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = {

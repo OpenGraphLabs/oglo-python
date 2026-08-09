@@ -428,7 +428,6 @@ class Recorder:
             "side": info.side,
             "hw_rev": info.hw_rev,
             "fw_rev": info.fw_rev,
-            "pair_id": info.pair_id,
             "channels": list(info.channels),
             "has_mag": info.has_mag,
             "transport": info.transport,

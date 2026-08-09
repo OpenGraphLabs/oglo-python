@@ -37,7 +37,6 @@ class Info:
     #: a part is fitted, nor a runtime freshness/health counter.
     has_mag: bool
     transport: str  # "usb" | "ble"
-    pair_id: str
 
     # Calibration state, as the device reports it.
     zero_valid: bool
@@ -163,7 +162,6 @@ def parse_config(cfg: Dict[str, Any], *, transport: str = "usb") -> Tuple[Info, 
         channels=channel_names,
         has_mag=_config_bool(cfg, "has_mag"),
         transport=transport,
-        pair_id=_config_string(cfg, "pair_id", allow_empty=True),
         zero_valid=zero_valid,
         stream_clean=stream_clean,
         stream_thr=stream_thr,

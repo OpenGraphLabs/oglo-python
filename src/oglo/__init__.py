@@ -162,14 +162,12 @@ def _connect_usb_port(device: str, *, timeout: float) -> Glove:
     return Glove(t, info, caps)
 
 
-def connect_pair(*, timeout: float = 10.0, allow_unpaired: bool = False) -> Tuple[Glove, Glove]:
+def connect_pair(*, timeout: float = 10.0) -> Tuple[Glove, Glove]:
     """Open both hands and return them as `(left, right)`.
 
     Which glove is which comes from the side stored on the device, never from the
-    order the ports enumerated, so swapping cables cannot mislabel a hand. By default
-    both devices must also report the same non-empty ``pair_id``. The explicit
-    ``allow_unpaired=True`` escape is for a two-device bench before pair identity has
-    been provisioned.
+    order the ports enumerated, so swapping cables cannot mislabel a hand. The two
+    devices must report opposite sides and distinct logical serials.
     """
     cands = list_candidates()
     if len(cands) < 2:
@@ -199,17 +197,6 @@ def connect_pair(*, timeout: float = 10.0, allow_unpaired: bool = False) -> Tupl
             )
         if len({g.info.serial.casefold() for g in gloves}) != 2:
             raise UsbError("the two devices report the same logical serial; fix SET SERIAL first")
-        pair_ids = {g.info.pair_id for g in gloves}
-        if len(pair_ids) != 1:
-            raise UsbError(
-                "the two gloves have different pair_id values; refusing to combine unrelated "
-                "devices. Set the same value on both with SET PAIR."
-            )
-        if pair_ids == {""} and not allow_unpaired:
-            raise UsbError(
-                "both gloves have an empty pair_id. Set the same non-empty SET PAIR value on "
-                "both, or pass allow_unpaired=True explicitly for a bench-only pairing."
-            )
         return by_side["left"], by_side["right"]
     except BaseException:
         for g in gloves:

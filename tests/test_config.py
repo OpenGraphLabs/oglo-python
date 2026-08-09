@@ -22,7 +22,7 @@ CFG_V6 = json.loads(
     '"hw_rev":"RDR02_FLEX5_REV_D_TIA","fw_rev":"0.9.9","rate_hz":250,'
     '"samples_per_packet":3,"imu_len":25,"has_mag":true,"values_per_sample":80,'
     '"sample_shape":[5,4,4],"channels":["pinky","ring","middle","index","thumb"],'
-    '"device_id":"oglo-test-device-01","pair_id":"","batch":"","factory_passed":true,'
+    '"device_id":"oglo-test-device-01","batch":"","factory_passed":true,'
     '"stream_clean":true,"stream_thr":80,"zero_valid":true,"cal_lock":false}'
 )
 
@@ -75,7 +75,6 @@ def test_an_unknown_finger_name_says_what_the_board_actually_has():
         ({**CFG_V6, "has_mag": "false"}, "has_mag must be a JSON boolean"),
         ({**CFG_V6, "zero_valid": 1}, "zero_valid must be a JSON boolean"),
         ({**CFG_V6, "samples_per_packet": 4}, "samples_per_packet"),
-        ({**CFG_V6, "pair_id": 42}, "pair_id must be a JSON string"),
     ],
 )
 def test_configs_the_sdk_cannot_work_with_are_rejected_clearly(cfg, msg):

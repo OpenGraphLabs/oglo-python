@@ -175,7 +175,7 @@ def test_pair_returns_left_then_right_regardless_of_port_order(monkeypatch):
     def opener(device, *a, **kw):
         # port 1 is the RIGHT hand, port 2 the LEFT: deliberately not port order
         side = "right" if device.endswith("1") else "left"
-        return FakeSerial(dict(CFG_V6, side=side, serial=f"OGLO-{side}", pair_id="PAIR-1"),
+        return FakeSerial(dict(CFG_V6, side=side, serial=f"OGLO-{side}"),
                           stream=tagged_burst(4), hz=250.0)
 
     monkeypatch.setattr(_usb, "open_serial", opener)
@@ -193,38 +193,6 @@ def test_pair_of_the_same_side_is_refused_with_the_fix(monkeypatch):
     monkeypatch.setattr(oglo, "open_serial", fake_open(side="right"))
     with pytest.raises(UsbError, match="SET SIDE"):
         oglo.connect_pair()
-
-
-def test_pair_refuses_different_pair_ids(monkeypatch):
-    _ports(monkeypatch, [port("/dev/cu.usbmodem1", "SN1"), port("/dev/cu.usbmodem2", "SN2")])
-
-    def opener(device, *a, **kw):
-        side = "left" if device.endswith("1") else "right"
-        return FakeSerial(dict(
-            CFG_V6,
-            side=side,
-            serial=f"OGLO-{side}",
-            pair_id=f"PAIR-{device[-1]}",
-        ))
-
-    monkeypatch.setattr(oglo, "open_serial", opener)
-    with pytest.raises(UsbError, match="different pair_id"):
-        oglo.connect_pair()
-
-
-def test_pair_requires_explicit_opt_in_when_both_pair_ids_are_blank(monkeypatch):
-    _ports(monkeypatch, [port("/dev/cu.usbmodem1", "SN1"), port("/dev/cu.usbmodem2", "SN2")])
-
-    def opener(device, *a, **kw):
-        side = "left" if device.endswith("1") else "right"
-        return FakeSerial(dict(CFG_V6, side=side, serial=f"OGLO-{side}", pair_id=""))
-
-    monkeypatch.setattr(oglo, "open_serial", opener)
-    with pytest.raises(UsbError, match="empty pair_id"):
-        oglo.connect_pair()
-
-    left, right = oglo.connect_pair(allow_unpaired=True)
-    left.close(); right.close()
 
 
 def test_pair_closes_the_first_glove_when_the_second_fails(monkeypatch):

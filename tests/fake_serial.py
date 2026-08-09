@@ -21,7 +21,7 @@ CFG_V6 = {
     "samples_per_packet": 3, "imu_len": 25, "has_mag": True, "values_per_sample": 80,
     "sample_shape": [5, 4, 4],
     "channels": ["pinky", "ring", "middle", "index", "thumb"],
-    "device_id": "oglo-test-device-01", "pair_id": "", "batch": "",
+    "device_id": "oglo-test-device-01", "batch": "",
     "factory_passed": True, "stream_clean": True, "stream_thr": 80,
     "zero_valid": True, "cal_lock": False,
 }

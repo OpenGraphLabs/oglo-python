@@ -251,7 +251,6 @@ def _schema2_info(meta: Dict[str, Any]) -> Info:
     if not _fw_at_least(fw_rev, MIN_FIRMWARE):
         floor = ".".join(str(part) for part in MIN_FIRMWARE)
         raise ReplayError(f"meta.json fw_rev must be firmware {floor} or newer")
-    pair_id = _json_string(meta, "pair_id", allow_empty=True)
     transport = _json_string(meta, "transport")
     if transport not in ("usb", "ble"):
         raise ReplayError("meta.json transport must be 'usb' or 'ble'")
@@ -306,7 +305,6 @@ def _schema2_info(meta: Dict[str, Any]) -> Info:
         channels=list(channels),
         has_mag=has_mag,
         transport="replay",
-        pair_id=pair_id,
         zero_valid=zero_valid,
         stream_clean=stream_clean,
         stream_thr=stream_thr,
@@ -330,7 +328,6 @@ def _schema1_info(meta: Dict[str, Any]) -> Info:
             channels=list(meta.get("channels", [])),
             has_mag=bool(meta.get("has_mag", False)),
             transport="replay",
-            pair_id=str(meta.get("pair_id", "") or ""),
             zero_valid=bool(meta.get("zero_valid", False)),
             stream_clean=bool(meta.get("stream_clean", False)),
             stream_thr=int(meta.get("stream_thr", 0) or 0),
