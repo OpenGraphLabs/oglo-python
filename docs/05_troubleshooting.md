@@ -36,11 +36,11 @@ In order of likelihood:
 3. Something else already holds the port. `doctor` lists non-glove serial devices it
    saw and skipped, which is often the clue.
 
-Firmware 0.9.9 still appears to the OS as `XIAO_ESP32S3` from `Espressif Systems`;
-the `OGLO` / `OpenGraphLabs` USB strings begin at 0.9.10. Discovery therefore uses
-the Seeed VID and then proves identity with `GET CONFIG`. Another XIAO board with the
-same VID can briefly appear as a candidate, but it is rejected when that handshake
-does not return the strict OGLO schema.
+Supported firmware 0.9.10 appears to the OS as `OGLO` from `OpenGraphLabs`. A glove
+that still appears as `XIAO_ESP32S3` from `Espressif Systems` is running an older
+build and must be upgraded. Discovery still proves identity with `GET CONFIG`; a
+different XIAO using the same VID can briefly appear as a candidate, but it is
+rejected when the handshake does not return the strict OGLO schema.
 
 ## Port already held
 
@@ -55,7 +55,7 @@ network device and serves several subscribers at once.
 ## The board answers nothing at all
 
 If you are writing your own serial code rather than using this SDK: **assert DTR.**
-Firmware 0.9.9 uses TinyUSB, which will not transmit until the host raises DTR.
+Firmware 0.9.10 uses TinyUSB, which will not transmit until the host raises DTR.
 With DTR low the board returns literally zero bytes and looks dead. It is not.
 
 Keep RTS low. The two together are what a USB-UART bridge decodes as a reset request.
@@ -130,13 +130,10 @@ Side is stored on the device. Fix it there:
 g.send("SET SIDE left")
 ```
 
-## Two hands refuse to pair
+## Two-hand connection is refused
 
-`connect_pair()` also refuses duplicate logical serials, different `pair_id` values,
-or two empty pair IDs. Provision the intended pair with the same non-empty `SET PAIR`
-value on both gloves. For a deliberate internal bench test only, two empty IDs can be
-opened with `connect_pair(allow_unpaired=True)`; different non-empty IDs are still
-rejected.
+`connect_pair()` refuses duplicate logical serials or two devices reporting the same
+side. Correct `SET SERIAL` or `SET SIDE` on the affected glove before reconnecting.
 
 ## Something else
 

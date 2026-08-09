@@ -16,8 +16,9 @@ python3 -m pip install \
   "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc1"
 ```
 
-Python 3.10 or newer is required. The SDK accepts firmware 0.9.9 or newer with
-schema 6 and rejects older or incompatible wire contracts at connection time.
+Python 3.10 or newer is required. Supported live gloves run firmware 0.9.10 with
+schema 6. `0.1.0rc1` can still parse historical 0.9.9/schema-6 captures, but that
+parser tolerance is not deployment support; upgrade a live 0.9.9 glove before use.
 
 ## Diagnose before collecting data
 
@@ -70,9 +71,9 @@ Wear the glove, open and close the hand through its full motion range for the fi
 seconds, and touch nothing. Bending a finger presses the sensor by itself, so a
 still-hand baseline creates false contacts during later motion.
 
-The SDK verifies the active recipe immediately after capture. Firmware 0.9.9 and
-0.9.10 do not expose enough information to prove that the flash write survived a
-power cycle; reboot and read it back when persistence is a release or factory gate.
+The SDK verifies the active recipe immediately after capture. Firmware 0.9.10 does
+not expose enough information to prove that the flash write survived a power cycle;
+reboot and read it back when persistence is a release or factory gate.
 See [Calibration](03_calibration.md) before changing an externally supplied glove.
 
 ## Two hands
@@ -86,10 +87,8 @@ finally:
     right.close()
 ```
 
-Which device is left or right comes from CONFIG, not cable order. By default both
-devices must also report the same non-empty `pair_id`; this prevents unrelated
-gloves from being silently combined. For a deliberate unprovisioned bench setup,
-opt in with `oglo.connect_pair(allow_unpaired=True)`.
+Which device is left or right comes from CONFIG, not cable order. The devices must
+report opposite sides and distinct logical serials.
 
 Relate two hands on `host_t`, never on `t_us`. Each glove has an independent device
 clock and there is no hardware synchronisation contract. Read each hand on its own
