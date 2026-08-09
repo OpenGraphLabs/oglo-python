@@ -1,8 +1,7 @@
 """`oglo` on the command line.
 
-Four verbs, matching the four functions. The point of a CLI here is that the first
-thing anyone does with new hardware is check whether it works at all, and that should
-not require writing Python.
+The point of a CLI here is that the first thing anyone does with new hardware is
+check whether it works at all, and that should not require writing Python.
 """
 
 from __future__ import annotations
@@ -95,6 +94,32 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     return 0 if s["complete"] else 2
 
 
+def _cmd_acceptance(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from .acceptance import AcceptanceConfig, run_acceptance
+
+    if args.interactive and not sys.stdin.isatty():
+        raise ValueError("--interactive needs a real terminal for the finger/motion prompts")
+    if args.zero and not args.yes and not sys.stdin.isatty():
+        raise ValueError("--zero needs a real terminal confirmation, or explicit --yes")
+    config = AcceptanceConfig(
+        output_root=Path(args.output),
+        stream_seconds=args.seconds,
+        record_seconds=0.0 if args.no_record else args.record,
+        soak_seconds=args.soak,
+        mutations=args.mutations,
+        zero=args.zero,
+        zero_sweep_seconds=args.zero_sweep,
+        interactive=args.interactive,
+        interactive_seconds=args.interactive_seconds,
+        taxel_delta=args.taxel_delta,
+        assume_yes=args.yes,
+    )
+    report = run_acceptance(config)
+    return 2 if report.failed else 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="oglo", description="OGLO tactile glove")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -117,6 +142,76 @@ def main(argv: Optional[List[str]] = None) -> int:
     q.add_argument("path")
     q.add_argument("--json", action="store_true")
     q.set_defaults(func=_cmd_replay)
+
+    from .acceptance import parse_duration
+
+    a = sub.add_parser(
+        "acceptance",
+        help="test a physical left/right USB pair and write JSON/Markdown evidence",
+    )
+    a.add_argument(
+        "--output",
+        default="acceptance-results",
+        help="root directory for a new timestamped report (default: acceptance-results)",
+    )
+    a.add_argument(
+        "--seconds",
+        type=parse_duration,
+        default=5.0,
+        help="two-hand stream measurement duration: seconds, 75m, 1.5h (default: 5s)",
+    )
+    a.add_argument(
+        "--record",
+        type=parse_duration,
+        default=2.0,
+        help="short simultaneous record/replay duration (default: 2s)",
+    )
+    a.add_argument("--no-record", action="store_true", help="skip the short record/replay")
+    a.add_argument(
+        "--soak",
+        type=parse_duration,
+        default=None,
+        help="also record/replay both hands for a long duration, e.g. 75m",
+    )
+    a.add_argument(
+        "--interactive",
+        action="store_true",
+        help="prompt for every finger press and a wrist-motion response",
+    )
+    a.add_argument(
+        "--interactive-seconds",
+        type=parse_duration,
+        default=1.5,
+        help="capture window for each prompted action (default: 1.5s)",
+    )
+    a.add_argument(
+        "--taxel-delta",
+        type=float,
+        default=25.0,
+        help="minimum selected-finger response in ADC counts (default: 25)",
+    )
+    a.add_argument(
+        "--mutations",
+        action="store_true",
+        help="exercise RAW/CLEAN/threshold/rates, then restore observed settings",
+    )
+    a.add_argument(
+        "--zero",
+        action="store_true",
+        help="DESTRUCTIVE: replace each glove's stored zero after confirmation",
+    )
+    a.add_argument(
+        "--zero-sweep",
+        type=int,
+        default=5,
+        help="zero sweep duration, 1..30 seconds (default: 5)",
+    )
+    a.add_argument(
+        "--yes",
+        action="store_true",
+        help="with --zero, bypass the typed confirmation (still requires explicit --zero)",
+    )
+    a.set_defaults(func=_cmd_acceptance)
 
     args = p.parse_args(argv)
     try:
