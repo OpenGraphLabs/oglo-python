@@ -2,17 +2,17 @@
 
 [![CI](https://github.com/OpenGraphLabs/oglo-python/actions/workflows/ci.yml/badge.svg)](https://github.com/OpenGraphLabs/oglo-python/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](https://www.python.org/)
-[![Firmware 0.9.10](https://img.shields.io/badge/firmware-0.9.10-5C2D91.svg)](docs/06_compatibility.md)
+[![Firmware 0.9.10+](https://img.shields.io/badge/firmware-0.9.10%2B-5C2D91.svg)](docs/06_compatibility.md)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 Python access to the OGLO five-finger tactile glove: 80 taxels per hand at a
 nominal 250 Hz over USB, plus accelerometer, gyroscope, and optional magnetometer
 streams.
 
-> **Release candidate:** `0.1.0rc2` is a USB-first research SDK for the supported
-> live-glove baseline, firmware 0.9.10/schema 6. The decoder retains historical
-> 0.9.9/schema-6 vector compatibility, but 0.9.9 is not a deployment target. BLE
-> is available as an experimental transport and is not release-qualified.
+> **Release candidate:** `0.1.0rc3` is a USB-first research SDK for firmware
+> 0.9.10 or newer with CONFIG schema 6. The current golden firmware for new flashes
+> is 0.9.11; deployed 0.9.10 gloves remain supported. Older firmware is rejected
+> for both live connections and replay. BLE is experimental and not release-qualified.
 
 This public repository is the sole canonical source for the SDK. Development,
 issues, pull requests, tags, and releases all belong under
@@ -34,14 +34,14 @@ private or staging repository is an active upstream.
 Download the wheel from the matching [GitHub Release](https://github.com/OpenGraphLabs/oglo-python/releases), then install it locally:
 
 ```bash
-python3 -m pip install ./oglo-0.1.0rc2-py3-none-any.whl
+python3 -m pip install ./oglo-0.1.0rc3-py3-none-any.whl
 ```
 
 To install the tagged source instead:
 
 ```bash
 python3 -m pip install \
-  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc2"
+  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc3"
 ```
 
 Python 3.10 or newer is required.
@@ -56,8 +56,8 @@ oglo doctor
 
 `doctor` measures the attached device and host rather than assuming the nominal
 rates. Resolve any reported identity, firmware, loss, or throughput failure before
-recording data. Upgrade any live glove that does not report firmware 0.9.10 and
-schema 6.
+recording data. Upgrade any live glove that reports firmware older than 0.9.10 or
+anything other than schema 6. New flashes should use the current 0.9.11 golden image.
 
 ## Read one glove
 

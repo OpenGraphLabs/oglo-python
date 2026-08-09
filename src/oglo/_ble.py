@@ -245,7 +245,7 @@ class BleTransport:
             with self._lock:
                 self.malformed += 1
             return
-        # In firmware 0.9.9 the CONFIG has_mag value and every notify's packet-mag
+        # In supported firmware the CONFIG has_mag value and every notify's packet-mag
         # flag come from the same boot-time state. A mismatch is not an optional
         # per-sample omission: it is a corrupt/incompatible notify. Accepting it
         # silently produced tactile+IMU while losing the entire mag batch without a
@@ -258,7 +258,7 @@ class BleTransport:
             return
         with self._lock:
             for s in samples:
-                # Firmware 0.9.9 saturates the signed IMU age at the int16 limits.
+                # Supported firmware saturates the signed IMU age at the int16 limits.
                 # At that point tactile is still fresh but the embedded IMU is not;
                 # keeping the row is useful for a partial episode, while this
                 # counter prevents Recorder from calling the capture complete.
@@ -285,7 +285,7 @@ class BleTransport:
                 self._samples.append(replace(s, host_received_ns=received_ns))
 
     def start(self, *, reset_counters: bool = True) -> str:
-        """Subscribe to the firmware-0.9.9 schema-6 notification."""
+        """Subscribe to the supported firmware-0.9.10+ schema-6 notification."""
         if self._disconnected:
             raise DisconnectedError("the BLE glove disconnected; reconnect before starting again")
         # Reset callback-owned state before enabling notifications. Doing part of
@@ -395,7 +395,7 @@ def connect_ble(serial: Optional[str] = None, *, address: Optional[str] = None,
     matches = []
     seen = []
     failures = []
-    # Advertisements only say OGLO LEFT/RIGHT in firmware 0.9.9. Treating that name
+    # Advertisements only say OGLO LEFT/RIGHT. Treating that name
     # as a serial selector silently picked the wrong device, so inspect CONFIG and
     # verify identity before returning anything.
     try:

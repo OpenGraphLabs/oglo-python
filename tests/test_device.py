@@ -360,7 +360,7 @@ def test_every_command_path_fails_deterministically_after_close(operation):
 def test_repr_says_which_glove_this_is():
     g, _ = make()
     r = repr(g)
-    assert "OGLO-L-TEST01" in r and "left" in r and "0.9.9" in r
+    assert "OGLO-L-TEST01" in r and "left" in r and "0.9.10" in r
 
 
 def test_read_batch_is_the_public_non_resampling_fanout_api():

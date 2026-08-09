@@ -6,10 +6,10 @@ here is a function of its arguments, which is what makes the golden vectors in
 
 The public contract is documented in `docs/02_data_reference.md` and locked by the
 captured vectors under `spec/vectors/`. The implementation was also read back from
-the firmware source (`oglo_rdr02_tia.ino`, FW 0.9.9) rather than inferred from prose
-alone.
+the current firmware source (`oglo_rdr02_tia.ino`, FW 0.9.11) rather than inferred
+from prose alone.
 
-There is one supported wire contract: firmware 0.9.9+, schema 6. USB is the tagged
+There is one supported wire contract: firmware 0.9.10+, schema 6. USB is the tagged
 stream with packed12 tactile payloads; BLE is the packed schema-6 notification.
 """
 
@@ -39,7 +39,7 @@ TAG_MAGIC = b"\xa5\x5a"
 TAG_HDR_LEN = 13
 TAG_TACTILE, TAG_IMU, TAG_MAG = 1, 2, 3
 
-#: 80 taxels x 12 bits, the only tactile payload supported by firmware 0.9.9+.
+#: 80 taxels x 12 bits, the only tactile payload supported by firmware 0.9.10+.
 TAXEL_PACKED_LEN = (TAXELS * 12 + 7) // 8  # 120
 
 TAG_IMU_LEN = 12  # ax, ay, az, gx, gy, gz
@@ -65,7 +65,7 @@ def unpack12(buf: bytes, offset: int = 0, count: int = TAXELS) -> List[int]:
     """Unpack `count` 12-bit values from three-bytes-per-two-values packing.
 
     The firmware writes pairs as ``a>>4 | ((a&0xF)<<4)|(b>>8) | b&0xFF``
-    (``packTaxels12`` in the sketch). Firmware 0.9.9 uses this packing for both
+    (``packTaxels12`` in the sketch). Supported firmware uses this packing for both
     tagged USB tactile packets and BLE notifications.
     """
     if count % 2:

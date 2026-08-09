@@ -4,11 +4,11 @@
 
 | Version | Security updates |
 | --- | --- |
-| 0.1.x with firmware 0.9.10/schema 6 | Yes |
+| 0.1.x with firmware 0.9.10+/schema 6 | Yes |
 | development snapshots and older versions | No |
 
-Historical 0.9.9 wire captures are retained for decoder regression tests; they do
-not make a live 0.9.9 glove a supported deployment.
+Firmware older than 0.9.10 is outside the supported live, replay, and vector-capture
+contract.
 
 ## Reporting a vulnerability
 

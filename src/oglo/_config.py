@@ -1,6 +1,6 @@
 """Validate the single supported OGLO contract and expose its runtime state.
 
-This SDK intentionally starts at firmware 0.9.9. Older schemas are rejected at
+This SDK intentionally starts at firmware 0.9.10. Older firmware and schemas are rejected at
 connect time instead of entering a compatibility mode whose semantics differ.
 
 The config is read from `GET CONFIG` over serial or from the config characteristic
@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ._wire import NUM_COLS, NUM_FINGERS, ROWS_PER_FINGER, TAXELS
 
-MIN_FIRMWARE = (0, 9, 9)
+MIN_FIRMWARE = (0, 9, 10)
 REQUIRED_SCHEMA = 6
 REQUIRED_IMU_LEN = 25
 
@@ -44,7 +44,7 @@ class Info:
     stream_thr: int
 
     #: Applied IMU period when this SDK session set and exactly acknowledged it.
-    #: Firmware 0.9.9 does not expose a read-only value in CONFIG, so otherwise None.
+    #: Supported firmware does not expose a read-only value in CONFIG, so otherwise None.
     imu_period_ms: Optional[int] = None
 
     #: Frames the device itself discarded. Distinct from host-side loss and never
@@ -72,7 +72,7 @@ class Capabilities:
 def parse_config(cfg: Dict[str, Any], *, transport: str = "usb") -> Tuple[Info, Capabilities]:
     """Turn a config dict into `(Info, Capabilities)`.
 
-    Firmware older than 0.9.9 and anything other than schema 6 are unsupported.
+    Firmware older than 0.9.10 and anything other than schema 6 are unsupported.
     Required fields do not get fallbacks: a truncated or incompatible config fails
     before streaming begins.
     """
@@ -207,7 +207,7 @@ def _config_string(cfg: Dict[str, Any], name: str, *, allow_empty: bool = False)
 def _fw_at_least(fw_rev: str, floor: Tuple[int, int, int]) -> bool:
     """Compare a dotted version numerically.
 
-    String comparison is wrong here and the failure is quiet: `"0.9.10" < "0.9.9"`
+    String comparison is wrong here and the failure is quiet: `"0.10.0" < "0.9.0"`
     lexicographically, so a future build would be judged older than the floor.
     Non-numeric suffixes (`0.7.3-tzerobtn`) are tolerated by taking the leading digits.
     """

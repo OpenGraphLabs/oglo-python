@@ -77,6 +77,24 @@ def test_the_measured_rate_is_reported_against_what_the_board_says(monkeypatch):
     assert "250 Hz expected" in tac.detail
 
 
+def test_fake_board_buffers_samples_while_host_is_descheduled(monkeypatch):
+    """A busy test runner delays reads; it does not stop the simulated board clock."""
+    import fake_serial
+    from oglo import _wire as w
+
+    now = [10.0]
+    monkeypatch.setattr(fake_serial, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    serial = FakeSerial(CFG_V6, stream=tagged_burst(4), chunk=1_000_000, hz=250.0)
+    serial.write(b"STREAM TAG ON\n")
+
+    # Three more four-sample bursts should accumulate during a 49 ms host pause.
+    now[0] += 0.049
+    packets, remainder = w.iter_tagged(serial.read(1_000_000))
+    tactile = [packet for packet in packets if isinstance(packet, w.TactilePacket)]
+    assert not remainder
+    assert len(tactile) == 16
+
+
 def test_a_slow_board_is_failed_with_the_percentage(monkeypatch):
     """A number needs a reader who knows the expected value. A verdict does not."""
     _ports(monkeypatch, [port("/dev/cu.usbmodemA")])
@@ -231,7 +249,7 @@ def test_info_json_is_one_parseable_document_with_two_gloves(monkeypatch, capsys
             side = "left" if port == "/dev/a" else "right"
             self.info = SimpleNamespace(
                 raw={"serial": f"OGLO-{side}"}, serial=f"OGLO-{side}", side=side,
-                transport="usb", hw_rev="D", fw_rev="0.9.9", rate_hz=250,
+                transport="usb", hw_rev="D", fw_rev="0.9.10", rate_hz=250,
                 channels=[], has_mag=True, zero_valid=True, stream_clean=True,
                 stream_thr=30,
             )

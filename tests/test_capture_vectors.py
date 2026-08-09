@@ -40,7 +40,7 @@ def test_reference_decoder_is_an_independent_plain_data_oracle():
     assert imu["gyro"] == [10.0, 0.0, -10.0]
 
 
-def test_capture_config_enforces_the_099_schema6_boundary_numerically():
+def test_capture_config_enforces_the_0910_schema6_boundary_numerically():
     cfg = {
         "fw_rev": "0.9.10",
         "schema_ver": 6,
@@ -52,8 +52,8 @@ def test_capture_config_enforces_the_099_schema6_boundary_numerically():
         "has_mag": True,
     }
     assert capture.validate_capture_config(cfg) is True
-    with pytest.raises(ValueError, match="older than 0.9.9"):
-        capture.validate_capture_config({**cfg, "fw_rev": "0.9.8"})
+    with pytest.raises(ValueError, match="older than 0.9.10"):
+        capture.validate_capture_config({**cfg, "fw_rev": "0.9.9"})
 
 
 def test_capture_fails_before_writing_when_a_required_modality_is_missing():
@@ -62,6 +62,22 @@ def test_capture_fails_before_writing_when_a_required_modality_is_missing():
 
     vectors = capture.collect_vectors(tactile_packet() + imu_packet(), has_mag=False)
     assert {name.rsplit("_", 1)[0] for name in vectors} == {"tag_tactile", "tag_imu"}
+
+
+def test_public_capture_metadata_redacts_the_logical_serial_by_default():
+    cfg = {
+        "serial": "OGLO-L-00001",
+        "side": "left",
+        "hw_rev": "RDR02_FLEX5_REV_D_TIA",
+        "fw_rev": "0.9.10",
+        "rate_hz": 250,
+        "imu_len": 25,
+        "has_mag": True,
+    }
+    public = capture.capture_metadata(cfg)
+    assert public["serial"] == "OGLO-L-GOLDEN"
+    assert public["serial_redacted"] is True
+    assert capture.capture_metadata(cfg, include_serial=True)["serial"] == "OGLO-L-00001"
 
 
 def test_replacing_a_capture_removes_obsolete_length_variants(tmp_path):
@@ -73,7 +89,7 @@ def test_replacing_a_capture_removes_obsolete_length_variants(tmp_path):
     unrelated.write_text("keep")
 
     vectors = capture.collect_vectors(tactile_packet() + imu_packet(), has_mag=False)
-    capture.write_vector_set(vectors, {"fw_rev": "0.9.9"}, directory=tmp_path)
+    capture.write_vector_set(vectors, {"fw_rev": "0.9.10"}, directory=tmp_path)
 
     assert not stale_bin.exists() and not stale_json.exists()
     assert unrelated.read_text() == "keep"
@@ -85,7 +101,7 @@ def test_replacing_a_capture_removes_obsolete_length_variants(tmp_path):
 def test_config_reader_carries_a_json_line_across_arbitrary_serial_reads(monkeypatch):
     cfg = {
         "device": "oglo",
-        "fw_rev": "0.9.9",
+        "fw_rev": "0.9.10",
         "schema_ver": 6,
     }
     encoded = b"#CONFIG " + json.dumps(cfg).encode() + b"\r\n"

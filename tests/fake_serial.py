@@ -17,7 +17,7 @@ from oglo import _wire as w
 
 CFG_V6 = {
     "device": "oglo", "schema_ver": 6, "serial": "OGLO-L-TEST01", "side": "left",
-    "hw_rev": "RDR02_FLEX5_REV_D_TIA", "fw_rev": "0.9.9", "rate_hz": 250,
+    "hw_rev": "RDR02_FLEX5_REV_D_TIA", "fw_rev": "0.9.10", "rate_hz": 250,
     "samples_per_packet": 3, "imu_len": 25, "has_mag": True, "values_per_sample": 80,
     "sample_shape": [5, 4, 4],
     "channels": ["pinky", "ring", "middle", "index", "thumb"],
@@ -91,7 +91,7 @@ class FakeSerial:
         initial, _ = w.iter_tagged(stream)
         tactile_seqs = [p.seq for p in initial if isinstance(p, w.TactilePacket)]
         self._next_tactile_seq = ((tactile_seqs[-1] + 1) & 0xFFFFFFFF) if tactile_seqs else 0
-        self._next_refill = 0.0
+        self._next_refill: Optional[float] = None
         self.commands: List[str] = []
         self.closed = False
         self._burst_tactile = 4
@@ -150,12 +150,19 @@ class FakeSerial:
         """
         if not self._stream:
             return b""  # nothing to produce; the test is driving _out by hand
-        if self.hz is not None:
+        if self._burst_secs > 0:
             now = time.monotonic()
-            if now < self._next_refill:
+            if self._next_refill is None or now < self._next_refill:
                 return b""
-            self._next_refill = max(now, self._next_refill) + self._burst_secs
-        n = self._burst_tactile
+            # A real board keeps sampling while the host process is descheduled and
+            # its USB buffer delivers those accumulated packets on the next read.
+            # Advancing from ``now`` silently discarded every missed fake interval,
+            # which made rate tests fail only on busy CI runners.
+            bursts = 1 + int((now - self._next_refill) / self._burst_secs)
+            self._next_refill += bursts * self._burst_secs
+        else:
+            bursts = 1
+        n = self._burst_tactile * bursts
         out = tagged_burst(n, start_seq=self._next_tactile_seq)
         self._next_tactile_seq = (self._next_tactile_seq + n) & 0xFFFFFFFF
         return out
@@ -181,6 +188,10 @@ class FakeSerial:
         if up == "STREAM TAG ON":
             self._streaming = True
             self._out += self._stream
+            if self._burst_secs > 0:
+                # ``self._stream`` is the first produced burst; the next one is due
+                # one burst period later. Reset this on every new stream session.
+                self._next_refill = time.monotonic() + self._burst_secs
             return
         if up == "STREAM TAG OFF":
             self._streaming = False

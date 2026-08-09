@@ -6,19 +6,20 @@ Download the wheel from the matching
 [GitHub Release](https://github.com/OpenGraphLabs/oglo-python/releases), then:
 
 ```bash
-python3 -m pip install ./oglo-0.1.0rc2-py3-none-any.whl
+python3 -m pip install ./oglo-0.1.0rc3-py3-none-any.whl
 ```
 
 Or install the immutable source tag:
 
 ```bash
 python3 -m pip install \
-  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc2"
+  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc3"
 ```
 
-Python 3.10 or newer is required. Supported live gloves run firmware 0.9.10 with
-schema 6. `0.1.0rc2` can still parse historical 0.9.9/schema-6 captures, but that
-parser tolerance is not deployment support; upgrade a live 0.9.9 glove before use.
+Python 3.10 or newer is required. Supported live gloves run firmware 0.9.10 or
+newer with schema 6. The current golden firmware for new flashes is 0.9.11;
+deployed 0.9.10 gloves remain supported. `0.1.0rc3` rejects older firmware in both
+live connections and recorded episodes.
 
 ## Diagnose before collecting data
 
@@ -71,7 +72,7 @@ Wear the glove, open and close the hand through its full motion range for the fi
 seconds, and touch nothing. Bending a finger presses the sensor by itself, so a
 still-hand baseline creates false contacts during later motion.
 
-The SDK verifies the active recipe immediately after capture. Firmware 0.9.10 does
+The SDK verifies the active recipe immediately after capture. Supported firmware does
 not expose enough information to prove that the flash write survived a power cycle;
 reboot and read it back when persistence is a release or factory gate.
 See [Calibration](03_calibration.md) before changing an externally supplied glove.

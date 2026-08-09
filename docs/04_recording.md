@@ -104,7 +104,7 @@ This bounds SDK memory, but it is not proof of unlimited recording. A chunk flus
 a synchronous write and `fsync` on the same thread that drains USB; a slow Raspberry
 Pi SD-card stall can still cause receive loss. The SDK refuses to mark the episode
 complete when a sequence gap, overflow, malformed frame or
-sustained freshness gap is observable. Firmware 0.9.10 has no end-to-end CRC or
+sustained freshness gap is observable. Supported firmware has no end-to-end CRC or
 read-failure counters, so that is not proof that every short tail loss is detectable;
 release qualification must measure it on the target storage. A hard process/power
 loss can also lose the not-yet-flushed RAM tail; there is not yet a recovery command
@@ -118,7 +118,7 @@ for i in range(12):
 ```
 
 The repository does not contain a raw current long-soak report, so unit tests are not
-presented as proof of a 0.9.10 multi-hour hardware capture. Release qualification must
+presented as proof of a multi-hour hardware capture. Release qualification must
 include two hands for more than 72 minutes to cross the device-clock rollover, plus a
 slow-storage stress run.
 
