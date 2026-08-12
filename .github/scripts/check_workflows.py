@@ -57,6 +57,10 @@ def check_release(path: Path, text: str) -> None:
     _require("--signer-digest" in text, "release must pin the signer workflow SHA")
     _require("--source-digest" in text and "--source-ref refs/heads/main" in text, "release must pin source provenance")
     _require("gh release create" in text and "--verify-tag" in text, "release creation must reuse the verified tag")
+    _require("--draft" in text and "--draft=false" in text, "release creation must be retry-safe through a draft")
+    _require("--target \"$SOURCE_SHA\"" in text, "release metadata must target the exact source SHA")
+    _require("download_and_verify_asset" in text, "existing release assets must be byte-verified")
+    _require("Existing bytes" in text, "release retries must not overwrite existing assets")
     _require(text.count("contents: write") == 1, "only the publish job may write repository contents")
     _require("id-token: write" not in text, "release does not need OIDC write permission")
 

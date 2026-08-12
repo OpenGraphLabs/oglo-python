@@ -150,6 +150,20 @@ def test_repository_workflows_satisfy_release_policy() -> None:
     workflow_policy.check_repository(ROOT)
 
 
+def test_release_workflow_reconciles_partial_drafts_without_overwrite() -> None:
+    text = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--draft" in text
+    assert "--draft=false" in text
+    assert '--target "$SOURCE_SHA"' in text
+    assert "download_and_verify_asset" in text
+    assert 'test "$is_draft" = true' in text
+    assert "gh release upload" in text
+    assert "--clobber" not in text
+
+
 def test_workflow_policy_rejects_unpinned_action(tmp_path: Path) -> None:
     workflow = tmp_path / "unsafe.yml"
     text = "steps:\n  - uses: actions/checkout@v7\n"

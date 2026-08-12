@@ -240,27 +240,115 @@ jobs:
             "$SDIST_SHA256" "$SDIST_NAME" \
             > dist/SHA256SUMS
           (cd dist && sha256sum --check SHA256SUMS)
-      - name: Create immutable GitHub Release
+      - name: Create or reconcile immutable GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+          SDIST_SHA256: ${{ needs.verify.outputs.sdist_sha256 }}
           SDIST_NAME: ${{ needs.verify.outputs.sdist_name }}
+          SOURCE_SHA: ${{ needs.verify.outputs.source_sha }}
           TAG: ${{ needs.verify.outputs.tag }}
           VERSION: ${{ needs.verify.outputs.version }}
+          WHEEL_SHA256: ${{ needs.verify.outputs.wheel_sha256 }}
           WHEEL_NAME: ${{ needs.verify.outputs.wheel_name }}
         run: |
-          release_args=(
-            --repo "$GITHUB_REPOSITORY"
-            --verify-tag
-            --title "OGLO Python SDK $VERSION"
-            --notes-from-tag
-          )
-          if [ "$PRERELEASE" = true ]; then
-            release_args+=(--prerelease)
+          set -euo pipefail
+          title="OGLO Python SDK $VERSION"
+          expected_assets="$(printf '%s\n' "$WHEEL_NAME" "$SDIST_NAME" SHA256SUMS | sort)"
+
+          verify_release_metadata() {
+            local release_json="$1"
+            local allow_partial="$2"
+            jq -e \
+              --arg source_sha "$SOURCE_SHA" \
+              --arg tag "$TAG" \
+              --arg title "$title" \
+              --argjson prerelease "$PRERELEASE" \
+              '.tag_name == $tag and
+               .target_commitish == $source_sha and
+               .name == $title and
+               .prerelease == $prerelease' \
+              "$release_json" >/dev/null
+
+            local observed_assets
+            observed_assets="$(jq -r '.assets[].name' "$release_json" | sort)"
+            if [ "$allow_partial" = true ]; then
+              comm -13 \
+                <(printf '%s\n' "$expected_assets") \
+                <(printf '%s\n' "$observed_assets") |
+                test "$(cat)" = ""
+            else
+              test "$observed_assets" = "$expected_assets"
+            fi
+            test "$(jq '[.assets[].name] | length' "$release_json")" = \
+              "$(jq '[.assets[].name] | unique | length' "$release_json")"
+          }
+
+          download_and_verify_asset() {
+            local release_json="$1"
+            local name="$2"
+            local expected_sha="$3"
+            local asset_id
+            asset_id="$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .id' "$release_json")"
+            test "$asset_id" != ""
+            gh api \
+              --header 'Accept: application/octet-stream' \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
+              >"$RUNNER_TEMP/release-$name"
+            test "$(sha256sum "$RUNNER_TEMP/release-$name" | cut -d' ' -f1)" = "$expected_sha"
+          }
+
+          sums_sha256="$(sha256sum dist/SHA256SUMS | cut -d' ' -f1)"
+          release_json="$RUNNER_TEMP/sdk-release.json"
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >"$release_json" 2>/dev/null; then
+            # A failed prior upload may leave a draft behind. Existing bytes
+            # are immutable: verify them, add only missing assets to that
+            # draft, and never overwrite a mismatched file.
+            is_draft="$(jq -r .draft "$release_json")"
+            verify_release_metadata "$release_json" "$is_draft"
+          else
+            release_args=(
+              --repo "$GITHUB_REPOSITORY"
+              --verify-tag
+              --target "$SOURCE_SHA"
+              --title "$title"
+              --notes-from-tag
+              --draft
+            )
+            if [ "$PRERELEASE" = true ]; then
+              release_args+=(--prerelease)
+            fi
+            gh release create "$TAG" "${release_args[@]}"
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >"$release_json"
+            is_draft=true
+            verify_release_metadata "$release_json" true
           fi
 
-          gh release create "$TAG" \
-            "dist/$WHEEL_NAME" \
-            "dist/$SDIST_NAME" \
-            dist/SHA256SUMS \
-            "${release_args[@]}"
+          while IFS=$'\t' read -r name path expected_sha; do
+            if jq -e --arg name "$name" '.assets[] | select(.name == $name)' "$release_json" >/dev/null; then
+              download_and_verify_asset "$release_json" "$name" "$expected_sha"
+            else
+              test "$is_draft" = true
+              gh release upload "$TAG" "$path" --repo "$GITHUB_REPOSITORY"
+            fi
+          done <<EOF
+          $WHEEL_NAME	dist/$WHEEL_NAME	$WHEEL_SHA256
+          $SDIST_NAME	dist/$SDIST_NAME	$SDIST_SHA256
+          SHA256SUMS	dist/SHA256SUMS	$sums_sha256
+          EOF
+
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >"$release_json"
+          verify_release_metadata "$release_json" false
+          download_and_verify_asset "$release_json" "$WHEEL_NAME" "$WHEEL_SHA256"
+          download_and_verify_asset "$release_json" "$SDIST_NAME" "$SDIST_SHA256"
+          download_and_verify_asset "$release_json" SHA256SUMS "$sums_sha256"
+
+          if [ "$(jq -r .draft "$release_json")" = true ]; then
+            gh release edit "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft=false \
+              --verify-tag
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >"$release_json"
+          fi
+          test "$(jq -r .draft "$release_json")" = false
+          verify_release_metadata "$release_json" false
