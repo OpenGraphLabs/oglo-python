@@ -27,7 +27,7 @@ release_policy = _load_script("release_policy")
 workflow_policy = _load_script("check_workflows")
 
 
-def _project_file(tmp_path: Path, version: str = "0.1.0rc3") -> Path:
+def _project_file(tmp_path: Path, version: str = "0.1.0rc4") -> Path:
     path = tmp_path / "pyproject.toml"
     path.write_text(
         "[build-system]\nrequires = ['hatchling']\n\n"
@@ -37,7 +37,7 @@ def _project_file(tmp_path: Path, version: str = "0.1.0rc3") -> Path:
     return path
 
 
-def _dist_files(tmp_path: Path, version: str = "0.1.0rc3") -> Path:
+def _dist_files(tmp_path: Path, version: str = "0.1.0rc4") -> Path:
     dist = tmp_path / "dist"
     dist.mkdir()
     metadata = f"Metadata-Version: 2.4\nName: oglo\nVersion: {version}\n\n".encode()
@@ -65,18 +65,18 @@ def test_release_manifest_round_trip_and_outputs(tmp_path: Path) -> None:
         source_sha=sha,
     )
 
-    assert manifest["tag"] == "v0.1.0rc3"
+    assert manifest["tag"] == "v0.1.0rc4"
     assert manifest["source_sha"] == sha
     result = release_policy.verify_manifest(
         dist_dir=dist,
         project_file=project,
         repository="OpenGraphLabs/oglo-python",
         source_sha=sha,
-        tag="v0.1.0rc3",
+        tag="v0.1.0rc4",
     )
     assert result["prerelease"] == "true"
-    assert result["wheel_name"] == "oglo-0.1.0rc3-py3-none-any.whl"
-    assert result["sdist_name"] == "oglo-0.1.0rc3.tar.gz"
+    assert result["wheel_name"] == "oglo-0.1.0rc4-py3-none-any.whl"
+    assert result["sdist_name"] == "oglo-0.1.0rc4.tar.gz"
 
 
 def test_release_manifest_rejects_changed_distribution_bytes(tmp_path: Path) -> None:
@@ -89,7 +89,7 @@ def test_release_manifest_rejects_changed_distribution_bytes(tmp_path: Path) -> 
         repository="OpenGraphLabs/oglo-python",
         source_sha=sha,
     )
-    wheel = dist / "oglo-0.1.0rc3-py3-none-any.whl"
+    wheel = dist / "oglo-0.1.0rc4-py3-none-any.whl"
     wheel.write_bytes(wheel.read_bytes() + b"tampered")
 
     with pytest.raises(release_policy.PolicyError, match="bytes do not match"):
@@ -98,7 +98,7 @@ def test_release_manifest_rejects_changed_distribution_bytes(tmp_path: Path) -> 
             project_file=project,
             repository="OpenGraphLabs/oglo-python",
             source_sha=sha,
-            tag="v0.1.0rc3",
+            tag="v0.1.0rc4",
         )
 
 
@@ -106,15 +106,15 @@ def test_release_manifest_rejects_changed_distribution_bytes(tmp_path: Path) -> 
     ("tag", "sha"),
     [
         ("v0.1.0rc2", "a" * 40),
-        ("0.1.0rc3", "a" * 40),
-        ("v0.1.0rc3", "A" * 40),
-        ("v0.1.0rc3", "abc"),
+        ("0.1.0rc4", "a" * 40),
+        ("v0.1.0rc4", "A" * 40),
+        ("v0.1.0rc4", "abc"),
     ],
 )
 def test_source_policy_rejects_tag_or_sha_mismatch(tag: str, sha: str) -> None:
     with pytest.raises(release_policy.PolicyError):
         release_policy.validate_source(
-            version="0.1.0rc3",
+            version="0.1.0rc4",
             tag=tag,
             repository="OpenGraphLabs/oglo-python",
             source_sha=sha,
@@ -142,7 +142,7 @@ def test_manifest_rejects_forged_source_identity(tmp_path: Path) -> None:
             project_file=project,
             repository="OpenGraphLabs/oglo-python",
             source_sha=sha,
-            tag="v0.1.0rc3",
+            tag="v0.1.0rc4",
         )
 
 
