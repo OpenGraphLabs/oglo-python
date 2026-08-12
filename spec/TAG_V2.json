@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "name": "oglo-tag-v2",
+  "status": "implementation-contract-not-hardware-captured",
+  "version": 2,
+  "frame": {
+    "magic_hex": "a55b",
+    "header_format": "<2sBHIQ",
+    "header_len": 17,
+    "payload_length": "payload_bytes_only",
+    "crc32": {
+      "algorithm": "CRC-32/ISO-HDLC",
+      "field_format": "<I",
+      "field_len": 4,
+      "coverage": "header_and_payload",
+      "polynomial_reflected_hex": "edb88320",
+      "init_hex": "ffffffff",
+      "xorout_hex": "ffffffff",
+      "reference": "zlib.crc32"
+    }
+  },
+  "negotiation": {
+    "capability": "tag_ver_max",
+    "start_command": "STREAM TAG2 ON",
+    "start_ack_prefix": "#STREAM TAG2 on boot_id=",
+    "stop_command": "STREAM TAG2 OFF"
+  },
+  "boot_id": {
+    "encoding": "32 lowercase hexadecimal characters",
+    "bytes": 16,
+    "scope": "one firmware boot"
+  },
+  "vectors": [
+    {
+      "name": "tactile",
+      "frame_hex": "a55b0178000403020134120000030000001f41f51f61f71f81f91fa1fb1fc1fd1fe1ff20020120220320420520620720820920a20b20c20d20e20f21021121221321421521621721821921a21b21c21d21e21f22022122222322422522622722822922a22b22c22d22e22f23023123223323423523623723823923a23b23c23d23e23f2402412422438093232c",
+      "crc32_hex": "2c239380",
+      "expected": {
+        "type": "tactile",
+        "seq": 16909060,
+        "timestamp_us": 12884906548,
+        "t_us": 4660,
+        "counts": [500, 501, 502, 503, 504, 505, 506, 507, 508, 509, 510, 511, 512, 513, 514, 515, 516, 517, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530, 531, 532, 533, 534, 535, 536, 537, 538, 539, 540, 541, 542, 543, 544, 545, 546, 547, 548, 549, 550, 551, 552, 553, 554, 555, 556, 557, 558, 559, 560, 561, 562, 563, 564, 565, 566, 567, 568, 569, 570, 571, 572, 573, 574, 575, 576, 577, 578, 579]
+      }
+    },
+    {
+      "name": "imu",
+      "frame_hex": "a55b020c00ddccbbaa63000000040000000010000000f0a40000005cff5a96b652",
+      "crc32_hex": "52b6965a",
+      "expected": {
+        "type": "imu",
+        "seq": 2864434397,
+        "timestamp_us": 17179869283,
+        "t_us": 99,
+        "raw": [4096, 0, -4096, 164, 0, -164]
+      }
+    },
+    {
+      "name": "mag",
+      "frame_hex": "a55b030600070000007b00000005000000ba1a0000a3f2a9268919",
+      "crc32_hex": "198926a9",
+      "expected": {
+        "type": "mag",
+        "seq": 7,
+        "timestamp_us": 21474836603,
+        "t_us": 123,
+        "raw": [6842, 0, -3421]
+      }
+    }
+  ]
+}

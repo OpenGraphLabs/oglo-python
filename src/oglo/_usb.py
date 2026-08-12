@@ -13,6 +13,7 @@ and it is the same seam `replay` will use later.
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import time
@@ -22,6 +23,7 @@ from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tupl
 from . import _wire as w
 from ._config import Capabilities, Info, parse_config
 from ._status import DeviceStatus, parse_status
+from ._tag_contract import SDK_TAG_VERSION_MAX, TAG_V2, parse_tag2_ack, tag_contract
 
 #: Supported firmware 0.9.10+ uses TinyUSB on the Seeed XIAO module with
 #: ``OGLO`` / ``OpenGraphLabs`` descriptors. Discovery keys on the stable VID and
@@ -35,7 +37,7 @@ _NOT_A_GLOVE_VIDS = {0x3513}  # NIIMBOT
 
 # A previous process may have died in any mode (the browser viewer still uses BIN).
 # Stop all producers before asking for text; this is deliberately idempotent.
-_HANDSHAKE_STOP = "STREAM BIN OFF\nSTREAM TAXEL OFF\nSTREAM TAG OFF"
+_HANDSHAKE_STOP = "STREAM BIN OFF\nSTREAM TAXEL OFF\nSTREAM TAG OFF\nSTREAM TAG2 OFF"
 _CONFIG_PREFIX = "#CONFIG "
 _STATUS_PREFIX = "#STATUS "
 
@@ -44,7 +46,7 @@ class SerialLike(Protocol):
     """The slice of pyserial this module uses. A fake only has to provide this."""
 
     def read(self, size: int = 1) -> bytes: ...
-    def write(self, data: bytes) -> Optional[int]: ...
+    def write(self, data: bytes) -> int: ...
     def flush(self) -> None: ...
     def reset_input_buffer(self) -> None: ...
     def close(self) -> None: ...
@@ -71,6 +73,10 @@ class DisconnectedError(UsbError):
     out, a hub resetting -- and because pyserial's own exception for it says
     "Attempting to use a port that is not open", which tells a researcher nothing.
     """
+
+
+class SessionChangedError(UsbError):
+    """The board rebooted or changed boot identity inside one logical session."""
 
 
 class PortBusyError(UsbError):
@@ -197,7 +203,8 @@ def open_serial(device: str, baud: int = 115200, *, settle: float = 0.8) -> Seri
     Asserting it is safe. The auto-reset circuit that rule was written for belongs to
     the UART bridge, not to native USB; verified by reading `uptime_ms` across a
     reopen (127174 -> 131043 ms, still counting). **RTS stays low**, because the two
-    together are what a bridge decodes as a reset request.
+    together are what a bridge decodes as a reset request. Firmware streaming and
+    TAG2 acknowledgement are deliberately independent of RTS; the SDK keeps it low.
     """
     import serial as pyserial
 
@@ -258,6 +265,8 @@ class UsbTransport:
         self._caps: Optional[Capabilities] = None
         self._info: Optional[Info] = None
         self._streaming = False
+        self._tag_version = 1
+        self._stream_boot_id: Optional[str] = None
         self._last_seq: Dict[int, Optional[int]] = {
             w.TAG_TACTILE: None, w.TAG_IMU: None, w.TAG_MAG: None
         }
@@ -266,8 +275,17 @@ class UsbTransport:
     # -- commands ---------------------------------------------------------------
 
     def send(self, command: str) -> None:
+        payload = (command.rstrip("\n") + "\n").encode()
         try:
-            self._s.write((command.rstrip("\n") + "\n").encode())
+            written = self._s.write(payload)
+            # pyserial's contract is the number of bytes accepted. Treat a custom
+            # serial adapter returning None, zero, or a short count as an unknown
+            # command boundary: retrying could concatenate a second command onto a
+            # prefix the firmware already received.
+            if type(written) is not int or written != len(payload):
+                raise OSError(
+                    f"short serial write: accepted {written!r} of {len(payload)} bytes"
+                )
             self._s.flush()
         except Exception as exc:
             raise DisconnectedError(
@@ -304,7 +322,15 @@ class UsbTransport:
         output drained before a text reply is findable, and one that just enumerated
         may not have run `setup()` yet.
         """
+        # A reconnect is a new observation boundary. Never carry a boot identity
+        # across it if this CONFIG attempt fails or the board has rebooted.
+        self._stream_boot_id = None
+        self._config = None
+        self._info = None
+        self._caps = None
+        self._tag_version = 1
         self.send(_HANDSHAKE_STOP)
+        self._streaming = False
         if drain:
             time.sleep(drain)  # let a stopped stream finish draining before we read text
         self._s.reset_input_buffer()
@@ -359,19 +385,112 @@ class UsbTransport:
             raise UsbError("read_config() first")
         return self._caps
 
-    def start(self, *, reset_counters: bool = True) -> str:
-        """Begin the supported firmware-0.9.10+ tagged stream."""
+    @property
+    def tag_version(self) -> int:
+        """TAG framing selected for the current/most recently started stream."""
+        return self._tag_version
+
+    @property
+    def stream_boot_id(self) -> Optional[str]:
+        """CONFIG boot identity captured at stream start, when firmware provides it."""
+        return self._stream_boot_id
+
+    def start(self, *, reset_counters: bool = True, ack_timeout: float = 2.0) -> str:
+        """Begin the highest mutually supported tagged stream.
+
+        A missing/1 ``tag_ver_max`` is an explicit v1 selection. Future values are
+        capped at the newest contract this SDK actually knows rather than guessed.
+        """
+        previous_boot_id = self._stream_boot_id if not reset_counters else None
         self._buf = b""
         self._last_seq = {k: None for k in self._last_seq}
         if reset_counters:
             self.dropped = StreamCounters()
         self._s.reset_input_buffer()
-        self.send("STREAM TAG ON")
-        self._streaming = True
-        return "tagged"
+        selected = min(self.caps.tag_ver_max, SDK_TAG_VERSION_MAX)
+        contract = tag_contract(selected)
+        self._tag_version = selected
+        if contract.version == TAG_V2.version:
+            try:
+                self.send(contract.start_command)
+                self._streaming = True
+                ack_boot_id = self._read_tag2_ack(timeout=ack_timeout)
+                expected_ids = [
+                    value for value in (self.info.boot_id, previous_boot_id) if value is not None
+                ]
+                if any(value != ack_boot_id for value in expected_ids):
+                    expected = ", ".join(expected_ids)
+                    raise SessionChangedError(
+                        "TAG2 boot identity changed before stream start/resume: "
+                        f"expected {expected}, ACK reported {ack_boot_id}. "
+                        "Discard this capture boundary and reconnect."
+                    )
+                self._stream_boot_id = ack_boot_id
+            except BaseException:
+                self._abort_tag2_start()
+                raise
+        else:
+            self.send(contract.start_command)
+            self._streaming = True
+            self._stream_boot_id = self.info.boot_id
+        return contract.mode_name
+
+    def _read_tag2_ack(self, *, timeout: float) -> str:
+        """Read one split-safe TAG2 ACK and retain following binary bytes.
+
+        ``start()`` clears all input already buffered before it sends the command.
+        The first complete response after that boundary must be the exact ACK; host
+        code therefore does not need to know or whitelist firmware diagnostic logs.
+        """
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(float(timeout))
+            or timeout <= 0
+        ):
+            raise ValueError("ack_timeout must be a finite positive number of seconds")
+        deadline = time.monotonic() + float(timeout)
+        pending = bytearray()
+        while time.monotonic() < deadline:
+            chunk = self._read(8192)
+            if chunk:
+                pending += chunk
+                newline = pending.find(b"\n")
+                if newline >= 0:
+                    line = bytes(pending[:newline]).removesuffix(b"\r")
+                    trailing = bytes(pending[newline + 1:])
+                    try:
+                        boot_id = parse_tag2_ack(line)
+                    except ValueError as exc:
+                        raise UsbError(
+                            f"malformed TAG2 start ACK: {line[:96]!r} ({exc})"
+                        ) from exc
+                    self._buf = trailing
+                    return boot_id
+                # Prefix + 32 hex + optional CRLF. Anything longer without a
+                # newline cannot become the exact response later.
+                if len(pending) > len(b"#STREAM TAG2 on boot_id=") + 32 + 2:
+                    raise UsbError("malformed TAG2 start ACK: response is too long")
+            else:
+                time.sleep(0.005)
+        raise UsbError(f"no TAG2 start ACK from the board within {timeout:g}s")
+
+    def _abort_tag2_start(self) -> None:
+        """Best-effort rollback that preserves the original ACK/session error."""
+        try:
+            self.send(TAG_V2.stop_command)
+        except BaseException:
+            pass
+        self._streaming = False
+        self._stream_boot_id = None
+        self._buf = b""
+        try:
+            self._s.reset_input_buffer()
+        except BaseException:
+            pass
 
     def stop(self) -> None:
-        self.send("STREAM TAG OFF")
+        self.send(tag_contract(self._tag_version).stop_command)
         self._streaming = False
 
     def drain(self, settle: float = 0.2) -> None:
@@ -402,7 +521,9 @@ class UsbTransport:
             self._buf += chunk
         if not self._buf:
             return []
-        packets, self._buf, malformed = w.iter_tagged_diagnostic(self._buf)
+        packets, self._buf, malformed = w.iter_tagged_version_diagnostic(
+            self._buf, self._tag_version
+        )
         self.dropped.malformed_usb += malformed
         if received_ns is not None:
             packets = [replace(p, host_received_ns=received_ns) for p in packets]

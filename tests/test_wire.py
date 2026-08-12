@@ -8,6 +8,7 @@ the two catch different mistakes. See `tools/capture_vectors.py`.
 from __future__ import annotations
 
 import struct
+import zlib
 
 import pytest
 
@@ -19,6 +20,16 @@ from oglo import _wire as w
 
 def tag(ptype: int, seq: int, t_us: int, payload: bytes) -> bytes:
     return w.TAG_MAGIC + bytes([ptype]) + struct.pack("<HII", len(payload), seq, t_us) + payload
+
+
+def tag2(ptype: int, seq: int, timestamp_us: int, payload: bytes) -> bytes:
+    body = (
+        w.TAG_V2_MAGIC
+        + bytes([ptype])
+        + struct.pack("<HIQ", len(payload), seq, timestamp_us)
+        + payload
+    )
+    return body + struct.pack("<I", zlib.crc32(body))
 
 
 def ble_notify(samples, *, mag=True, seq=100, t_us=50_000) -> bytes:
@@ -145,6 +156,102 @@ def test_an_incomplete_trailing_packet_is_returned_not_dropped():
     pkts, rest = w.iter_tagged(whole + tag(w.TAG_MAG, 2, 2, b"\x00" * 6)[:10])
     assert len(pkts) == 1
     assert rest.startswith(w.TAG_MAGIC) and len(rest) == 10
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_every_partial_tactile_prefix_is_buffered_and_never_decoded(version):
+    """A fail-closed device may stop after any emitted byte of a TAG frame.
+
+    Until that same frame is completed, the host must retain the exact prefix and
+    must not publish even one sensor sample.  Reconnect discards this session-local
+    remainder before a new stream begins.
+    """
+    payload = w.pack12(COUNTS)
+    frame = (
+        tag(w.TAG_TACTILE, 41, 9000, payload)
+        if version == 1
+        else tag2(w.TAG_TACTILE, 41, (2 << 32) + 9000, payload)
+    )
+    parser = w.iter_tagged if version == 1 else w.iter_tagged_v2
+    for cut in range(1, len(frame)):
+        packets, remainder = parser(frame[:cut])
+        assert packets == [], cut
+        assert remainder == frame[:cut], cut
+
+
+# --- TAG v2 USB stream ---------------------------------------------------------
+
+
+def test_tag_v2_decodes_the_native_u64_timestamp_and_preserves_raw_t_us():
+    timestamp_us = (3 << 32) + 0x1234
+    packets, rest = w.iter_tagged_v2(
+        tag2(w.TAG_IMU, 0xAABBCCDD, timestamp_us, struct.pack("<6h", 4096, 0, -4096, 164, 0, -164))
+    )
+    assert rest == b"" and len(packets) == 1
+    packet = packets[0]
+    assert packet.seq == 0xAABBCCDD
+    assert packet.t_us == 0x1234
+    assert packet.device_time_us == timestamp_us
+    assert packet.accel == pytest.approx((1.0, 0.0, -1.0))
+
+
+def test_tag_v2_header_is_packed_little_endian_and_has_a_distinct_magic():
+    frame = tag2(w.TAG_MAG, 0x01020304, 0x0102030405060708, b"\x00" * 6)
+    assert w.TAG_V2_MAGIC == b"\xa5\x5b" != w.TAG_MAGIC
+    assert w.TAG_V2_HDR_LEN == 17
+    assert w.TAG_V2_CRC_LEN == 4
+    assert frame[:17].hex() == "a55b030600040302010807060504030201"
+    assert struct.unpack("<I", frame[-4:])[0] == zlib.crc32(frame[:-4])
+
+
+def test_v1_and_v2_decoders_fail_closed_on_the_other_magic():
+    v1 = tag(w.TAG_MAG, 1, 2, b"\x00" * 6)
+    v2 = tag2(w.TAG_MAG, 1, 2, b"\x00" * 6)
+    assert w.iter_tagged(v2)[0] == []
+    assert w.iter_tagged_v2(v1)[0] == []
+
+
+@pytest.mark.parametrize("chunk", [1, 2, 5, 16, 17, 18, 29, 256])
+def test_tag_v2_stream_survives_arbitrary_chunk_boundaries(chunk):
+    stream = b"junk" + tag2(w.TAG_IMU, 7, (2 << 32) + 99, b"\x00" * 12)
+    pending = b""
+    packets = []
+    for offset in range(0, len(stream), chunk):
+        got, pending = w.iter_tagged_v2(pending + stream[offset:offset + chunk])
+        packets.extend(got)
+    assert pending == b""
+    assert len(packets) == 1 and packets[0].device_time_us == (2 << 32) + 99
+
+
+@pytest.mark.parametrize("corrupt_at", [2, 5, 9, 17, -1])
+def test_tag_v2_crc_rejects_header_payload_or_trailer_corruption_and_recovers(corrupt_at):
+    damaged = bytearray(tag2(w.TAG_IMU, 7, (2 << 32) + 99, bytes(range(12))))
+    damaged[corrupt_at] ^= 0x01
+    good = tag2(w.TAG_MAG, 8, (2 << 32) + 100, b"\x00" * 6)
+    packets, rest, malformed = w.iter_tagged_v2_diagnostic(bytes(damaged) + good)
+    assert [packet.seq for packet in packets] == [8]
+    assert rest == b"" and malformed >= 1
+
+
+def test_tag_v2_crc_trailer_is_buffered_until_all_four_bytes_arrive():
+    frame = tag2(w.TAG_MAG, 1, (3 << 32) + 2, b"\x00" * 6)
+    packets, remainder = w.iter_tagged_v2(frame[:-1])
+    assert packets == [] and remainder == frame[:-1]
+    packets, remainder = w.iter_tagged_v2(remainder + frame[-1:])
+    assert len(packets) == 1 and remainder == b""
+
+
+def test_bad_tag_v2_header_is_counted_and_resynchronises_to_the_next_v2_frame():
+    bad = w.TAG_V2_MAGIC + bytes([w.TAG_TACTILE]) + struct.pack("<HIQ", 999, 1, 1)
+    good = tag2(w.TAG_MAG, 2, 2, b"\x00" * 6)
+    packets, rest, malformed = w.iter_tagged_v2_diagnostic(bad + good)
+    assert [packet.seq for packet in packets] == [2]
+    assert rest == b"" and malformed == 1
+
+
+def test_version_dispatch_rejects_future_tag_layouts_instead_of_guessing():
+    with pytest.raises(ValueError, match="unsupported TAG version"):
+        w.iter_tagged_version_diagnostic(b"", 3)
 
 
 # --- BLE -----------------------------------------------------------------------

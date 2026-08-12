@@ -244,14 +244,11 @@ class Demux:
     def _prepare(self, p: Any, fallback_received_ns: int) -> List[_Prepared]:
         received_ns = int(getattr(p, "host_received_ns", None) or fallback_received_ns)
         if isinstance(p, w.TactilePacket):
-            raw = p.t_us & 0xFFFFFFFF
-            return [_Prepared("tactile", p, raw, self._clock.unwrap(raw), received_ns)]
+            return [self._prepare_usb("tactile", p, received_ns)]
         if isinstance(p, w.ImuPacket):
-            raw = p.t_us & 0xFFFFFFFF
-            return [_Prepared("imu", p, raw, self._clock.unwrap(raw), received_ns)]
+            return [self._prepare_usb("imu", p, received_ns)]
         if isinstance(p, w.MagPacket):
-            raw = p.t_us & 0xFFFFFFFF
-            return [_Prepared("mag", p, raw, self._clock.unwrap(raw), received_ns)]
+            return [self._prepare_usb("mag", p, received_ns)]
         if isinstance(p, w.BleSample):
             tactile_raw = p.t_us & 0xFFFFFFFF
             tactile_us = self._clock.unwrap(tactile_raw)
@@ -274,6 +271,14 @@ class Demux:
             return out
         self.unrouted += 1
         return []
+
+    def _prepare_usb(self, kind: str, packet: Any, received_ns: int) -> _Prepared:
+        raw = int(packet.t_us) & 0xFFFFFFFF
+        full = getattr(packet, "device_time_us", None)
+        # TAG v2 carries the real u64 device clock. TAG v1 leaves this field absent,
+        # retaining the tested host-side u32 unwrap and cross-modality reorder logic.
+        device_us = int(full) if full is not None else self._clock.unwrap(raw)
+        return _Prepared(kind, packet, raw, device_us, received_ns)
 
     def _route(self, sample: _Prepared, host_t_ns: int) -> None:
         p = sample.packet

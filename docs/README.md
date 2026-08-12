@@ -11,7 +11,9 @@ issues, pull requests, tags, releases, and documentation updates belong there.
 5. [Recording and replay](04_recording.md) - episode format, two hands
 6. [Troubleshooting](05_troubleshooting.md) - start with `oglo doctor`
 7. [Test your own glove pair](07_acceptance.md) - guided public-API acceptance and reports
+8. [0.9.13 release HIL](08_release_hil.md) - named-pair DTR/TAG/reconnect/stall gate and confirmed 72-hour soak
 
 The public wire-level contract needed by SDK users is documented in the
-[data reference](02_data_reference.md) and locked by the captured vectors under
-[`spec/vectors/`](../spec/vectors/).
+[data reference](02_data_reference.md). TAG v1 is locked by the captured vectors
+under [`spec/vectors/`](../spec/vectors/); the canonical TAG v2 contract and
+synthetic vectors live in [`spec/TAG_V2.json`](../spec/TAG_V2.json).

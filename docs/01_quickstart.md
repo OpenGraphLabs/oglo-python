@@ -6,20 +6,21 @@ Download the wheel from the matching
 [GitHub Release](https://github.com/OpenGraphLabs/oglo-python/releases), then:
 
 ```bash
-python3 -m pip install ./oglo-0.1.0rc3-py3-none-any.whl
+python3 -m pip install ./oglo-0.1.0rc4-py3-none-any.whl
 ```
 
 Or install the immutable source tag:
 
 ```bash
 python3 -m pip install \
-  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc3"
+  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc4"
 ```
 
 Python 3.10 or newer is required. Supported live gloves run firmware 0.9.10 or
-newer with schema 6. The current golden firmware for new flashes is 0.9.11;
-deployed 0.9.10 gloves remain supported. `0.1.0rc3` rejects older firmware in both
-live connections and recorded episodes.
+newer with schema 6. The current signed fleet image is 0.9.12; deployed 0.9.10 and
+0.9.11 gloves remain supported. `0.1.0rc4` rejects older firmware in both live
+connections and recorded episodes. It can negotiate firmware 0.9.13 TAG v2, but
+that path is not release-qualified until physical golden vectors and HIL pass.
 
 ## Diagnose before collecting data
 

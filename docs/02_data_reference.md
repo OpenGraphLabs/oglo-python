@@ -21,10 +21,14 @@ The IMU packet cadence is not the physical sensor ODR. Firmware configures the
 accelerometer/gyroscope at 200 Hz but polls/emits its latest value on a nominal 2 ms
 schedule, so adjacent 500-packet/s records may contain the same physical measurement.
 
-The supported contract is firmware 0.9.10 or newer with schema 6. The current
-golden firmware for new flashes is 0.9.11, while deployed 0.9.10 gloves remain
-supported. `0.1.0rc3` rejects older firmware in live connections, vector capture,
-and replay instead of selecting a best-effort decoder.
+The supported baseline is firmware 0.9.10 or newer with schema 6. Deployed firmware
+that omits `tag_ver_max` explicitly stays on TAG v1. A firmware build that advertises
+`tag_ver_max >= 2` negotiates the additive TAG v2 frame with a native u64 timestamp
+and a CRC-32 trailer over its header and payload;
+the host requires `#STREAM TAG2 on boot_id=<32 lowercase hex>`, verifies that session identity
+against CONFIG and every pause/resume, and caps selection at the newest layout it knows. See
+[`spec/TAG_V2.md`](../spec/TAG_V2.md). `0.1.0rc4` rejects older firmware in live
+connections, vector capture, and replay instead of selecting a best-effort decoder.
 
 ## Identity and side
 
@@ -60,8 +64,8 @@ matters.
 | `counts` | `(5, 4, 4)` uint16, **raw 12-bit ADC, not force** |
 | `residual` | counts above the zero baseline, float32 |
 | `seq` | per-stream sample number; a gap is loss |
-| `t_us` | raw device u32 microseconds; wraps about every 71.6 minutes |
-| `device_time_us` | the same clock unwrapped to a continuous 64-bit timeline |
+| `t_us` | low u32 of device microseconds; TAG v1 wraps about every 71.6 minutes |
+| `device_time_us` | TAG v1 host-unwrapped time, or the native TAG v2 u64 timestamp |
 | `host_t` / `host_t_ns` | host monotonic time at the USB-read/BLE-notify boundary, in seconds/nanoseconds |
 | `host_received_ns` | the same observed receive boundary, kept explicitly in recordings |
 | `dropped` | samples missing since the previous frame |
@@ -146,12 +150,13 @@ and a capture-window delta.
 
 ## Timestamps
 
-`t_us` is the raw 32-bit device counter. Use `device_time_us` to order samples and
-measure spacing within one glove across rollover; both are **meaningless across two
-gloves**. The unwrapped value deliberately starts with one spare 32-bit epoch so an
-older IMU packet arriving just after a tactile rollover can still be represented
-without a negative integer. Its absolute number is therefore arbitrary; use ordering
-and differences, not its origin.
+`t_us` preserves the low 32 bits for API and recording compatibility. On TAG v1,
+`device_time_us` is unwrapped by the SDK; on TAG v2 it is the firmware's native u64
+microsecond value. Both are **meaningless across two gloves** without hardware clock
+synchronisation. The v1 unwrapped value deliberately starts with one spare 32-bit
+epoch so an older IMU packet arriving just after a tactile rollover can still be
+represented without a negative integer. Its absolute number is therefore arbitrary;
+use ordering and differences, not its origin.
 
 `host_t`, `host_t_ns` and `host_received_ns` mark the observed transport receive
 boundary. The SDK does not move samples backwards from that boundary using device
@@ -168,8 +173,9 @@ others cannot.
 
 ## Integrity limit of supported firmware
 
-The supported tagged USB frame has a magic and length but no checksum/CRC. Firmware
-0.9.11 bounds TinyUSB writes so a stopped host cannot hold the TX path forever, but
-that deadline is not payload integrity. The SDK cannot mathematically prove that
-every plausible payload bit is intact. A future protocol
-needs framed CRC protection for that guarantee.
+TAG v1 has a magic and length but no checksum/CRC. Firmware 0.9.11 and newer bound
+TinyUSB writes so a stopped host cannot hold the TX path forever, but that deadline
+is not payload integrity. TAG v2 adds a little-endian IEEE CRC-32 over the exact
+header and payload; the SDK rejects a frame whose CRC disagrees and resynchronizes
+at a later valid frame. This detects accidental frame corruption but is not an
+authentication or adversarial-tamper mechanism.

@@ -9,7 +9,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from fake_serial import CFG_V6, FakeSerial, tagged_burst
+from fake_serial import BOOT_A, BOOT_B, CFG_V6, FakeSerial, tagged_burst, tagged_v2_burst
 from oglo import record, replay
 from oglo._record import RecordError, Recorder, next_episode_dir
 from oglo._replay import ReplayError
@@ -19,7 +19,8 @@ from oglo._usb import UsbTransport
 
 
 def glove(cfg=CFG_V6, n=40, *, hz=None) -> Glove:
-    s = FakeSerial(cfg, stream=tagged_burst(n), hz=hz)
+    stream = tagged_v2_burst(n) if int(cfg.get("tag_ver_max", 1)) >= 2 else tagged_burst(n)
+    s = FakeSerial(cfg, stream=stream, hz=hz)
     t = UsbTransport(s)
     info, caps = t.read_config(interval=0.01, drain=0)
     return Glove(t, info, caps)
@@ -278,6 +279,93 @@ def test_the_metadata_identifies_the_board_and_the_firmware(tmp_path):
     meta = json.loads((recorded(tmp_path) / "meta.json").read_text())
     for key in ("serial", "side", "hw_rev", "fw_rev", "channels", "sdk_version", "schema"):
         assert meta.get(key) not in (None, "", []), f"{key} missing from meta.json"
+
+
+def test_tag_v2_recording_pins_wire_version_and_boot_identity(tmp_path):
+    config = {
+        **CFG_V6,
+        "fw_rev": "0.9.13",
+        "tag_ver_max": 2,
+        "boot_id": BOOT_A,
+    }
+    meta = json.loads((recorded(tmp_path, cfg=config, seconds=0.1) / "meta.json").read_text())
+    assert meta["tag_version"] == 2
+    assert meta["tag_ver_max"] == 2
+    assert meta["boot_id"] == BOOT_A
+    episode = replay(tmp_path / "ep_0001")
+    assert episode.info.tag_ver_max == 2
+    assert episode.info.boot_id == BOOT_A
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda meta: meta.pop("boot_id"), "TAG2 provenance requires.*boot_id"),
+        (lambda meta: meta.__setitem__("transport", "ble"), "TAG2 provenance.*non-USB"),
+    ],
+)
+def test_replay_rejects_impossible_tag2_metadata(tmp_path, mutation, message):
+    config = {
+        **CFG_V6,
+        "fw_rev": "0.9.13",
+        "tag_ver_max": 2,
+        "boot_id": BOOT_A,
+    }
+    episode = recorded(tmp_path, cfg=config, seconds=0.1)
+    meta_path = episode / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    mutation(meta)
+    meta_path.write_text(json.dumps(meta))
+
+    with pytest.raises(ReplayError, match=message):
+        replay(episode)
+
+
+def test_replay_keeps_pre_tag2_schema2_metadata_backward_compatible(tmp_path):
+    episode = recorded(tmp_path, seconds=0.1)
+    meta_path = episode / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta.pop("tag_version")
+    meta.pop("tag_ver_max")
+    meta.pop("boot_id")
+    meta_path.write_text(json.dumps(meta))
+
+    replayed = replay(episode)
+    assert replayed.info.tag_ver_max == 1
+    assert replayed.info.boot_id is None
+
+
+def test_changed_tag_v2_boot_id_fails_an_active_recording_and_seals_it_incomplete(tmp_path):
+    config = {
+        **CFG_V6,
+        "fw_rev": "0.9.13",
+        "tag_ver_max": 2,
+        "boot_id": BOOT_A,
+    }
+    g = glove(config, n=40, hz=250)
+    serial = g._t._s
+    original_handle = serial._handle
+    status_reads = 0
+
+    def change_boot_after_second_status(command):
+        nonlocal status_reads
+        original_handle(command)
+        if command.upper() == "GET STATUS":
+            status_reads += 1
+            if status_reads == 2:
+                serial.tag2_boot_id = BOOT_B
+
+    serial._handle = change_boot_after_second_status
+    try:
+        with pytest.raises(RecordError, match="boot identity changed"):
+            record(tmp_path, seconds=0.1, glove=g)
+    finally:
+        g.close()
+
+    meta = json.loads((tmp_path / "ep_0001" / "meta.json").read_text())
+    assert meta["complete"] is False
+    assert meta["stop_reason"] == "status_error"
+    assert "boot identity changed" in meta["error"]
 
 
 def test_metadata_contains_start_end_device_status_and_capture_counter_deltas(tmp_path):
@@ -825,6 +913,59 @@ def test_a_disconnect_seals_recoverable_partial_data_before_reraising(tmp_path):
     arrays = replay(ep_dir).arrays("tactile")
     assert arrays["device_time_us"].dtype == np.uint64
     assert int(arrays["device_time_us"][0]) == (1 << 32) - 16
+
+
+def test_open_but_silent_transport_seals_partial_episode_instead_of_hanging(
+    tmp_path, monkeypatch
+):
+    """An alive serial handle with empty reads must not record forever."""
+    import oglo._record as record_module
+    from oglo._config import parse_config
+    from oglo._device import SampleBatch
+    from oglo._status import DeviceStatus
+
+    info, _ = parse_config(CFG_V6)
+
+    class SilentAfterOneBatch:
+        dropped = {}
+
+        def __init__(self):
+            self.info = info
+            self.calls = 0
+
+        def status(self):
+            return DeviceStatus(
+                uptime_ms=1, seq=1, imu_ok=True, mag_ok=True, sensor_ok=True,
+                error_flags=0, deadline_misses=0, tag_dropped=0,
+                tag_short_writes=0,
+            )
+
+        def read_batch(self):
+            self.calls += 1
+            if self.calls == 1:
+                return SampleBatch(
+                    tactile=(Frame(
+                        seq=1, t_us=1, host_t=1.0,
+                        counts=np.zeros((5, 4, 4), dtype=np.uint16),
+                    ),),
+                    imu=(ImuSample(
+                        seq=1, t_us=1, host_t=1.0,
+                        accel=(0, 0, 1), gyro=(0, 0, 0),
+                    ),),
+                    mag=(MagSample(
+                        seq=1, t_us=1, host_t=1.0, field=(0, 0, 1),
+                    ),),
+                )
+            return SampleBatch()
+
+    monkeypatch.setattr(record_module, "RECORDING_STREAM_SILENCE_S", 0.01)
+    with pytest.raises(RecordError, match="recording stream stalled") as caught:
+        record(tmp_path, seconds=None, glove=SilentAfterOneBatch())
+    assert caught.value.partial_episode == tmp_path / "ep_0001"
+    meta = json.loads((tmp_path / "ep_0001" / "meta.json").read_text())
+    assert meta["complete"] is False
+    assert meta["stop_reason"] == "error"
+    assert "recording stream stalled" in meta["error"]
 
 
 def test_final_status_failure_with_data_exposes_the_sealed_partial_path(tmp_path):

@@ -4,20 +4,21 @@ This module exists so the parser layer can be tested without hardware. Everythin
 here is a function of its arguments, which is what makes the golden vectors in
 `spec/vectors/` possible: the same bytes must decode to the same values forever.
 
-The public contract is documented in `docs/02_data_reference.md` and locked by the
-captured vectors under `spec/vectors/`. The implementation was also read back from
-the current firmware source (`oglo_rdr02_tia.ino`, FW 0.9.11) rather than inferred
-from prose alone.
-
-There is one supported wire contract: firmware 0.9.10+, schema 6. USB is the tagged
-stream with packed12 tactile payloads; BLE is the packed schema-6 notification.
+The public contract is documented in `docs/02_data_reference.md` and locked by
+vectors under `spec/vectors/`. TAG v1 was read back from firmware rather than
+inferred from prose. TAG v2 has a distinct magic, a 64-bit timestamp, and a CRC;
+its canonical synthetic vectors live in `spec/TAG_V2.json` until physical release
+evidence is captured separately.
 """
 
 from __future__ import annotations
 
 import struct
+import zlib
 from dataclasses import dataclass
 from typing import Iterator, List, Optional, Sequence, Tuple
+
+from ._tag_contract import TAG_V1, TAG_V2, TagContract, tag_contract
 
 # --- constants, all confirmed against the firmware source ---------------------
 
@@ -34,9 +35,13 @@ ACCEL_LSB_PER_G = 4096.0
 GYRO_LSB_PER_DPS = 16.4
 MAG_LSB_PER_GAUSS = 6842.0
 
-# Tagged USB stream (STREAM TAG ON).
-TAG_MAGIC = b"\xa5\x5a"
-TAG_HDR_LEN = 13
+# Tagged USB stream. Preserve the original aliases for downstream code that imports
+# the v1 constants while exposing an unambiguous v2 contract alongside them.
+TAG_MAGIC = TAG_V1.magic
+TAG_HDR_LEN = TAG_V1.header.size
+TAG_V2_MAGIC = TAG_V2.magic
+TAG_V2_HDR_LEN = TAG_V2.header.size
+TAG_V2_CRC_LEN = TAG_V2.crc.size if TAG_V2.crc is not None else 0
 TAG_TACTILE, TAG_IMU, TAG_MAG = 1, 2, 3
 
 #: 80 taxels x 12 bits, the only tactile payload supported by firmware 0.9.10+.
@@ -106,6 +111,8 @@ class TactilePacket:
     counts: List[int]  # length 80, order finger,row,col
     #: Host monotonic time at the transport receive boundary, not decoder time.
     host_received_ns: Optional[int] = None
+    #: Present only for TAG v2. ``t_us`` remains its low u32 for API compatibility.
+    device_time_us: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +123,7 @@ class ImuPacket:
     gyro: Tuple[float, float, float]  # deg/s
     raw: Tuple[int, int, int, int, int, int]
     host_received_ns: Optional[int] = None
+    device_time_us: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +133,7 @@ class MagPacket:
     field: Tuple[float, float, float]  # gauss
     raw: Tuple[int, int, int]
     host_received_ns: Optional[int] = None
+    device_time_us: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -170,31 +179,72 @@ def iter_tagged_diagnostic(buf: bytes) -> Tuple[List[object], bytes, int]:
     frame. The returned count lets transports make that silent resynchronisation
     visible without changing the long-standing two-value :func:`iter_tagged` API.
     """
+    return _iter_tagged_diagnostic(buf, TAG_V1)
+
+
+def iter_tagged_v2(buf: bytes) -> Tuple[List[object], bytes]:
+    """Decode every whole TAG v2 packet in ``buf``.
+
+    TAG v2 is deliberately a separate entry point: callers must negotiate the
+    version from CONFIG and cannot make a byte stream look valid by guessing.
+    """
+    packets, remainder, _malformed = iter_tagged_v2_diagnostic(buf)
+    return packets, remainder
+
+
+def iter_tagged_v2_diagnostic(buf: bytes) -> Tuple[List[object], bytes, int]:
+    """Decode TAG v2 packets and count structurally invalid v2 headers."""
+    return _iter_tagged_diagnostic(buf, TAG_V2)
+
+
+def iter_tagged_version_diagnostic(
+    buf: bytes, version: int
+) -> Tuple[List[object], bytes, int]:
+    """Decode an already-negotiated TAG version; unsupported versions fail closed."""
+    return _iter_tagged_diagnostic(buf, tag_contract(version))
+
+
+def _iter_tagged_diagnostic(
+    buf: bytes, contract: TagContract
+) -> Tuple[List[object], bytes, int]:
     packets: List[object] = []
     malformed = 0
     i = 0
     n = len(buf)
     while True:
-        j = buf.find(TAG_MAGIC, i)
+        j = buf.find(contract.magic, i)
         if j < 0:
             # Keep one byte: the magic may straddle this read and the next.
             return packets, buf[max(i, n - 1):], malformed
-        if n - j < TAG_HDR_LEN:
+        if n - j < contract.header.size:
             return packets, buf[j:], malformed
-        ptype = buf[j + 2]
-        plen, seq, t_us = struct.unpack_from("<HII", buf, j + 3)
+        _magic, ptype, plen, seq, timestamp_us = contract.header.unpack_from(buf, j)
         if not _tag_len_ok(ptype, plen):
             malformed += 1
             i = j + 2  # bad header; resync past this magic
             continue
-        end = j + TAG_HDR_LEN + plen
-        if end > n:
+        payload_end = j + contract.header.size + plen
+        frame_end = payload_end + (contract.crc.size if contract.crc is not None else 0)
+        if frame_end > n:
             return packets, buf[j:], malformed
-        payload = buf[j + TAG_HDR_LEN:end]
-        pkt = _decode_tagged(ptype, seq, t_us, payload)
+        payload = buf[j + contract.header.size:payload_end]
+        if contract.crc is not None:
+            (expected_crc,) = contract.crc.unpack_from(buf, payload_end)
+            observed_crc = zlib.crc32(buf[j:payload_end])
+            if observed_crc != expected_crc:
+                malformed += 1
+                i = j + 2
+                continue
+        pkt = _decode_tagged(
+            ptype,
+            seq,
+            timestamp_us & 0xFFFFFFFF,
+            payload,
+            device_time_us=timestamp_us if contract.version == 2 else None,
+        )
         if pkt is not None:
             packets.append(pkt)
-        i = end
+        i = frame_end
 
 
 def _tag_len_ok(ptype: int, plen: int) -> bool:
@@ -207,9 +257,18 @@ def _tag_len_ok(ptype: int, plen: int) -> bool:
     return False
 
 
-def _decode_tagged(ptype: int, seq: int, t_us: int, payload: bytes):
+def _decode_tagged(
+    ptype: int,
+    seq: int,
+    t_us: int,
+    payload: bytes,
+    *,
+    device_time_us: Optional[int] = None,
+):
     if ptype == TAG_TACTILE:
-        return TactilePacket(seq=seq, t_us=t_us, counts=unpack12(payload))
+        return TactilePacket(
+            seq=seq, t_us=t_us, counts=unpack12(payload), device_time_us=device_time_us
+        )
     if ptype == TAG_IMU:
         raw = struct.unpack_from("<6h", payload, 0)
         return ImuPacket(
@@ -218,6 +277,7 @@ def _decode_tagged(ptype: int, seq: int, t_us: int, payload: bytes):
             accel=tuple(v / ACCEL_LSB_PER_G for v in raw[:3]),
             gyro=tuple(v / GYRO_LSB_PER_DPS for v in raw[3:]),
             raw=raw,
+            device_time_us=device_time_us,
         )
     if ptype == TAG_MAG:
         raw = struct.unpack_from("<3h", payload, 0)
@@ -226,6 +286,7 @@ def _decode_tagged(ptype: int, seq: int, t_us: int, payload: bytes):
             t_us=t_us,
             field=tuple(v / MAG_LSB_PER_GAUSS for v in raw),
             raw=raw,
+            device_time_us=device_time_us,
         )
     return None
 

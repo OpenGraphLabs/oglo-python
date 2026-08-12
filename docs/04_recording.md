@@ -97,6 +97,11 @@ the earlier rows as proof that the sensor remained alive. At a requested duratio
 boundary the recorder performs one final non-blocking read, so bytes already queued
 while the host was descheduled are included before that freshness check.
 
+During capture, three seconds without a new row from any fitted modality is a hard
+stream stall. The recorder stops immediately and seals `complete=false`; an open USB
+handle that returns empty reads forever cannot make an unattended recording appear
+to continue. This threshold is a host safety timeout, not a sensor-rate setting.
+
 On an exception, the original exception is re-raised with `partial_episode` pointing
 to that directory; the CLI prints the path.
 
@@ -104,8 +109,9 @@ This bounds SDK memory, but it is not proof of unlimited recording. A chunk flus
 a synchronous write and `fsync` on the same thread that drains USB; a slow Raspberry
 Pi SD-card stall can still cause receive loss. The SDK refuses to mark the episode
 complete when a sequence gap, overflow, malformed frame or
-sustained freshness gap is observable. Supported firmware has no end-to-end CRC or
-read-failure counters, so that is not proof that every short tail loss is detectable;
+sustained freshness gap is observable. TAG v1 has no end-to-end CRC, while TAG v2
+rejects CRC-corrupt frames; neither exposes transport read-failure counters, so that
+is not proof that every short tail loss is detectable;
 release qualification must measure it on the target storage. A hard process/power
 loss can also lose the not-yet-flushed RAM tail; there is not yet a recovery command
 that publishes the already-spooled hidden chunks.

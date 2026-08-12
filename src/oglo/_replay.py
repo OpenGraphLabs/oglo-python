@@ -23,6 +23,7 @@ import numpy as np
 
 from ._config import MIN_FIRMWARE, Info, _fw_at_least
 from ._frame import Frame, ImuSample, MagSample
+from ._tag_contract import canonical_boot_id
 from ._wire import classify_seq
 
 
@@ -276,6 +277,28 @@ def _schema2_info(meta: Dict[str, Any]) -> Info:
     rate_hz = _json_int(meta, "rate_hz", 1, 1000)
     device_dropped = _json_int(meta, "device_dropped_at_connect", 0)
 
+    # Added with TAG v2; old schema-2 episodes remain valid and explicitly mean v1.
+    tag_ver_max_value = meta.get("tag_ver_max", 1)
+    if type(tag_ver_max_value) is not int or not 1 <= tag_ver_max_value <= 255:
+        raise ReplayError("meta.json tag_ver_max must be a JSON integer in 1..255")
+    tag_ver_max = tag_ver_max_value
+    boot_id = meta.get("boot_id")
+    if boot_id is not None:
+        try:
+            boot_id = canonical_boot_id(boot_id)
+        except (TypeError, ValueError) as exc:
+            raise ReplayError(f"meta.json {exc}") from exc
+    tag_version = meta.get("tag_version")
+    if tag_version is not None:
+        if type(tag_version) is not int or not 1 <= tag_version <= 2:
+            raise ReplayError("meta.json tag_version must be null or a supported JSON integer")
+        if tag_version > tag_ver_max:
+            raise ReplayError("meta.json tag_version cannot exceed tag_ver_max")
+        if tag_version == 2 and boot_id is None:
+            raise ReplayError("meta.json TAG2 provenance requires a canonical boot_id")
+        if tag_version == 2 and transport != "usb":
+            raise ReplayError("meta.json TAG2 provenance is impossible over a non-USB transport")
+
     imu_period_value = _required(meta, "imu_period_ms")
     if imu_period_value is None:
         imu_period_ms = None
@@ -310,6 +333,8 @@ def _schema2_info(meta: Dict[str, Any]) -> Info:
         stream_thr=stream_thr,
         imu_period_ms=imu_period_ms,
         device_dropped=device_dropped,
+        tag_ver_max=tag_ver_max,
+        boot_id=boot_id,
         raw=dict(meta),
     )
 
