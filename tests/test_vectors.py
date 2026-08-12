@@ -33,6 +33,7 @@ def jsonable(obj):
         return {
             k: jsonable(v) for k, v in asdict(obj).items()
             if k != "host_received_ns"  # transport metadata, not part of a wire vector
+            and not (k == "device_time_us" and v is None)  # absent from TAG v1
         }
     if isinstance(obj, (list, tuple)):
         return [jsonable(v) for v in obj]

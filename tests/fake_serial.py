@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import struct
 import time
+import zlib
 from typing import Callable, Dict, List, Optional
 
 from oglo import _wire as w
@@ -27,10 +28,22 @@ CFG_V6 = {
 }
 
 COUNTS = [550 + (i % 17) for i in range(w.TAXELS)]
+BOOT_A = "0123456789abcdef0123456789abcdef"
+BOOT_B = "fedcba9876543210fedcba9876543210"
 
 
 def tag(ptype: int, seq: int, t_us: int, payload: bytes) -> bytes:
     return w.TAG_MAGIC + bytes([ptype]) + struct.pack("<HII", len(payload), seq, t_us) + payload
+
+
+def tag2(ptype: int, seq: int, timestamp_us: int, payload: bytes) -> bytes:
+    body = (
+        w.TAG_V2_MAGIC
+        + bytes([ptype])
+        + struct.pack("<HIQ", len(payload), seq, timestamp_us)
+        + payload
+    )
+    return body + struct.pack("<I", zlib.crc32(body))
 
 
 def tagged_burst(n_tactile: int = 4, *, start_seq: int = 0) -> bytes:
@@ -50,6 +63,33 @@ def tagged_burst(n_tactile: int = 4, *, start_seq: int = 0) -> bytes:
         if seq % 2 == 0:  # mag is a quarter of IMU
             out += tag(
                 w.TAG_MAG, (seq // 2) & 0xFFFFFFFF, t,
+                struct.pack("<3h", 3142, 678, -1107),
+            )
+    return bytes(out)
+
+
+def tagged_v2_burst(
+    n_tactile: int = 4, *, start_seq: int = 0, start_time_us: Optional[int] = None
+) -> bytes:
+    """TAG v2 shipping-ratio burst with an independently controlled u64 clock."""
+    out = bytearray()
+    first_time = start_seq * 4000 if start_time_us is None else start_time_us
+    for k in range(n_tactile):
+        seq = (start_seq + k) & 0xFFFFFFFF
+        timestamp_us = first_time + k * 4000
+        out += tag2(w.TAG_TACTILE, seq, timestamp_us, w.pack12(COUNTS))
+        for j in range(2):
+            out += tag2(
+                w.TAG_IMU,
+                (seq * 2 + j) & 0xFFFFFFFF,
+                timestamp_us + 2000 * j,
+                struct.pack("<6h", 777, -531, -3982, -5, -8, 1),
+            )
+        if seq % 2 == 0:
+            out += tag2(
+                w.TAG_MAG,
+                (seq // 2) & 0xFFFFFFFF,
+                timestamp_us,
                 struct.pack("<3h", 3142, 678, -1107),
             )
     return bytes(out)
@@ -88,9 +128,21 @@ class FakeSerial:
         # already queued at STREAM ON. Starting every synthetic refill at zero made
         # the fake manufacture duplicate/backward packets and hid bugs whenever the
         # recorder did not treat those anomalies as data-integrity failures.
+        initial_v2, _ = w.iter_tagged_v2(stream)
         initial, _ = w.iter_tagged(stream)
+        initial = initial_v2 or initial
         tactile_seqs = [p.seq for p in initial if isinstance(p, w.TactilePacket)]
         self._next_tactile_seq = ((tactile_seqs[-1] + 1) & 0xFFFFFFFF) if tactile_seqs else 0
+        tactile_times = [
+            p.device_time_us if p.device_time_us is not None else p.t_us
+            for p in initial
+            if isinstance(p, w.TactilePacket)
+        ]
+        self._next_tactile_time_us = (tactile_times[-1] + 4000) if tactile_times else 0
+        self._tag_version = 1
+        self.tag2_boot_id = (config or {}).get("boot_id") or ("0" * 32)
+        self.emit_tag2_ack = True
+        self.tag2_prelude = b""
         self._next_refill: Optional[float] = None
         self.commands: List[str] = []
         self.closed = False
@@ -163,7 +215,15 @@ class FakeSerial:
         else:
             bursts = 1
         n = self._burst_tactile * bursts
-        out = tagged_burst(n, start_seq=self._next_tactile_seq)
+        if self._tag_version == 2:
+            out = tagged_v2_burst(
+                n,
+                start_seq=self._next_tactile_seq,
+                start_time_us=self._next_tactile_time_us,
+            )
+            self._next_tactile_time_us += n * 4000
+        else:
+            out = tagged_burst(n, start_seq=self._next_tactile_seq)
         self._next_tactile_seq = (self._next_tactile_seq + n) & 0xFFFFFFFF
         return out
 
@@ -186,6 +246,7 @@ class FakeSerial:
             self._out += b"#STATUS " + json.dumps(self.status).encode() + b"\r\n"
             return
         if up == "STREAM TAG ON":
+            self._tag_version = 1
             self._streaming = True
             self._out += self._stream
             if self._burst_secs > 0:
@@ -194,6 +255,19 @@ class FakeSerial:
                 self._next_refill = time.monotonic() + self._burst_secs
             return
         if up == "STREAM TAG OFF":
+            self._streaming = False
+            return
+        if up == "STREAM TAG2 ON":
+            self._tag_version = 2
+            self._streaming = True
+            self._out += self.tag2_prelude
+            if self.emit_tag2_ack:
+                self._out += f"#STREAM TAG2 on boot_id={self.tag2_boot_id}\r\n".encode()
+            self._out += self._stream
+            if self._burst_secs > 0:
+                self._next_refill = time.monotonic() + self._burst_secs
+            return
+        if up == "STREAM TAG2 OFF":
             self._streaming = False
             return
         # Reply with the firmware's ACTUAL strings, not a generic #OK. A fake that

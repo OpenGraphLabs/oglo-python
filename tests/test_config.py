@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from fake_serial import BOOT_A
 from oglo._config import (
     Capabilities,
     ConfigError,
@@ -32,6 +33,34 @@ def test_a_current_board_parses_to_the_right_capabilities():
     assert info.serial == "OGLO-L-TEST01" and info.side == "left" and info.is_left
     assert (info.rate_hz, info.has_mag, info.zero_valid, info.stream_clean) == (250, True, True, True)
     assert (caps.values_per_sample, caps.imu_len, caps.has_mag) == (80, 25, True)
+    assert info.tag_ver_max == caps.tag_ver_max == 1
+    assert info.boot_id is None
+
+
+def test_tag_v2_capability_and_boot_identity_are_parsed_without_guessing():
+    info, caps = parse_config({**CFG_V6, "tag_ver_max": 2, "boot_id": BOOT_A})
+    assert info.tag_ver_max == caps.tag_ver_max == 2
+    assert info.boot_id == BOOT_A
+
+
+@pytest.mark.parametrize(
+    "boot_id",
+    [0, (1 << 128) - 1, BOOT_A.upper(), True, -1, "", "g" * 32],
+)
+def test_boot_identity_rejects_every_noncanonical_config_encoding(boot_id):
+    with pytest.raises(ConfigError, match="32 lowercase hexadecimal"):
+        parse_config({**CFG_V6, "tag_ver_max": 2, "boot_id": boot_id})
+
+
+def test_info_additive_tag_fields_do_not_move_the_existing_raw_positional_argument():
+    raw = {"future": 7}
+    info = Info(
+        "OGLO-L-TEST01", "left", "RDR02", "0.9.10", 250,
+        ["pinky", "ring", "middle", "index", "thumb"], True, "usb",
+        True, True, 80, None, 0, raw,
+    )
+    assert info.raw is raw
+    assert info.tag_ver_max == 1 and info.boot_id is None
 
 
 def test_the_left_hand_finger_order_comes_from_the_board():
@@ -75,6 +104,8 @@ def test_an_unknown_finger_name_says_what_the_board_actually_has():
         ({**CFG_V6, "has_mag": "false"}, "has_mag must be a JSON boolean"),
         ({**CFG_V6, "zero_valid": 1}, "zero_valid must be a JSON boolean"),
         ({**CFG_V6, "samples_per_packet": 4}, "samples_per_packet"),
+        ({**CFG_V6, "tag_ver_max": 0}, "tag_ver_max"),
+        ({**CFG_V6, "tag_ver_max": "2"}, "tag_ver_max must be a JSON integer"),
     ],
 )
 def test_configs_the_sdk_cannot_work_with_are_rejected_clearly(cfg, msg):

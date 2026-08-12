@@ -1,4 +1,4 @@
-"""Validate the single supported OGLO contract and expose its runtime state.
+"""Validate the supported OGLO schema and expose its runtime capabilities.
 
 This SDK intentionally starts at firmware 0.9.10. Older firmware and schemas are rejected at
 connect time instead of entering a compatibility mode whose semantics differ.
@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from ._tag_contract import canonical_boot_id
 from ._wire import NUM_COLS, NUM_FINGERS, ROWS_PER_FINGER, TAXELS
 
 MIN_FIRMWARE = (0, 9, 10)
@@ -55,6 +56,15 @@ class Info:
     #: the SDK knows about it.
     raw: Dict[str, Any] = field(default_factory=dict)
 
+    #: Highest USB TAG framing version the firmware says it can emit. Missing on
+    #: 0.9.10-0.9.12 and therefore explicitly defaults to v1. These additive fields
+    #: follow ``raw`` so the established positional constructor remains compatible.
+    tag_ver_max: int = 1
+
+    #: Optional boot/session identity reported by CONFIG. The only accepted wire
+    #: representation is exactly 32 lowercase hexadecimal characters.
+    boot_id: Optional[str] = None
+
     @property
     def is_left(self) -> bool:
         return self.side == "left"
@@ -67,6 +77,7 @@ class Capabilities:
     values_per_sample: int
     imu_len: int
     has_mag: bool
+    tag_ver_max: int = 1
 
 
 def parse_config(cfg: Dict[str, Any], *, transport: str = "usb") -> Tuple[Info, Capabilities]:
@@ -153,6 +164,11 @@ def parse_config(cfg: Dict[str, Any], *, transport: str = "usb") -> Tuple[Info, 
     if device_dropped < 0:
         raise ConfigError("device drop counter cannot be negative")
 
+    tag_ver_max = _optional_config_int(cfg, "tag_ver_max", default=1)
+    if not 1 <= tag_ver_max <= 255:
+        raise ConfigError(f"tag_ver_max={tag_ver_max}; expected 1..255")
+    boot_id = _optional_boot_id(cfg)
+
     info = Info(
         serial=serial,
         side=side,
@@ -167,12 +183,15 @@ def parse_config(cfg: Dict[str, Any], *, transport: str = "usb") -> Tuple[Info, 
         stream_thr=stream_thr,
         imu_period_ms=None,
         device_dropped=device_dropped,
+        tag_ver_max=tag_ver_max,
+        boot_id=boot_id,
         raw=dict(cfg),
     )
     caps = Capabilities(
         values_per_sample=vps,
         imu_len=imu_len,
         has_mag=info.has_mag,
+        tag_ver_max=tag_ver_max,
     )
     return info, caps
 
@@ -184,6 +203,23 @@ def _config_int(cfg: Dict[str, Any], name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ConfigError(f"{name} must be a JSON integer, got {value!r}")
     return value
+
+
+def _optional_config_int(cfg: Dict[str, Any], name: str, *, default: int) -> int:
+    if name not in cfg:
+        return default
+    return _config_int(cfg, name)
+
+
+def _optional_boot_id(cfg: Dict[str, Any]) -> Optional[str]:
+    """Validate CONFIG boot identity against the exact TAG2 ACK representation."""
+    if "boot_id" not in cfg:
+        return None
+    value = cfg["boot_id"]
+    try:
+        return canonical_boot_id(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _config_bool(cfg: Dict[str, Any], name: str) -> bool:

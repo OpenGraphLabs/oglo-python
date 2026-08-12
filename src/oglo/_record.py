@@ -39,6 +39,11 @@ import numpy as np
 from ._frame import Frame, ImuSample, MagSample
 
 SCHEMA = 2
+# A recording must not wait forever on a transport that remains open but emits
+# no usable sensor frames. This is deliberately far above normal USB jitter and
+# the fitted stream periods, while short enough to stop a bad episode before a
+# field operator assumes it is still collecting data.
+RECORDING_STREAM_SILENCE_S = 3.0
 
 
 class RecordError(RuntimeError):
@@ -224,6 +229,9 @@ class Recorder:
         # finalization let a later RAW/CLEAN/threshold/rate change retroactively
         # relabel earlier rows. Info is frozen, but its list/dict members are not.
         self.info = deepcopy(glove.info)
+        transport = getattr(glove, "_t", None)
+        self.tag_version = getattr(transport, "tag_version", None)
+        self.stream_boot_id = deepcopy(getattr(transport, "stream_boot_id", None))
         self.dir = Path(path)
         self._work = self.dir / f".recording-{uuid4().hex}"
         chunks = self._work / "chunks"
@@ -245,6 +253,9 @@ class Recorder:
         self.dropped_start: Optional[Dict[str, int]] = None
         self.dropped_end: Optional[Dict[str, int]] = None
         self._last_added_mono: Dict[str, Optional[float]] = {
+            "tactile": None, "imu": None, "mag": None,
+        }
+        self._last_progress_mono: Dict[str, Optional[float]] = {
             "tactile": None, "imu": None, "mag": None,
         }
 
@@ -431,6 +442,12 @@ class Recorder:
             "channels": list(info.channels),
             "has_mag": info.has_mag,
             "transport": info.transport,
+            # Wire/session provenance. A native u64 timestamp is only meaningful if
+            # the recording says it came from TAG v2, and boot identity must be the
+            # value captured at stream start rather than a later CONFIG observation.
+            "tag_version": self.tag_version if info.transport == "usb" else None,
+            "tag_ver_max": info.tag_ver_max,
+            "boot_id": self.stream_boot_id,
             # The calibration IN FORCE AT CAPTURE TIME. `stream_thr` is mutable on the
             # device, so asking the board later returns today's value, not the one
             # this data was taken under. Without it the counts cannot be interpreted.
@@ -583,32 +600,61 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
             raise
         add = {"tactile": rec.add_tactile, "imu": rec.add_imu, "mag": rec.add_mag}
 
-        def drain_once() -> bool:
+        def drain_once(progress_at: float) -> bool:
             if hasattr(glove, "read_batch"):
                 ready = glove.read_batch().as_dict()
             else:
                 ready = glove._drain_ready()
             for name, items in ready.items():
+                if items:
+                    # This timestamp is recorder-local progress, separate from
+                    # the sample's preserved host receive timestamp. Custom
+                    # adapters may use another monotonic epoch in their sample.
+                    rec._last_progress_mono[name] = progress_at
                 fn = add[name]
                 for item in items:
                     fn(item)
             return any(ready.values())
 
+        required_streams = ["tactile", "imu"] + (
+            ["mag"] if glove.info.has_mag else []
+        )
+
+        def raise_on_silent_stream(now: float) -> None:
+            """Fail closed if any fitted modality stops making progress."""
+            start = rec._started_mono
+            if start is None:
+                return
+            stale = []
+            for name in required_streams:
+                last = rec._last_progress_mono[name]
+                age = now - (last if last is not None else start)
+                if age >= RECORDING_STREAM_SILENCE_S:
+                    stale.append(f"{name}:{age:.3f}s")
+            if stale:
+                raise RecordError(
+                    "recording stream stalled for at least "
+                    f"{RECORDING_STREAM_SILENCE_S:g}s: " + ", ".join(stale)
+                )
+
         deadline = None if seconds is None else time.monotonic() + seconds
         stop_reason = "duration" if seconds is not None else "requested"
         try:
-            while deadline is None or time.monotonic() < deadline:
+            loop_now = time.monotonic()
+            while deadline is None or loop_now < deadline:
                 # Take everything each stream has ready, not one from each in turn.
                 # One-each throttles every stream to the slowest: the IMU produces
                 # twice what tactile does, so half of it would be lost to queue
                 # overflow and the episode would come back with three equal counts.
-                if not drain_once():
+                if not drain_once(loop_now):
                     time.sleep(0.0005)
+                loop_now = time.monotonic()
+                raise_on_silent_stream(loop_now)
             # A busy host can be descheduled across the deadline while USB bytes
             # accumulate. Do one final non-blocking transport read before freezing
             # the capture clock; otherwise the deadline check wins without a poll
             # and a healthy buffered tail is misreported as every modality stopping.
-            drain_once()
+            drain_once(loop_now)
         except KeyboardInterrupt:
             stop_reason = "keyboard_interrupt"
         except BaseException as exc:

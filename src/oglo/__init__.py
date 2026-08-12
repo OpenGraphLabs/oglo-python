@@ -30,11 +30,12 @@ from ._frame import (R_FRAME_FROM_IMU, CleanStreamError, Frame, ImuSample,
 from ._status import DeviceStatus, StatusError
 from ._record import RecordError, record
 from ._replay import Episode, ReplayError, replay
-from ._usb import (DisconnectedError, NoGloveFound, PortBusyError, UsbError,
-                   find_port, list_candidates, open_serial)
+from ._usb import (DisconnectedError, NoGloveFound, PortBusyError,
+                   SessionChangedError, UsbError, find_port, list_candidates,
+                   open_serial)
 from ._usb import UsbTransport as _UsbTransport
 
-__version__ = "0.1.0rc3"
+__version__ = "0.1.0rc4"
 
 __all__ = [
     "connect",
@@ -58,6 +59,7 @@ __all__ = [
     "PortBusyError",
     "NoGloveFound",
     "DisconnectedError",
+    "SessionChangedError",
     "RecordError",
     "ReplayError",
 ]

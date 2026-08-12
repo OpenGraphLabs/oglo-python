@@ -65,7 +65,7 @@ class Frame:
     """
 
     seq: int
-    #: Device microseconds since its own power-on. **Never align two gloves on this.**
+    #: Low u32 of device microseconds. **Never align two gloves on this.**
     t_us: int
     #: Host receive-boundary monotonic seconds. It relates devices approximately,
     #: but USB/BLE buffering means it is not hardware-synchronised sample time.
@@ -75,8 +75,8 @@ class Frame:
     #: device discarded itself, which is exposed by ``glove.status()``.
     dropped: int = 0
 
-    #: Device time unwrapped across the 32-bit micros() rollover. Its epoch is
-    #: deliberately arbitrary; use ordering/differences, not the absolute origin.
+    #: Native TAG v2 u64 time, or TAG v1 time unwrapped across u32 rollover. Its
+    #: origin is device-local; use ordering/differences, not cross-glove alignment.
     device_time_us: Optional[int] = None
     #: Host monotonic timestamp at the USB-read/BLE-notify boundary, in nanoseconds.
     #: Samples decoded from the same transport batch intentionally share it.

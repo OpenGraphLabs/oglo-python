@@ -120,6 +120,35 @@ def _cmd_acceptance(args: argparse.Namespace) -> int:
     return 2 if report.failed else 0
 
 
+def _cmd_hil(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from .hil import HilConfig, run_hil
+
+    config = HilConfig(
+        left_serial=args.left,
+        right_serial=args.right,
+        output_root=Path(args.output),
+        expected_firmware=args.firmware,
+        tag_seconds=args.tag_seconds,
+        reconnect_cycles=args.reconnect_cycles,
+        reconnect_seconds=args.reconnect_seconds,
+        stall_seconds=args.stall,
+        recovery_seconds=args.recovery,
+        short_seconds=args.short,
+        soak_seconds=args.soak,
+        window_seconds=args.window,
+        confirm_soak=args.confirm_soak,
+        dry_run=args.dry_run,
+        store_soak_raw=not args.no_soak_raw,
+        tag2_spec=Path(args.tag2_spec) if args.tag2_spec else None,
+    )
+    report = run_hil(config)
+    print(f"HIL result: {report.result}")
+    print(f"Evidence: {report.run_dir}")
+    return 0 if report.result in ("pass", "dry-run") else 2
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="oglo", description="OGLO tactile glove")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -212,6 +241,68 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="with --zero, bypass the typed confirmation (still requires explicit --zero)",
     )
     a.set_defaults(func=_cmd_acceptance)
+
+    h = sub.add_parser(
+        "hil",
+        help="run the observation-only 0.9.13 release HIL/soak gate for an exact pair",
+    )
+    h.add_argument("--left", required=True, help="exact logical serial, e.g. OGLO-L-00028")
+    h.add_argument("--right", required=True, help="exact logical serial, e.g. OGLO-R-00028")
+    h.add_argument(
+        "--firmware", default="0.9.13", help="exact candidate firmware required (default: 0.9.13)"
+    )
+    h.add_argument(
+        "--output", default="hil-results", help="root for a new evidence directory"
+    )
+    h.add_argument(
+        "--tag-seconds", type=parse_duration, default=3.0,
+        help="per-version, per-hand TAG capture window (default: 3s)",
+    )
+    h.add_argument(
+        "--reconnect-cycles", type=int, default=20,
+        help="close/reopen cycles per hand (default: 20)",
+    )
+    h.add_argument(
+        "--reconnect-seconds", type=parse_duration, default=0.5,
+        help="fresh TAG2 capture per reconnect (default: 500ms)",
+    )
+    h.add_argument(
+        "--stall", type=parse_duration, default=30.0,
+        help="intentional no-read interval per hand (default: 30s)",
+    )
+    h.add_argument(
+        "--recovery", type=parse_duration, default=3.0,
+        help="fresh post-stall capture (default: 3s)",
+    )
+    h.add_argument(
+        "--short", type=parse_duration, default=10.0,
+        help="simultaneous two-hand acceptance capture (default: 10s)",
+    )
+    h.add_argument(
+        "--soak", type=parse_duration, default=None,
+        help="optional simultaneous soak, e.g. 72h; omitted by default",
+    )
+    h.add_argument(
+        "--window", type=parse_duration, default=30.0,
+        help="rolling soak sidecar window (default: 30s)",
+    )
+    h.add_argument(
+        "--confirm-soak", default=None,
+        help="for >=1h, must equal LEFT_SERIAL,RIGHT_SERIAL exactly",
+    )
+    h.add_argument(
+        "--no-soak-raw", action="store_true",
+        help="retain metrics but do not save the long raw TAG2 byte streams",
+    )
+    h.add_argument(
+        "--dry-run", action="store_true",
+        help="validate guardrails and write the plan without opening any serial port",
+    )
+    h.add_argument(
+        "--tag2-spec", default=None,
+        help="canonical TAG_V2.json (normally resolved from this source checkout)",
+    )
+    h.set_defaults(func=_cmd_hil)
 
     args = p.parse_args(argv)
     try:

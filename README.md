@@ -9,10 +9,11 @@ Python access to the OGLO five-finger tactile glove: 80 taxels per hand at a
 nominal 250 Hz over USB, plus accelerometer, gyroscope, and optional magnetometer
 streams.
 
-> **Release candidate:** `0.1.0rc3` is a USB-first research SDK for firmware
-> 0.9.10 or newer with CONFIG schema 6. The current golden firmware for new flashes
-> is 0.9.11; deployed 0.9.10 gloves remain supported. Older firmware is rejected
-> for both live connections and replay. BLE is experimental and not release-qualified.
+> **Release candidate:** `0.1.0rc4` is a USB-first research SDK for firmware
+> 0.9.10 or newer with CONFIG schema 6. The current signed fleet image is 0.9.12;
+> deployed 0.9.10 and 0.9.11 gloves remain supported. Firmware 0.9.13 adds
+> negotiated TAG v2/u64 support, but that path remains unqualified until its final
+> signed artifact is captured on physical hardware. BLE is experimental.
 
 This public repository is the sole canonical source for the SDK. Development,
 issues, pull requests, tags, and releases all belong under
@@ -34,14 +35,14 @@ private or staging repository is an active upstream.
 Download the wheel from the matching [GitHub Release](https://github.com/OpenGraphLabs/oglo-python/releases), then install it locally:
 
 ```bash
-python3 -m pip install ./oglo-0.1.0rc3-py3-none-any.whl
+python3 -m pip install ./oglo-0.1.0rc4-py3-none-any.whl
 ```
 
 To install the tagged source instead:
 
 ```bash
 python3 -m pip install \
-  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc3"
+  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc4"
 ```
 
 Python 3.10 or newer is required.
@@ -57,7 +58,7 @@ oglo doctor
 `doctor` measures the attached device and host rather than assuming the nominal
 rates. Resolve any reported identity, firmware, loss, or throughput failure before
 recording data. Upgrade any live glove that reports firmware older than 0.9.10 or
-anything other than schema 6. New flashes should use the current 0.9.11 golden image.
+anything other than schema 6. New flashes should use the current signed 0.9.12 image.
 
 ## Read one glove
 

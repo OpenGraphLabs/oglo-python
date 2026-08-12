@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "oglo"
-version = "0.1.0rc3"
+version = "0.1.0rc4"
 description = "Python SDK for the OGLO five-finger tactile glove"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -51,6 +51,9 @@ exclude = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/oglo"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"spec/TAG_V2.json" = "oglo/spec/TAG_V2.json"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

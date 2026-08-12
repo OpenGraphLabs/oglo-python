@@ -394,6 +394,36 @@ def test_usb_device_time_unwraps_the_32_bit_rollover_without_inventing_host_spac
     assert first.host_received_ns == second.host_received_ns
 
 
+def test_v1_unwrapper_can_cross_multiple_rollovers_when_each_observation_is_unambiguous():
+    from oglo._stream import DeviceTimeUnwrapper
+
+    clock = DeviceTimeUnwrapper()
+    raw = [0xFFFFFFF0, 0x20, 0x70000020, 0xE0000020, 0x40000020]
+    unwrapped = [clock.unwrap(value) for value in raw]
+    assert all(b > a for a, b in zip(unwrapped, unwrapped[1:]))
+    assert unwrapped[-1] - unwrapped[0] == (1 << 32) + 0x40000030
+
+
+def test_tag_v2_uses_the_wire_u64_clock_across_multiple_v1_rollover_epochs():
+    from fake_serial import BOOT_A, tagged_v2_burst
+
+    start = (3 << 32) - 4000
+    config = {
+        **CFG_V6,
+        "fw_rev": "0.9.13",
+        "tag_ver_max": 2,
+        "boot_id": BOOT_A,
+    }
+    g, _ = make(
+        cfg=config,
+        stream=tagged_v2_burst(3, start_time_us=start),
+        chunk=8192,
+    )
+    tactile = g.read_batch(timeout=1.0).tactile[:3]
+    assert [frame.t_us for frame in tactile] == [0xFFFFF060, 0, 4000]
+    assert [frame.device_time_us for frame in tactile] == [start, 3 << 32, (3 << 32) + 4000]
+
+
 def test_ble_imu_uses_the_signed_imu_capture_offset_not_the_tactile_time():
     from oglo import _wire as w
 
