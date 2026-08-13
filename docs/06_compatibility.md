@@ -9,16 +9,18 @@ physical gloves. They are different claims.
 | --- | --- |
 | Python | 3.10 or newer |
 | Minimum supported firmware | 0.9.10 |
-| Current golden firmware for new flashes | 0.9.11 |
+| Current golden firmware for new flashes | 0.9.12 |
 | CONFIG schema | exactly 6 |
 | USB tagged stream | supported and hardware-validated |
 | BLE schema-6 notifications | experimental; parser-tested, not release-qualified |
 | Firmware older than 0.9.10 | rejected for connect, replay, and vector capture |
 
 `0.1.0rc3` has one firmware floor: 0.9.10. Live devices, checked-in vectors, and
-recorded episodes below that floor fail closed. Firmware 0.9.11 keeps schema 6 and
-the same SDK wire contract while adding a bounded TinyUSB write path; it is the
-current image for new flashes. Deployed 0.9.10 gloves remain compatible.
+recorded episodes below that floor fail closed. Firmware 0.9.11 added a bounded
+TinyUSB write path and 0.9.12 preserves it while adding signed USB application
+update; both keep schema 6 and the identical SDK wire contract, so the SDK has no
+upper firmware bound. 0.9.12 is the current image for new flashes. Deployed
+0.9.10 and 0.9.11 gloves remain compatible.
 
 ## Physical validation for this release candidate
 

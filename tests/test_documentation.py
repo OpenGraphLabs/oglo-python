@@ -27,7 +27,7 @@ def test_current_docs_match_the_release_and_firmware_floor():
     assert "pair_id" not in text
     assert "allow_unpaired" not in text
     assert "allow-unpaired" not in text
-    assert "0.9.11" in text
+    assert "0.9.12" in text
     assert "oglo-0.1.0rc3-py3-none-any.whl" in text
     assert "@v0.1.0rc3" in text
 
