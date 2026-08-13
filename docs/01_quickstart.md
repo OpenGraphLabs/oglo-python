@@ -17,8 +17,8 @@ python3 -m pip install \
 ```
 
 Python 3.10 or newer is required. Supported live gloves run firmware 0.9.10 or
-newer with schema 6. The current golden firmware for new flashes is 0.9.11;
-deployed 0.9.10 gloves remain supported. `0.1.0rc3` rejects older firmware in both
+newer with schema 6. The current golden firmware for new flashes is 0.9.12;
+deployed 0.9.10 and 0.9.11 gloves remain supported. `0.1.0rc3` rejects older firmware in both
 live connections and recorded episodes.
 
 ## Diagnose before collecting data

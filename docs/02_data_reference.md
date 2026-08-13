@@ -22,8 +22,8 @@ accelerometer/gyroscope at 200 Hz but polls/emits its latest value on a nominal 
 schedule, so adjacent 500-packet/s records may contain the same physical measurement.
 
 The supported contract is firmware 0.9.10 or newer with schema 6. The current
-golden firmware for new flashes is 0.9.11, while deployed 0.9.10 gloves remain
-supported. `0.1.0rc3` rejects older firmware in live connections, vector capture,
+golden firmware for new flashes is 0.9.12, while deployed 0.9.10 and 0.9.11 gloves
+remain supported. `0.1.0rc3` rejects older firmware in live connections, vector capture,
 and replay instead of selecting a best-effort decoder.
 
 ## Identity and side
@@ -169,7 +169,8 @@ others cannot.
 ## Integrity limit of supported firmware
 
 The supported tagged USB frame has a magic and length but no checksum/CRC. Firmware
-0.9.11 bounds TinyUSB writes so a stopped host cannot hold the TX path forever, but
+0.9.11 and newer bound TinyUSB writes so a stopped host cannot hold the TX path
+forever, but
 that deadline is not payload integrity. The SDK cannot mathematically prove that
 every plausible payload bit is intact. A future protocol
 needs framed CRC protection for that guarantee.

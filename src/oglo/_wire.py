@@ -6,7 +6,7 @@ here is a function of its arguments, which is what makes the golden vectors in
 
 The public contract is documented in `docs/02_data_reference.md` and locked by the
 captured vectors under `spec/vectors/`. The implementation was also read back from
-the current firmware source (`oglo_rdr02_tia.ino`, FW 0.9.11) rather than inferred
+the current firmware source (`oglo_rdr02_tia.ino`, FW 0.9.12) rather than inferred
 from prose alone.
 
 There is one supported wire contract: firmware 0.9.10+, schema 6. USB is the tagged

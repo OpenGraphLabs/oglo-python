@@ -11,7 +11,7 @@ streams.
 
 > **Release candidate:** `0.1.0rc3` is a USB-first research SDK for firmware
 > 0.9.10 or newer with CONFIG schema 6. The current golden firmware for new flashes
-> is 0.9.11; deployed 0.9.10 gloves remain supported. Older firmware is rejected
+> is 0.9.12; deployed 0.9.10 and 0.9.11 gloves remain supported. Older firmware is rejected
 > for both live connections and replay. BLE is experimental and not release-qualified.
 
 This public repository is the sole canonical source for the SDK. Development,
@@ -57,7 +57,7 @@ oglo doctor
 `doctor` measures the attached device and host rather than assuming the nominal
 rates. Resolve any reported identity, firmware, loss, or throughput failure before
 recording data. Upgrade any live glove that reports firmware older than 0.9.10 or
-anything other than schema 6. New flashes should use the current 0.9.11 golden image.
+anything other than schema 6. New flashes should use the current 0.9.12 golden image.
 
 ## Read one glove
 
