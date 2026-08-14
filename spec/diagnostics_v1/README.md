@@ -17,3 +17,9 @@ throughput PASS: real hardware jitter and throughput capture remain required.
 
 Regenerate with `python tools/generate_diagnostics_contract.py`; verify without
 writing with `python tools/generate_diagnostics_contract.py --check`.
+
+This directory is the only TAG2 protocol source of truth. Any SDK-facing
+projection such as `spec/TAG_V2.json` must pin this manifest's
+`contract_sha256` and `vector_set_sha256` and reproduce its header, sequence,
+and typed-binary negotiation fields. An independent or ASCII-ACK TAG2 contract
+is a conformance failure.

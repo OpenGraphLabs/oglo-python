@@ -240,3 +240,22 @@ def test_start_ack_negotiation_is_derived_from_parsed_bytes():
         value = outcomes[name]
         assert not value["accepted"] and value["fail_closed"] and value["no_tag1_fallback"]
         assert value["reason"] == reason
+
+
+def test_competing_tag2_projection_pins_canonical_contract():
+    """A stacked SDK branch must not introduce a second TAG2 source of truth."""
+    projection_path = ROOT / "spec" / "TAG_V2.json"
+    if not projection_path.exists():
+        return
+    projection = json.loads(projection_path.read_text())
+    manifest = json.loads((SPEC / "manifest.json").read_text())
+    contract = json.loads((SPEC / "contract.json").read_text())
+    assert projection["contract_sha256"] == manifest["contract_sha256"]
+    assert projection["vector_set_sha256"] == manifest["vector_set_sha256"]
+    assert projection["frame"]["magic_hex"] == contract["tag2"]["magic_hex"]
+    assert projection["frame"]["header_format"] == contract["tag2"]["header_format"]
+    assert projection["frame"]["header_len"] == contract["tag2"]["header_len"]
+    assert projection["sequence_scope"] == contract["tag2"]["sequence_scope"]
+    assert projection["negotiation"]["start_command"] == contract["admission"]["commands"]["start"]
+    assert projection["negotiation"]["start_ack_encoding"] == "typed_binary_crc"
+    assert "start_ack_prefix" not in projection["negotiation"]
