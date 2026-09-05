@@ -15,13 +15,56 @@ Two refusals are deliberate and are enforced here rather than documented and hop
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Any, Optional, Sequence, Tuple
 
 import numpy as np
 
 from ._wire import NUM_COLS, NUM_FINGERS, ROWS_PER_FINGER, TAXELS
 
 SHAPE = (NUM_FINGERS, ROWS_PER_FINGER, NUM_COLS)
+
+#: Canonical finger order, thumb first. `Info.channels` is the WIRE order, which is
+#: this list reversed on a left glove.
+FINGERS = ("thumb", "index", "middle", "ring", "pinky")
+
+
+def oriented_counts(counts: np.ndarray, channels: Sequence[str], side: str) -> np.ndarray:
+    """`counts` re-indexed to one physical layout for both hands.
+
+    Returns a new `(5, 4, 4)` array indexed `[finger][row][col]` where finger is the
+    canonical order thumb, index, middle, ring, pinky whichever hand this is, and
+    `col 0` is the fingertip for every finger. `Frame.counts` itself is never
+    touched: it stays exactly what the device sent, in wire order.
+
+    Two facts go in, both measured rather than assumed:
+
+    - Finger order comes from `channels`, the wire order, which a left glove reports
+      pinky-first.
+    - The left thumb's flex (THUMB_L) is the one SKU whose COL electrodes run the
+      other way along the finger. Read out of the Rev-T KiCad sources (COL0 at
+      Y=3.30 on THUMB_L, COL3 at Y=2.30..3.30 on every other SKU) and measured
+      2026-09-05 on OGLO-L-00028: a thumb-tip press peaks in col 3 of that finger
+      while every other fingertip peaks in col 0. So that one finger's col axis is
+      reversed here.
+
+    The `row` axis passes through as scanned. Which end of it is the thumb side has
+    not been measured on either hand, so nothing here claims to know.
+    """
+    if side not in ("left", "right"):
+        raise ValueError(f"side must be 'left' or 'right', got {side!r}")
+    names = [str(c) for c in channels]
+    if sorted(names) != sorted(FINGERS):
+        raise ValueError(f"channels must name each of {FINGERS} exactly once, got {names}")
+    grid = np.asarray(counts)
+    if grid.shape != SHAPE:
+        raise ValueError(f"counts must be {SHAPE}, got {grid.shape}")
+    out = np.empty_like(grid)
+    for dst, name in enumerate(FINGERS):
+        block = grid[names.index(name)]
+        if side == "left" and name == "thumb":
+            block = block[:, ::-1]
+        out[dst] = block
+    return out
 
 
 #: Sensor axes -> the landmark frame (+Z out of the module side, +X toward USB-C,
@@ -109,6 +152,14 @@ class Frame:
     def finger(self, index: int) -> np.ndarray:
         """The 4x4 grid for one finger, by wire position."""
         return self.counts[index]
+
+    def oriented(self, info: Any) -> np.ndarray:
+        """`counts` in canonical finger order with `col 0` at every fingertip.
+
+        `info` is the glove's `Info` (or an `Episode`'s): its `channels` and `side`
+        are what decide the layout. See `oriented_counts`.
+        """
+        return oriented_counts(self.counts, info.channels, info.side)
 
     def __post_init__(self) -> None:
         _validate_wire_header(self.seq, self.t_us)
