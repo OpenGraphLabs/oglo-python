@@ -5,7 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from oglo._frame import SHAPE, CleanStreamError, Frame, ImuSample, MagSample, counts_to_grid
+from oglo._frame import (FINGERS, SHAPE, CleanStreamError, Frame, ImuSample, MagSample,
+                         counts_to_grid, oriented_counts)
 
 
 def grid(fill=550):
@@ -136,3 +137,67 @@ def test_orientation_still_raises_because_the_magnetometer_is_unmeasured():
     s = ImuSample(seq=1, t_us=1, host_t=1.0, accel=(0, 0, -1), gyro=(0, 0, 0))
     with pytest.raises(NotImplementedError):
         _ = s.orientation
+
+
+RIGHT_WIRE = ["thumb", "index", "middle", "ring", "pinky"]
+LEFT_WIRE = ["pinky", "ring", "middle", "index", "thumb"]
+
+
+def _wire_grid():
+    # Every taxel carries its own wire index, so any re-indexing is visible.
+    return counts_to_grid(list(range(80)))
+
+
+def test_a_right_glove_is_already_in_physical_order():
+    g = _wire_grid()
+    assert np.array_equal(oriented_counts(g, RIGHT_WIRE, "right"), g)
+
+
+def test_a_left_glove_gets_its_fingers_put_back_thumb_first():
+    g = _wire_grid()
+    phys = oriented_counts(g, LEFT_WIRE, "left")
+    # wire slot 4 is the left thumb; index/middle/ring/pinky come straight across
+    assert np.array_equal(phys[1], g[3]) and np.array_equal(phys[2], g[2])
+    assert np.array_equal(phys[3], g[1]) and np.array_equal(phys[4], g[0])
+
+
+def test_only_the_left_thumb_has_its_col_axis_reversed():
+    g = _wire_grid()
+    phys = oriented_counts(g, LEFT_WIRE, "left")
+    thumb_wire = g[4]
+    assert np.array_equal(phys[0], thumb_wire[:, ::-1])
+    assert phys[0][0, 0] == thumb_wire[0, 3] and phys[0][3, 3] == thumb_wire[3, 0]
+    # rows are untouched, and no other finger is flipped
+    assert np.array_equal(phys[0][:, 0], thumb_wire[:, 3])
+    assert np.array_equal(phys[4], g[0])
+
+
+def test_a_right_thumb_is_not_flipped():
+    g = _wire_grid()
+    assert np.array_equal(oriented_counts(g, RIGHT_WIRE, "right")[0], g[0])
+
+
+def test_oriented_counts_never_writes_back_into_the_wire_grid():
+    g = _wire_grid()
+    before = g.copy()
+    out = oriented_counts(g, LEFT_WIRE, "left")
+    out[:] = 0
+    assert np.array_equal(g, before)
+
+
+def test_oriented_counts_refuses_an_unknown_side_or_finger_list():
+    g = _wire_grid()
+    with pytest.raises(ValueError, match="side"):
+        oriented_counts(g, RIGHT_WIRE, "both")
+    with pytest.raises(ValueError, match="channels"):
+        oriented_counts(g, ["thumb", "index", "middle", "ring", "ring"], "right")
+
+
+def test_a_frame_orients_itself_from_the_glove_info():
+    class Info:
+        channels = LEFT_WIRE
+        side = "left"
+
+    f = Frame(seq=1, t_us=10, host_t=0.0, counts=_wire_grid())
+    assert np.array_equal(f.oriented(Info()), oriented_counts(f.counts, LEFT_WIRE, "left"))
+    assert tuple(FINGERS) == ("thumb", "index", "middle", "ring", "pinky")

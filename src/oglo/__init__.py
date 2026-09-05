@@ -25,8 +25,7 @@ from typing import List, Optional, Tuple
 
 from ._config import Info
 from ._device import CalibrationLocked, DeviceError, Glove, SampleBatch
-from ._frame import (R_FRAME_FROM_IMU, CleanStreamError, Frame, ImuSample,
-                     MagSample)
+from ._frame import (FINGERS, R_FRAME_FROM_IMU, CleanStreamError, Frame, ImuSample, MagSample, oriented_counts)
 from ._status import DeviceStatus, StatusError
 from ._record import RecordError, record
 from ._replay import Episode, ReplayError, replay
@@ -47,6 +46,8 @@ __all__ = [
     "MagSample",
     "Info",
     "R_FRAME_FROM_IMU",
+    "FINGERS",
+    "oriented_counts",
     "Episode",
     "DeviceError",
     "CalibrationLocked",

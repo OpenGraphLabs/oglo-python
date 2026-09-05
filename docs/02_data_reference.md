@@ -77,6 +77,27 @@ left   ['pinky', 'ring', 'middle', 'index', 'thumb']
 A hardcoded list mislabels every left-hand dataset, and the numbers look perfectly
 fine while it happens.
 
+### One physical layout for both hands: `oriented_counts`
+
+```python
+from oglo import oriented_counts
+phys = oriented_counts(frame.counts, g.info.channels, g.info.side)   # or frame.oriented(g.info)
+```
+
+`phys` is `(5, 4, 4)` in the canonical order thumb, index, middle, ring, pinky for
+either hand, with `col 0` at the fingertip of every finger. `frame.counts` is left
+exactly as the device sent it.
+
+The second thing it fixes is not obvious from the wire: the left thumb's flex
+(THUMB_L) is the one sensor SKU whose COL electrodes run the other way along the
+finger, so on a left glove that finger's fingertip is `col 3` while every other
+fingertip is `col 0`. This was read out of the Rev-T KiCad sources and measured
+on OGLO-L-00028 on 2026-09-05. Training on raw `counts` without this flip teaches a
+model that the left thumb points backwards.
+
+The `row` axis passes through as scanned. Which end of it faces the thumb has not
+been measured on either hand, so the SDK does not claim to know.
+
 **An untouched taxel reads around 550, not 0.** Use `residual`, or turn on a clean
 stream. See [calibration](03_calibration.md).
 

@@ -6,6 +6,13 @@ All notable user-facing changes are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- `oriented_counts()` and `Frame.oriented(info)`: the tactile grid in canonical
+  thumb-first finger order with `col 0` at every fingertip, for either hand. The
+  left thumb's flex runs its COL electrodes the other way along the finger, so its
+  col axis is reversed there; raw `counts` stay in wire order
+
 ## [0.1.0rc3] - 2026-08-09
 
 ### Changed
