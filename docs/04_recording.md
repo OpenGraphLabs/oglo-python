@@ -11,6 +11,19 @@ oglo replay out/ep_0001
 
 Episodes are numbered and never overwritten.
 
+The candidate accepts `stop_event=threading.Event()` on `record()`.
+Another thread can call that event's `set()` to stop capture and seal the files
+without killing the process. Metadata records `stop_reason="cancelled"`; a healthy
+shortened capture can be complete, but it does not prove the requested duration.
+The acceptance runner rejects cancelled captures as duration/soak evidence.
+
+The development recorder also detects a fitted stream that delivers no samples for
+over five seconds, including a completely silent USB endpoint. It raises
+`RecordError` and preserves received data as an incomplete episode. Detection runs
+after polling available bytes, so a host scheduling pause alone does not trigger
+it. Final status collection and file publication can take additional time; this
+guard detects a stalled capture but does not repair the underlying USB fault.
+
 ## Reading one back
 
 ```python
@@ -130,3 +143,10 @@ both clocks, and the host loss counters. It also carries start/end `GET STATUS`,
 device counter deltas, and `complete`/`error`. Without the threshold the counts cannot
 be interpreted later, since the device's current value is not the one the data was
 taken under.
+
+For firmware 0.9.16 or newer, `tag_short_writes` records USB backpressure attempts
+that firmware retries. The counter remains in metadata and its start/end/delta
+consistency is checked during replay, but a positive value alone does not make a
+capture incomplete. Device drops, missed deadlines, sequence gaps, malformed data
+and host overflow still invalidate a capture. Older firmware retains the stricter
+short-write rejection.

@@ -115,6 +115,7 @@ def _cmd_acceptance(args: argparse.Namespace) -> int:
         interactive_seconds=args.interactive_seconds,
         taxel_delta=args.taxel_delta,
         assume_yes=args.yes,
+        single=args.single,
     )
     report = run_acceptance(config)
     return 2 if report.failed else 0
@@ -147,7 +148,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     a = sub.add_parser(
         "acceptance",
-        help="test a physical left/right USB pair and write JSON/Markdown evidence",
+        help="test a USB glove pair (or --single) and write JSON/Markdown evidence",
+    )
+    a.add_argument(
+        "--single", action="store_true",
+        help="test exactly one attached USB glove; leave two-hand checks unqualified",
     )
     a.add_argument(
         "--output",

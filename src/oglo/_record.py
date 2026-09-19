@@ -25,6 +25,7 @@ import json
 import math
 import os
 import shutil
+import threading
 import time
 import zipfile
 from copy import deepcopy
@@ -37,8 +38,10 @@ from uuid import uuid4
 import numpy as np
 
 from ._frame import Frame, ImuSample, MagSample
+from ._config import _fw_at_least
 
 SCHEMA = 2
+_STREAM_STALL_TIMEOUT_S = 5.0
 
 
 class RecordError(RuntimeError):
@@ -512,12 +515,16 @@ def _atomic_text(path: Path, text: str) -> None:
 
 
 def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
-           serial: Optional[str] = None) -> Path:
+           serial: Optional[str] = None, stop_event: Optional[threading.Event] = None) -> Path:
     """Capture an episode. Returns the directory written.
 
     With no `glove`, one is opened and closed for you. `seconds=None` records until
     interrupted, which is what a person at a keyboard wants; a script should pass a
-    number.
+    number. A ``threading.Event`` passed as ``stop_event`` allows another thread
+    to request a clean stop. Its episode has ``stop_reason="cancelled"`` and may
+    be shorter than ``seconds``; data-integrity checks still apply.
+    If a fitted stream delivers no samples for five seconds, capture fails and
+    preserves any partial data instead of waiting for the requested duration.
     """
     if seconds is not None and (
         isinstance(seconds, bool)
@@ -526,6 +533,8 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
         or float(seconds) <= 0
     ):
         raise ValueError("seconds must be None or a finite real number greater than zero")
+    if stop_event is not None and not isinstance(stop_event, threading.Event):
+        raise TypeError("stop_event must be a threading.Event or None")
     own = glove is None
     if own:
         from . import connect
@@ -583,7 +592,7 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
             raise
         add = {"tactile": rec.add_tactile, "imu": rec.add_imu, "mag": rec.add_mag}
 
-        def drain_once() -> bool:
+        def drain_once() -> List[str]:
             if hasattr(glove, "read_batch"):
                 ready = glove.read_batch().as_dict()
             else:
@@ -592,17 +601,39 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
                 fn = add[name]
                 for item in items:
                     fn(item)
-            return any(ready.values())
+            return [name for name, items in ready.items() if items]
 
         deadline = None if seconds is None else time.monotonic() + seconds
         stop_reason = "duration" if seconds is not None else "requested"
+        required = ("tactile", "imu") + (("mag",) if rec.info.has_mag else ())
+        last_progress = {name: rec._started_mono for name in required}
         try:
             while deadline is None or time.monotonic() < deadline:
+                if stop_event is not None and stop_event.is_set():
+                    stop_reason = "cancelled"
+                    break
                 # Take everything each stream has ready, not one from each in turn.
                 # One-each throttles every stream to the slowest: the IMU produces
                 # twice what tactile does, so half of it would be lost to queue
                 # overflow and the episode would come back with three equal counts.
-                if not drain_once():
+                received = drain_once()
+                # Poll before checking age: a descheduled host may have healthy
+                # bytes waiting in the OS buffer. A silent endpoint (or just one
+                # missing modality) must not leave a long/indefinite capture
+                # waiting until its eventual final-status check.
+                now = time.monotonic()
+                for name in received:
+                    last_progress[name] = now
+                stalled = [
+                    name for name in required
+                    if now - last_progress[name] > _STREAM_STALL_TIMEOUT_S
+                ]
+                if stalled:
+                    raise RecordError(
+                        "stream stalled: " + ", ".join(stalled)
+                        + f"; no samples received for over {_STREAM_STALL_TIMEOUT_S:g}s"
+                    )
+                if not received:
                     time.sleep(0.0005)
             # A busy host can be descheduled across the deadline while USB bytes
             # accumulate. Do one final non-blocking transport read before freezing
@@ -664,7 +695,7 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
         end_issues = _status_issues(end_status, has_mag=bool(glove.info.has_mag))
         if device_drops:
             end_issues.append(f"new_tag_dropped={device_drops}")
-        if short_writes:
+        if short_writes and not _fw_at_least(glove.info.fw_rev, (0, 9, 16)):
             end_issues.append(f"new_tag_short_writes={short_writes}")
         if deadline_misses:
             end_issues.append(f"new_deadline_misses={deadline_misses}")

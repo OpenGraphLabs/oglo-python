@@ -9,10 +9,16 @@ Python access to the OGLO five-finger tactile glove: 80 taxels per hand at a
 nominal 250 Hz over USB, plus accelerometer, gyroscope, and optional magnetometer
 streams.
 
-> **Release candidate:** `0.1.0rc3` is a USB-first research SDK for firmware
-> 0.9.10 or newer with CONFIG schema 6. The current golden firmware for new flashes
-> is 0.9.12; deployed 0.9.10 and 0.9.11 gloves remain supported. Older firmware is rejected
-> for both live connections and replay. BLE is experimental and not release-qualified.
+> **Candidate preparation:** this checkout is `0.1.0rc4`, a USB-first research SDK
+> for firmware 0.9.10 or newer with CONFIG schema 6. Sustained USB capture on
+> firmware 0.9.16 has a reproduced failure and remains unqualified. The SDK
+> improvements below do not repair device firmware. See the
+> [candidate status and remaining checks](docs/08_candidate_status.md).
+
+The candidate includes tactile orientation helpers, capability-gated USB keepalive,
+bounded command writes, five-second recording stall detection, explicit DTR release
+on close, and single-glove acceptance. The latest published release, `0.1.0rc3`,
+predates these changes. BLE remains experimental.
 
 This public repository is the sole canonical source for the SDK. Development,
 issues, pull requests, tags, and releases all belong under
@@ -31,18 +37,23 @@ private or staging repository is an active upstream.
 
 ## Install
 
-Download the wheel from the matching [GitHub Release](https://github.com/OpenGraphLabs/oglo-python/releases), then install it locally:
+For candidate evaluation, install the prepared wheel supplied with its checksum:
 
 ```bash
-python3 -m pip install ./oglo-0.1.0rc3-py3-none-any.whl
+python3 -m pip install ./oglo-0.1.0rc4-py3-none-any.whl
 ```
 
-To install the tagged source instead:
+To evaluate the current source before a release is published:
 
 ```bash
 python3 -m pip install \
-  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc3"
+  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@main"
 ```
+
+Use the exact commit and artifact hashes from the handoff manifest for repeatable
+installation. Published versions are listed under
+[GitHub Releases](https://github.com/OpenGraphLabs/oglo-python/releases); a draft
+candidate is not a published release.
 
 Python 3.10 or newer is required.
 
@@ -57,7 +68,8 @@ oglo doctor
 `doctor` measures the attached device and host rather than assuming the nominal
 rates. Resolve any reported identity, firmware, loss, or throughput failure before
 recording data. Upgrade any live glove that reports firmware older than 0.9.10 or
-anything other than schema 6. New flashes should use the current 0.9.12 golden image.
+anything other than schema 6. Protocol compatibility alone does not establish
+recording reliability; the 0.9.16 USB issue still requires firmware qualification.
 
 ## Read one glove
 
@@ -104,6 +116,7 @@ motion range before capturing a new zero.
 
 - [Quickstart](docs/01_quickstart.md)
 - [Compatibility and validation scope](docs/06_compatibility.md)
+- [Candidate status and remaining checks](docs/08_candidate_status.md)
 - [Data reference](docs/02_data_reference.md)
 - [Calibration](docs/03_calibration.md)
 - [Recording and replay](docs/04_recording.md)
@@ -124,6 +137,9 @@ Add `--interactive` for guided finger/IMU actions, `--mutations` for reversible
 RAW/CLEAN/rate changes, `--zero` to deliberately replace calibration, or
 `--soak 75m` for the two-hand device-clock rollover gate. See the
 [acceptance guide](docs/07_acceptance.md) before enabling state-changing options.
+
+This candidate supports `oglo acceptance --single` when exactly one
+glove is attached. Its report leaves two-hand compatibility unqualified.
 
 ## Development
 

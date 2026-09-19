@@ -32,6 +32,15 @@ def test_a_current_board_parses_to_the_right_capabilities():
     assert info.serial == "OGLO-L-TEST01" and info.side == "left" and info.is_left
     assert (info.rate_hz, info.has_mag, info.zero_valid, info.stream_clean) == (250, True, True, True)
     assert (caps.values_per_sample, caps.imu_len, caps.has_mag) == (80, 25, True)
+    assert caps.link_ping is False
+
+
+def test_link_ping_requires_an_explicit_json_boolean_capability():
+    _, caps = parse_config({**CFG_V6, "fw_rev": "0.9.16", "link_ping": True})
+    assert caps.link_ping is True
+
+    with pytest.raises(ConfigError, match="link_ping must be a JSON boolean"):
+        parse_config({**CFG_V6, "fw_rev": "0.9.16", "link_ping": "true"})
 
 
 def test_the_left_hand_finger_order_comes_from_the_board():

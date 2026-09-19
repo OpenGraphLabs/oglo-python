@@ -1,5 +1,12 @@
 # Troubleshooting
 
+The candidate USB transport bounds command writes and avoids the unbounded
+`flush()`/`tcdrain()` call that can hang macOS after an endpoint fails. A failed or
+partial command invalidates that connection; close it and reconnect instead of
+appending another command to an uncertain firmware input line. The error includes
+the underlying serial exception. These safeguards do not prove that a recurring
+USB stall has been repaired; see the [candidate status](08_candidate_status.md).
+
 Run this first. It measures your machine rather than asking you to read a table.
 
 ```bash

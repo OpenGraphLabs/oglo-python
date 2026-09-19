@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
@@ -290,6 +291,68 @@ def test_metadata_contains_start_end_device_status_and_capture_counter_deltas(tm
     }
 
 
+@pytest.mark.parametrize("fw_rev", ["0.9.10", "0.9.16"])
+def test_record_keeps_retry_evidence_without_rejecting_lossless_0916_data(tmp_path, monkeypatch, fw_rev):
+    g = glove({**CFG_V6, "fw_rev": fw_rev}, n=4, hz=250)
+    write = g._t._s.write
+    status_calls = 0
+
+    def status_with_retries(payload):
+        nonlocal status_calls
+        if payload.strip() == b"GET STATUS":
+            status_calls += 1
+            if status_calls > 1:
+                g._t._s.status["tag_short_writes"] = 5
+        return write(payload)
+
+    monkeypatch.setattr(g._t._s, "write", status_with_retries)
+    try:
+        if fw_rev == "0.9.10":
+            with pytest.raises(RecordError, match="new_tag_short_writes=5") as caught:
+                record(tmp_path, seconds=0.2, glove=g)
+            path = caught.value.partial_episode
+        else:
+            path = record(tmp_path, seconds=0.2, glove=g)
+            assert replay(path).summary()["complete"] is True
+        meta = json.loads((path / "meta.json").read_text())
+        assert meta["device_counters_during_capture"]["tag_short_writes"] == 5
+        assert meta["complete"] is (fw_rev == "0.9.16")
+    finally:
+        g.close()
+
+
+def test_cooperative_cancel_seals_data_and_preserves_the_stop_reason(tmp_path, monkeypatch):
+    event = threading.Event()
+    g = glove(n=40, hz=250)
+    read = g.read_batch
+    counts = {"tactile": 0, "imu": 0, "mag": 0}
+
+    def read_and_cancel():
+        batch = read()
+        for name, samples in batch.as_dict().items():
+            counts[name] += len(samples)
+        if min(counts.values()) >= 2:
+            event.set()
+        return batch
+
+    monkeypatch.setattr(g, "read_batch", read_and_cancel)
+    try:
+        path = record(tmp_path, seconds=2.0, glove=g, stop_event=event)
+        episode = replay(path)
+        assert event.is_set()
+        assert episode.meta["stop_reason"] == "cancelled"
+        assert episode.meta["complete"] is True
+        assert g._recording_owner is None
+    finally:
+        g.close()
+
+
+def test_invalid_cancellation_object_is_refused_before_connecting(tmp_path):
+    with pytest.raises(TypeError, match="threading.Event"):
+        record(tmp_path, stop_event=object())
+    assert not list(tmp_path.iterdir())
+
+
 def test_metadata_drop_counts_are_capture_deltas_not_glove_lifetime_totals(tmp_path):
     g = glove(n=40)
     try:
@@ -391,6 +454,89 @@ def test_sustained_silent_modality_is_not_considered_fresh(tmp_path):
         assert _modality_freshness_issues(rec) == ["stale_imu_for=1.500s"]
     finally:
         g.close()
+
+
+@pytest.mark.parametrize("silent,has_mag", [
+    (("tactile", "imu", "mag"), True), (("imu",), True), (("mag",), True),
+    ((), True), ((), False),
+])
+def test_record_stops_on_sustained_silence_and_preserves_partial_data(
+    tmp_path, monkeypatch, silent, has_mag,
+):
+    """A silent endpoint must not keep a 75-minute recording waiting for its deadline."""
+    import oglo._record as record_module
+    from oglo._config import parse_config
+    from oglo._status import DeviceStatus
+
+    info, _ = parse_config({**CFG_V6, "has_mag": has_mag})
+    clock = [10.0]
+    stop = threading.Event()
+
+    class StallingGlove:
+        dropped = {}
+
+        def __init__(self):
+            self.info = info
+            self.read_calls = 0
+            self.status_calls = 0
+
+        def start(self):
+            pass
+
+        def status(self):
+            self.status_calls += 1
+            if self.status_calls > 1 and len(silent) == 3:
+                raise TimeoutError("endpoint stopped answering STATUS too")
+            return DeviceStatus(
+                uptime_ms=1000, seq=1, imu_ok=True, mag_ok=True, sensor_ok=True,
+                error_flags=0, deadline_misses=0, tag_dropped=0, tag_short_writes=0,
+            )
+
+        def read_batch(self):
+            self.read_calls += 1
+            assert self.read_calls <= (2 if silent else 3), "record kept polling after sustained silence"
+            clock[0] = 10.1 if self.read_calls == 1 else 16.1
+            common = dict(seq=self.read_calls, t_us=self.read_calls,
+                          host_t=clock[0], host_received_ns=int(clock[0] * 1e9))
+            rows = {
+                "tactile": (Frame(**common, counts=np.zeros((5, 4, 4), dtype=np.uint16)),),
+                "imu": (ImuSample(**common, accel=(0, 0, 1), gyro=(0, 0, 0)),),
+                "mag": (MagSample(**common, field=(0.1, 0.2, 0.3)),),
+            }
+            if not has_mag:
+                rows["mag"] = ()
+            if self.read_calls > 1:
+                for name in silent:
+                    rows[name] = ()
+                if not silent:
+                    stop.set()
+            return SampleBatch(**rows)
+
+    monkeypatch.setattr(record_module.time, "monotonic", lambda: clock[0])
+    device = StallingGlove()
+    if not silent:
+        # All streams are available after a six-second scheduling pause. Polling
+        # must drain those bytes before the guard judges the receive timestamps.
+        episode = record(tmp_path, seconds=4500, glove=device, stop_event=stop)
+        meta = json.loads((episode / "meta.json").read_text())
+        assert meta["complete"] is True
+        assert meta["stop_reason"] == "cancelled"
+        assert meta["counts"] == {"tactile": 3, "imu": 3, "mag": 3 if has_mag else 0}
+        return
+    with pytest.raises(RecordError, match="stream stalled: " + ", ".join(silent)) as caught:
+        record(tmp_path, seconds=4500, glove=device, stop_event=stop)
+    episode = tmp_path / "ep_0001"
+    assert caught.value.partial_episode == episode
+    meta = json.loads((episode / "meta.json").read_text())
+    assert meta["complete"] is False
+    assert meta["stop_reason"] == "error"
+    assert meta["ended_monotonic"] - meta["started_monotonic"] < 7
+    assert meta["counts"] == {
+        name: 1 if name in silent else 2 for name in ("tactile", "imu", "mag")
+    }
+    if len(silent) == 3:
+        assert "endpoint stopped answering" in meta["status_end"]["error"]
+    assert replay(episode).summary()["complete"] is False
 
 
 def test_both_clocks_and_a_wall_time_are_recorded(tmp_path):
@@ -591,12 +737,19 @@ def test_one_row_per_modality_cannot_prove_a_complete_stream(tmp_path):
     assert meta["complete"] is False
 
 
-def test_no_packet_capture_keeps_missing_stream_error_and_removes_reservation(tmp_path):
+@pytest.mark.parametrize("long_capture", [False, True])
+def test_no_packet_capture_keeps_missing_stream_error_and_removes_reservation(
+    tmp_path, monkeypatch, long_capture,
+):
+    import oglo._record as record_module
     from oglo._config import parse_config
     from oglo._device import SampleBatch
     from oglo._status import DeviceStatus
 
     info, _ = parse_config(CFG_V6)
+    clock = [10.0]
+    if long_capture:
+        monkeypatch.setattr(record_module.time, "monotonic", lambda: clock[0])
 
     class SilentGlove:
         dropped = {}
@@ -611,10 +764,12 @@ def test_no_packet_capture_keeps_missing_stream_error_and_removes_reservation(tm
             )
 
         def read_batch(self):
+            clock[0] += 6.0
             return SampleBatch()
 
-    with pytest.raises(RecordError, match="missing_streams=tactile,imu,mag"):
-        record(tmp_path, seconds=0.001, glove=SilentGlove())
+    error = "stream stalled: tactile, imu, mag" if long_capture else "missing_streams=tactile,imu,mag"
+    with pytest.raises(RecordError, match=error):
+        record(tmp_path, seconds=4500 if long_capture else 0.001, glove=SilentGlove())
     assert not list(tmp_path.glob("ep_*"))
 
 

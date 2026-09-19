@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from numbers import Real
 from typing import Any, Callable, Dict, List, Optional
 
+from ._config import _fw_at_least
+
 OK, WARN, FAIL = "ok", "warn", "fail"
 
 #: Delivered rate below this fraction of the configured rate is a failure. Generous,
@@ -258,10 +260,14 @@ def _glove(rep: Report, g: Any, seconds: float) -> None:
             device_drop = max(0, status_end.tag_dropped - status_start.tag_dropped)
             short = max(0, status_end.tag_short_writes - status_start.tag_short_writes)
             deadlines = max(0, status_end.deadline_misses - status_start.deadline_misses)
+            retries_pending_data = _fw_at_least(i.fw_rev, (0, 9, 16))
+            detail = f"short writes {short}, deadline misses {deadlines} during this check"
+            if short and retries_pending_data:
+                detail += "; firmware retries pending USB data; sequence/device loss is checked separately"
             rep.add(
                 f"{i.serial}: device drops {device_drop}",
-                FAIL if short else (WARN if device_drop or deadlines else OK),
-                f"short writes {short}, deadline misses {deadlines} during this check",
+                FAIL if short and not retries_pending_data else (WARN if device_drop or deadlines else OK),
+                detail,
             )
 
 
