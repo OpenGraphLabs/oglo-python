@@ -18,6 +18,7 @@ import json
 import math
 import platform
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -53,6 +54,7 @@ class AcceptanceConfig:
     interactive_seconds: float = 1.5
     taxel_delta: float = 25.0
     assume_yes: bool = False
+    single: bool = False
 
 
 @dataclass
@@ -200,11 +202,14 @@ def run_acceptance(
     stream_stats: Dict[str, Dict[str, float]] = {}
     try:
         try:
-            left, right = sdk.connect_pair()
-            gloves = [left, right]
+            if config.single:
+                gloves = [sdk.connect(transport="usb")]
+            else:
+                left, right = sdk.connect_pair()
+                gloves = [left, right]
         except Exception as exc:
             report.add(
-                "connect left/right USB pair",
+                "connect single USB glove" if config.single else "connect left/right USB pair",
                 FAIL,
                 f"{type(exc).__name__}: {exc}",
             )
@@ -254,14 +259,16 @@ def run_acceptance(
                 label="short record/replay",
             )
 
-        if config.soak_seconds is not None:
+        if config.soak_seconds is not None and report.failed:
+            report.add("long soak", SKIP, "resolve failed short checks before the long capture")
+        elif config.soak_seconds is not None:
             _record_replay_pair(
                 report,
                 gloves,
                 config.soak_seconds,
                 report.run_dir / "soak",
                 sdk,
-                label="long two-hand soak",
+                label="long single-glove soak" if config.single else "long two-hand soak",
             )
         else:
             report.add(
@@ -302,6 +309,20 @@ def run_acceptance(
 
 def _check_pair(report: AcceptanceReport, gloves: Sequence[Any]) -> None:
     infos = [g.info for g in gloves]
+    if report.config.single:
+        report.add(
+            "one USB glove",
+            PASS if len(infos) == 1 else FAIL,
+            f"connected {len(infos)} glove(s)",
+        )
+        report.add("two-hand compatibility", SKIP, "--single selected; a second glove is required")
+    else:
+        _check_pair_identity(report, infos)
+
+    _check_device_contracts(report, gloves)
+
+
+def _check_pair_identity(report: AcceptanceReport, infos: Sequence[Any]) -> None:
     sides = {i.side for i in infos}
     report.add(
         "one left and one right glove",
@@ -315,7 +336,10 @@ def _check_pair(report: AcceptanceReport, gloves: Sequence[Any]) -> None:
         ", ".join(i.serial for i in infos),
     )
 
-    for info in infos:
+
+def _check_device_contracts(report: AcceptanceReport, gloves: Sequence[Any]) -> None:
+    for glove in gloves:
+        info = glove.info
         raw = dict(getattr(info, "raw", {}) or {})
         fw = _version_tuple(str(info.fw_rev))
         report.add(
@@ -361,7 +385,6 @@ def _check_pair(report: AcceptanceReport, gloves: Sequence[Any]) -> None:
             ),
         )
         try:
-            glove = next(g for g in gloves if g.info is info)
             status = glove.status()
             healthy = bool(status.healthy)
             report.add(
@@ -504,7 +527,17 @@ def _check_streams(
             healthy = (
                 after.healthy
                 and after.uptime_ms >= start.uptime_ms
-                and all(v == 0 for v in deltas.values())
+                # Short writes are recovered USB backpressure in 0.9.16, not
+                # dropped frames. Loss and deadline counters remain strict.
+                and deltas["tag_dropped"] == 0
+                and deltas["deadline_misses"] == 0
+                and (
+                    deltas["tag_short_writes"] == 0
+                    or (
+                        (_version_tuple(glove.info.fw_rev) or (0, 0, 0)) >= (0, 9, 16)
+                        and deltas["tag_short_writes"] > 0
+                    )
+                )
             )
             report.add(
                 f"{glove.info.serial}: device health during stream",
@@ -885,14 +918,23 @@ def _record_replay_pair(
     for glove in gloves:
         glove.stop()
     paths: Dict[str, Path] = {}
+    report.write()
+    stop_event = threading.Event()
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = {
-                g.info.side: pool.submit(sdk.record, root / g.info.side, seconds, glove=g)
-                for g in gloves
-            }
-            for side, future in futures.items():
-                paths[side] = Path(future.result())
+            try:
+                futures = {
+                    g.info.side: pool.submit(
+                        sdk.record, root / g.info.side, seconds, glove=g, stop_event=stop_event
+                    )
+                    for g in gloves
+                }
+                for side, future in futures.items():
+                    paths[side] = Path(future.result())
+            except BaseException:
+                # Wake the other recorder before executor shutdown waits for it.
+                stop_event.set()
+                raise
     except Exception as exc:
         partial = getattr(exc, "partial_episode", None)
         report.add(
@@ -913,6 +955,7 @@ def _record_replay_pair(
             required = ("tactile", "imu") + (("mag",) if glove.info.has_mag else ())
             ok = (
                 summary.get("complete") is True
+                and episode.meta.get("stop_reason") == "duration"
                 and summary.get("serial") == glove.info.serial
                 and summary.get("side") == side
                 and all(summary.get(name, {}).get("n", 0) >= 2 for name in required)

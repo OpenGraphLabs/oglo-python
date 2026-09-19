@@ -67,6 +67,9 @@ class Capabilities:
     values_per_sample: int
     imu_len: int
     has_mag: bool
+    #: USB hosts may send the reply-free ``LINK PING`` liveness command. Missing on
+    #: firmware predating the command, and therefore deliberately defaults false.
+    link_ping: bool = False
 
 
 def parse_config(cfg: Dict[str, Any], *, transport: str = "usb") -> Tuple[Info, Capabilities]:
@@ -153,6 +156,11 @@ def parse_config(cfg: Dict[str, Any], *, transport: str = "usb") -> Tuple[Info, 
     if device_dropped < 0:
         raise ConfigError("device drop counter cannot be negative")
 
+    # This capability was added without a schema bump. Missing means unsupported;
+    # a truthy string must not opt an old/malformed config into a command it may
+    # answer with ASCII in the middle of the binary stream.
+    link_ping = _config_bool(cfg, "link_ping") if "link_ping" in cfg else False
+
     info = Info(
         serial=serial,
         side=side,
@@ -173,6 +181,7 @@ def parse_config(cfg: Dict[str, Any], *, transport: str = "usb") -> Tuple[Info, 
         values_per_sample=vps,
         imu_len=imu_len,
         has_mag=info.has_mag,
+        link_ping=link_ping,
     )
     return info, caps
 

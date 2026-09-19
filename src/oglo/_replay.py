@@ -234,7 +234,8 @@ def _schema2_integrity(
         before, after, delta = start[name], end[name], device_deltas[name]
         if after < before or delta != after - before:
             raise ReplayError(f"complete schema-2 episode has inconsistent device counter {name}")
-        if delta != 0:
+        retry_counter = name == "tag_short_writes" and _fw_at_least(meta["fw_rev"], (0, 9, 16))
+        if delta != 0 and not retry_counter:
             raise ReplayError(f"complete schema-2 episode records device loss in {name}")
 
 

@@ -160,6 +160,38 @@ def test_a_glove_that_will_not_open_is_reported_not_swallowed(monkeypatch):
     assert c.verdict == FAIL and "PID 1234" in c.detail
 
 
+@pytest.mark.parametrize(
+    ("fw_rev", "drops", "expected"),
+    [("0.9.10", 0, FAIL), ("0.9.16", 0, OK), ("0.9.16", 1, WARN)],
+)
+def test_usb_short_writes_are_not_loss_when_firmware_retries_pending_data(
+    monkeypatch, fw_rev, drops, expected
+):
+    _ports(monkeypatch, [port("/dev/cu.usbmodemA")])
+
+    class Serial(FakeSerial):
+        status_reads = 0
+
+        def write(self, data):
+            if data.strip() == b"GET STATUS":
+                self.status_reads += 1
+                if self.status_reads > 1:
+                    self.status["tag_short_writes"] = 5
+                    self.status["tag_dropped"] = drops
+            return super().write(data)
+
+    def connect(**kwargs):
+        serial = Serial({**CFG_V6, "fw_rev": fw_rev}, stream=tagged_burst(4), hz=250)
+        transport = UsbTransport(serial)
+        info, caps = transport.read_config(interval=0.01, drain=0)
+        return Glove(transport, info, caps)
+
+    report = doctor(seconds=0.1, connect=connect)
+    check = find(report, "device drops")[0]
+    assert check.verdict == expected
+    assert "short writes 5" in check.detail
+
+
 def test_the_report_rolls_up_to_the_worst_verdict():
     r = Report()
     r.add("a", OK); assert r.worst == OK

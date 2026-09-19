@@ -79,6 +79,25 @@ def _meta(counts=None):
     }
 
 
+@pytest.mark.parametrize("fw_rev", ["0.9.10", "0.9.16"])
+def test_replay_checks_retry_counter_consistency_and_firmware_semantics(tmp_path, fw_rev):
+    path = _episode(tmp_path)
+    meta = _meta()
+    meta["fw_rev"] = fw_rev
+    meta["status_end"]["tag_short_writes"] = 5
+    meta["device_counters_during_capture"]["tag_short_writes"] = 5
+    (path / "meta.json").write_text(json.dumps(meta))
+    if fw_rev == "0.9.10":
+        with pytest.raises(ReplayError, match="device loss in tag_short_writes"):
+            replay(path)
+    else:
+        assert replay(path).summary()["complete"] is True
+        meta["device_counters_during_capture"]["tag_short_writes"] = 4
+        (path / "meta.json").write_text(json.dumps(meta))
+        with pytest.raises(ReplayError, match="inconsistent device counter tag_short_writes"):
+            replay(path)
+
+
 def _columns(n=1):
     return {
         "seq": np.arange(n, dtype=np.uint32),

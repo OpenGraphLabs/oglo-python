@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
 from . import _wire as w
-from ._config import Capabilities, Info, parse_config
+from ._config import Capabilities, Info, _fw_at_least, parse_config
 from ._status import DeviceStatus, parse_status
 
 #: Supported firmware 0.9.10+ uses TinyUSB on the Seeed XIAO module with
@@ -39,13 +40,19 @@ _HANDSHAKE_STOP = "STREAM BIN OFF\nSTREAM TAXEL OFF\nSTREAM TAG OFF"
 _CONFIG_PREFIX = "#CONFIG "
 _STATUS_PREFIX = "#STATUS "
 
+# LINK PING is intentionally capability- and version-gated. Sending it to older
+# firmware injects an ``#ERR unknown command`` line into a live binary TAG stream.
+_LINK_PING_MIN_FIRMWARE = (0, 9, 16)
+# One second leaves a full second of scheduling margin under the <=2 s host contract.
+_LINK_PING_INTERVAL_S = 1.0
+_LINK_PING_JOIN_TIMEOUT_S = 0.75
+
 
 class SerialLike(Protocol):
     """The slice of pyserial this module uses. A fake only has to provide this."""
 
     def read(self, size: int = 1) -> bytes: ...
     def write(self, data: bytes) -> Optional[int]: ...
-    def flush(self) -> None: ...
     def reset_input_buffer(self) -> None: ...
     def close(self) -> None: ...
 
@@ -205,6 +212,9 @@ def open_serial(device: str, baud: int = 115200, *, settle: float = 0.8) -> Seri
     s.port = device
     s.baudrate = baud
     s.timeout = 0.05
+    # A keepalive runs independently of the reader. Bound its write so a dead OUT
+    # endpoint cannot strand that worker forever or make stop()/close() hang on it.
+    s.write_timeout = 0.5
     s.dtr = True
     s.rts = False
     try:
@@ -258,6 +268,13 @@ class UsbTransport:
         self._caps: Optional[Capabilities] = None
         self._info: Optional[Info] = None
         self._streaming = False
+        # Command writes and the background LINK PING share one CDC OUT endpoint.
+        # One lock keeps complete newline-delimited commands from interleaving.
+        self._write_lock = threading.Lock()
+        self._keepalive_lock = threading.Lock()
+        self._keepalive_stop: Optional[threading.Event] = None
+        self._keepalive_thread: Optional[threading.Thread] = None
+        self._keepalive_error: Optional[DisconnectedError] = None
         self._last_seq: Dict[int, Optional[int]] = {
             w.TAG_TACTILE: None, w.TAG_IMU: None, w.TAG_MAG: None
         }
@@ -265,14 +282,117 @@ class UsbTransport:
 
     # -- commands ---------------------------------------------------------------
 
+    def _write_command(
+        self, command: str, *,
+        keepalive_stop: Optional[threading.Event] = None,
+    ) -> None:
+        payload = (command.rstrip("\n") + "\n").encode()
+        with self._write_lock:
+            # A command may have queued behind a ping while that write failed.
+            # Check and publish failure under this same lock, before another
+            # writer can append to a possibly partial firmware command line.
+            self._raise_link_keepalive_error()
+            try:
+                written = self._s.write(payload)
+                if written is not None and written != len(payload):
+                    raise OSError(f"short USB write: {written}/{len(payload)} bytes")
+                # Serial.write() already queues the complete command in order.
+                # flush()/tcdrain is not bounded by write_timeout on macOS and
+                # can hang even after write() succeeded on a failed endpoint.
+                # Command replies provide acknowledgement; never wait for an
+                # unbounded OS drain during handshake, commands, or close.
+            except Exception as exc:
+                error = DisconnectedError(
+                    f"could not send {command!r}: the glove is no longer reachable. "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                with self._keepalive_lock:
+                    if keepalive_stop is None or self._keepalive_stop is keepalive_stop:
+                        self._keepalive_error = error
+                raise error from exc
+
     def send(self, command: str) -> None:
-        try:
-            self._s.write((command.rstrip("\n") + "\n").encode())
-            self._s.flush()
-        except Exception as exc:
-            raise DisconnectedError(
-                f"could not send {command!r}: the glove is no longer reachable."
-            ) from exc
+        # A timed-out/short ping may have left a partial command in the firmware's
+        # line buffer. Appending another command could turn both into one valid-looking
+        # but wrong line; end this USB epoch and reconnect instead.
+        self._raise_link_keepalive_error()
+        if command.strip().upper().startswith("FW ") and self._supports_link_ping():
+            raise UsbError(
+                "firmware update commands require the dedicated updater on its own USB "
+                "session; this transport's LINK PING worker must not enter the raw "
+                "firmware-image byte stream"
+            )
+        self._write_command(command)
+
+    def _supports_link_ping(self) -> bool:
+        """True only for the explicit, version-pinned reply-free command contract."""
+        return bool(
+            self._info is not None
+            and self._caps is not None
+            and self._caps.link_ping
+            # If another object owns the file descriptor, close() cannot lower DTR
+            # and end the firmware's sticky USB-epoch authorization. Never opt that
+            # externally-owned session into a promise this transport cannot keep.
+            and self._owns
+            and _fw_at_least(self._info.fw_rev, _LINK_PING_MIN_FIRMWARE)
+        )
+
+    def _start_link_keepalive(self) -> None:
+        if not self._supports_link_ping():
+            return
+        stop = threading.Event()
+
+        def run() -> None:
+            # Opt in immediately, then refresh at a fixed cadence independent of
+            # poll(). A slow reader is the exact case this worker exists to cover.
+            deadline = time.monotonic()
+            while not stop.is_set():
+                delay = max(0.0, deadline - time.monotonic())
+                if stop.wait(delay):
+                    return
+                try:
+                    self._write_command("LINK PING", keepalive_stop=stop)
+                except DisconnectedError:
+                    return
+                deadline += _LINK_PING_INTERVAL_S
+                # Do not send a burst after a process-wide scheduling pause. One
+                # fresh ping is useful; replaying every missed deadline is not.
+                now = time.monotonic()
+                if deadline <= now:
+                    deadline = now + _LINK_PING_INTERVAL_S
+
+        with self._keepalive_lock:
+            if self._keepalive_thread is not None and self._keepalive_thread.is_alive():
+                return
+            self._keepalive_error = None
+            self._keepalive_stop = stop
+            thread = threading.Thread(
+                target=run,
+                name=f"oglo-link-ping-{self._info.serial}",
+                daemon=True,
+            )
+            self._keepalive_thread = thread
+        thread.start()
+
+    def _stop_link_keepalive(self) -> bool:
+        with self._keepalive_lock:
+            stop = self._keepalive_stop
+            thread = self._keepalive_thread
+        if stop is not None:
+            stop.set()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=_LINK_PING_JOIN_TIMEOUT_S)
+        with self._keepalive_lock:
+            if self._keepalive_stop is stop:
+                self._keepalive_stop = None
+                self._keepalive_thread = None
+        return thread is None or not thread.is_alive()
+
+    def _raise_link_keepalive_error(self) -> None:
+        with self._keepalive_lock:
+            error = self._keepalive_error
+        if error is not None:
+            raise error
 
     #: This transport echoes command replies as text lines, so `Glove` can wait for
     #: one. BLE cannot: the firmware writes replies to Serial only, so a BLE transport
@@ -305,6 +425,7 @@ class UsbTransport:
         may not have run `setup()` yet.
         """
         self.send(_HANDSHAKE_STOP)
+        self._streaming = False
         if drain:
             time.sleep(drain)  # let a stopped stream finish draining before we read text
         self._s.reset_input_buffer()
@@ -368,6 +489,7 @@ class UsbTransport:
         self._s.reset_input_buffer()
         self.send("STREAM TAG ON")
         self._streaming = True
+        self._start_link_keepalive()
         return "tagged"
 
     def stop(self) -> None:
@@ -396,7 +518,9 @@ class UsbTransport:
         The undecoded tail is carried to the next call. A caller that drops it will
         desync, which is why the buffer lives here and not in the caller.
         """
+        self._raise_link_keepalive_error()
         chunk = self._read(size)
+        self._raise_link_keepalive_error()
         received_ns = time.monotonic_ns() if chunk else None
         if chunk:
             self._buf += chunk
@@ -434,13 +558,22 @@ class UsbTransport:
     def close(self) -> None:
         was_streaming = self._streaming
         stopped = False
-        try:
-            self.stop()
-            stopped = True
-        except BaseException:
-            # Close is the one best-effort boundary: even when the device vanished
-            # or refused STOP, release the host file descriptor.
-            pass
+        worker_stopped = self._stop_link_keepalive()
+        with self._keepalive_lock:
+            worker_error = self._keepalive_error
+        if worker_stopped and worker_error is None:
+            try:
+                self.send("STREAM TAG OFF")
+                self._streaming = False
+                stopped = True
+            except BaseException:
+                # Close is the one best-effort boundary: even when the device vanished
+                # or refused STOP, release the host file descriptor.
+                pass
+        # If the bounded join failed, do not race a second command write against the
+        # stuck worker. Release the owned handle and explicitly lower DTR to clear
+        # firmware authorization for this USB epoch, even if the OS retains DTR
+        # when closing a tty (for example, Linux with HUPCL disabled).
         if stopped and was_streaming:
             # Keep DTR/the CDC endpoint alive long enough for firmware to process
             # STREAM TAG OFF and finish its in-flight frame before the descriptor
@@ -452,9 +585,18 @@ class UsbTransport:
             self.drain(settle=0.2)
         if self._owns:
             try:
+                if hasattr(self._s, "dtr"):
+                    setattr(self._s, "dtr", False)
+            except BaseException:
+                # Control requests can also fail after a USB disconnect. Always
+                # attempt descriptor cleanup even if the line cannot be lowered.
+                pass
+            try:
                 self._s.close()
             except BaseException:
                 pass
+        with self._keepalive_lock:
+            self._keepalive_error = None
 
     def __enter__(self) -> "UsbTransport":
         return self

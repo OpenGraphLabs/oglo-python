@@ -10,6 +10,10 @@ import pytest
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("oglo hardware")
     group.addoption(
+        "--hardware-single", action="store_true", default=False,
+        help="test one attached USB glove and skip checks requiring both hands",
+    )
+    group.addoption(
         "--hardware-seconds",
         action="store",
         type=float,

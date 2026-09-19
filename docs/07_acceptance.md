@@ -4,6 +4,12 @@
 Unlike the developer pytest suite, it uses only the installed SDK's public API,
 guides optional physical actions, and writes a durable Markdown and JSON report.
 
+With only one glove attached, this candidate supports
+`oglo acceptance --single`. It tests that glove's identity, streams, settings,
+record/replay and reconnect paths, and explicitly skips two-hand compatibility.
+`--single` refuses ambiguous discovery if multiple gloves are attached. It can
+be combined with `--mutations` and `--soak 75m`.
+
 ## Safe default
 
 Connect exactly two gloves and run:
@@ -115,6 +121,15 @@ fitted modality, and free of recorded sequence gaps.
 
 A successful soak is evidence for the machine, cables, hubs, gloves, duration, and
 storage named in that report. It is not a permanent guarantee for every host.
+
+Failed short checks prevent the long soak from starting. Use Ctrl-C to cancel an
+active run: its recording workers are asked to stop and seal their data before
+the glove connections close. Cancelled captures do not count as a passed soak.
+
+USB short-write counters are recorded as backpressure observations. They do not
+alone mean lost data on firmware 0.9.16, which retries pending data. Sequence gaps,
+malformed packets, host queue overflow, device drops and missed deadlines still
+fail their respective checks.
 
 ## Deliberate scope
 

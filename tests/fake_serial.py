@@ -196,6 +196,9 @@ class FakeSerial:
         if up == "STREAM TAG OFF":
             self._streaming = False
             return
+        if up == "LINK PING" and bool((self.config or {}).get("link_ping", False)):
+            # Capability-advertising firmware intentionally sends no reply while streaming.
+            return
         # Reply with the firmware's ACTUAL strings, not a generic #OK. A fake that
         # answers differently from the board tests the fake.
         if up.startswith("SET THR "):

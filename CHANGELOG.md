@@ -6,12 +6,49 @@ All notable user-facing changes are recorded here. Versions follow
 
 ## [Unreleased]
 
+## [0.1.0rc4] - Candidate preparation
+
+### Qualification status
+
+- SDK/package preparation only: sustained USB capture on firmware 0.9.16 has a
+  reproduced device-path failure; the candidate is not a qualified firmware fix
+- expanded offline CI to Python 3.10–3.14 on Linux, macOS and Windows, testing
+  installed distributions rather than importing the source tree
+
 ### Added
+
+- `oglo acceptance --single` and `pytest --hardware-single` for explicit
+  one-glove qualification, with two-hand checks reported as untested
+- cooperative `record(stop_event=...)` cancellation so acceptance can stop its
+  recording workers before closing connections; cancelled captures cannot pass a soak
 
 - `oriented_counts()` and `Frame.oriented(info)`: the tactile grid in canonical
   thumb-first finger order with `col 0` at every fingertip, for either hand. The
   left thumb's flex runs its COL electrodes the other way along the finger, so its
   col axis is reversed there; raw `counts` stay in wire order
+
+### Changed
+
+- aligned current firmware guidance with the committed 0.9.16/schema-6 golden
+  bundle, and distinguished checkout-only features from the published rc3 package
+
+### Fixed
+
+- fail silent recordings after five seconds and preserve their incomplete data
+  and error metadata; avoid unbounded USB drains after an endpoint fails
+- explicitly lower DTR before closing SDK-owned USB ports, so Linux tty settings
+  that retain DTR on close cannot leave firmware recovery authorized after exit
+- reject commands queued behind a failed USB keepalive before they can append to
+  a partial command line; regression tests cover timeout and short-write races
+- qualify RAW as well as CLEAN starting states, restore the original RAW threshold
+  after mutation tests, and distinguish recovered USB short writes from actual loss
+- apply firmware 0.9.16 USB retry semantics consistently in doctor, recording,
+  replay and acceptance while retaining counters and all actual-loss checks
+
+- kept capability-advertising firmware's USB wedge recovery authorized with a
+  bounded, reply-free `LINK PING` worker independent of stream-read cadence, while
+  never sending the command to legacy or unadvertised firmware; firmware image
+  writes remain isolated in the dedicated updater USB session
 
 ## [0.1.0rc3] - 2026-08-09
 
@@ -80,7 +117,8 @@ First public release candidate.
 - zero persistence requires a power-cycle read-back when it is a release gate
 - multi-hour and slow-storage target-host qualification remain deployment tasks
 
-[Unreleased]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc3...HEAD
+[Unreleased]: https://github.com/OpenGraphLabs/oglo-python/commits/main
+[0.1.0rc4]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc3...main
 [0.1.0rc3]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc2...v0.1.0rc3
 [0.1.0rc2]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc1...v0.1.0rc2
 [0.1.0rc1]: https://github.com/OpenGraphLabs/oglo-python/releases/tag/v0.1.0rc1

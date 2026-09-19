@@ -11,6 +11,7 @@ issues, pull requests, tags, releases, and documentation updates belong there.
 5. [Recording and replay](04_recording.md) - episode format, two hands
 6. [Troubleshooting](05_troubleshooting.md) - start with `oglo doctor`
 7. [Test your own glove pair](07_acceptance.md) - guided public-API acceptance and reports
+8. [Candidate status](08_candidate_status.md) - package evaluation and remaining physical checks
 
 The public wire-level contract needed by SDK users is documented in the
 [data reference](02_data_reference.md) and locked by the captured vectors under

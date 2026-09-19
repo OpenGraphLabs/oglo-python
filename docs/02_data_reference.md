@@ -22,8 +22,8 @@ accelerometer/gyroscope at 200 Hz but polls/emits its latest value on a nominal 
 schedule, so adjacent 500-packet/s records may contain the same physical measurement.
 
 The supported contract is firmware 0.9.10 or newer with schema 6. The current
-golden firmware for new flashes is 0.9.12, while deployed 0.9.10 and 0.9.11 gloves
-remain supported. `0.1.0rc3` rejects older firmware in live connections, vector capture,
+committed golden firmware is 0.9.16, while deployed schema-6 gloves at or above 0.9.10
+remain supported. `0.1.0rc4` rejects older firmware in live connections, vector capture,
 and replay instead of selecting a best-effort decoder.
 
 ## Identity and side

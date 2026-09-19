@@ -120,7 +120,8 @@ def test_live_firmware_comparison_is_numeric_and_exact(text, value):
     assert _version_tuple(text) == value
 
 
-def test_connection_failure_still_leaves_a_machine_readable_report(tmp_path):
+@pytest.mark.parametrize("single", [False, True])
+def test_connection_failure_still_leaves_a_machine_readable_report(tmp_path, single):
     class BrokenSdk:
         __version__ = "test"
 
@@ -128,19 +129,27 @@ def test_connection_failure_still_leaves_a_machine_readable_report(tmp_path):
         def connect_pair():
             raise RuntimeError("no gloves")
 
+        @staticmethod
+        def connect(*, transport):
+            assert transport == "usb"
+            raise RuntimeError("no glove")
+
     report = run_acceptance(
-        AcceptanceConfig(output_root=tmp_path, stream_seconds=0.01, record_seconds=0),
+        AcceptanceConfig(output_root=tmp_path, stream_seconds=0.01, record_seconds=0,
+                         single=single),
         sdk=BrokenSdk,
         sink=StringIO(),
     )
     assert report.failed
-    assert any(c.name == "connect left/right USB pair" and c.verdict == FAIL for c in report.checks)
+    name = "connect single USB glove" if single else "connect left/right USB pair"
+    assert any(c.name == name and c.verdict == FAIL for c in report.checks)
     data = json.loads((report.run_dir / "acceptance-report.json").read_text())
     assert data["result"] == FAIL
 
 
-@pytest.mark.parametrize("fw_rev", ["0.9.10", "0.9.11"])
-def test_pair_contract_accepts_supported_firmware_schema_and_usb(tmp_path, fw_rev):
+@pytest.mark.parametrize("fw_rev", ["0.9.10", "0.9.11", "0.9.16"])
+@pytest.mark.parametrize("single", [False, True])
+def test_pair_contract_accepts_supported_firmware_schema_and_usb(tmp_path, fw_rev, single):
     from oglo.acceptance import _check_pair
 
     cfg = {**CFG_V6, "fw_rev": fw_rev}
@@ -192,12 +201,17 @@ def test_pair_contract_accepts_supported_firmware_schema_and_usb(tmp_path, fw_re
 
     report = AcceptanceReport(
         run_dir=tmp_path / "report",
-        config=AcceptanceConfig(output_root=tmp_path),
+        config=AcceptanceConfig(output_root=tmp_path, single=single),
         sdk_version="test",
     )
-    _check_pair(report, [Glove(left_info), Glove(right_info)])
+    gloves = [Glove(left_info)] if single else [Glove(left_info), Glove(right_info)]
+    _check_pair(report, gloves)
     assert report.checks
-    assert all(check.verdict == PASS for check in report.checks)
+    assert all(check.verdict in (PASS, SKIP) for check in report.checks)
+    if single:
+        assert any(c.name == "two-hand compatibility" and c.verdict == SKIP
+                   for c in report.checks)
+        assert not any(c.name == "one left and one right glove" for c in report.checks)
 
 
 def test_mutation_check_restores_threshold_even_when_original_mode_was_raw(tmp_path, monkeypatch):
@@ -271,3 +285,79 @@ def test_interactive_cli_refuses_to_hang_without_a_terminal(monkeypatch, capsys)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     assert cli.main(["acceptance", "--interactive"]) == 1
     assert "needs a real terminal" in capsys.readouterr().err
+
+
+def test_single_cli_selects_single_mode_without_enabling_mutations(monkeypatch, tmp_path):
+    seen = []
+
+    def run(config):
+        seen.append(config)
+        return SimpleNamespace(failed=False)
+
+    monkeypatch.setattr("oglo.acceptance.run_acceptance", run)
+    assert cli.main(["acceptance", "--single", "--output", str(tmp_path)]) == 0
+    assert len(seen) == 1 and seen[0].single
+    assert not seen[0].mutations and not seen[0].zero
+
+
+@pytest.mark.parametrize(
+    ("fw_rev", "short_writes", "dropped", "missed", "expected"),
+    [("0.9.16", 5, 0, 0, PASS), ("0.9.16", 0, 1, 0, FAIL),
+     ("0.9.16", 0, 0, 1, FAIL), ("0.9.16", -1, 0, 0, FAIL),
+     ("0.9.10", 5, 0, 0, FAIL)],
+)
+def test_stream_health_distinguishes_backpressure_from_loss(
+    tmp_path, monkeypatch, fw_rev, short_writes, dropped, missed, expected
+):
+    import oglo.acceptance as acceptance
+
+    statuses = iter([
+        SimpleNamespace(healthy=True, uptime_ms=100, tag_dropped=0,
+                        deadline_misses=0, tag_short_writes=10),
+        SimpleNamespace(healthy=True, uptime_ms=200, tag_dropped=dropped,
+                        deadline_misses=missed, tag_short_writes=10 + short_writes),
+    ])
+    glove = SimpleNamespace(
+        info=SimpleNamespace(side="left", serial="TEST", has_mag=True, fw_rev=fw_rev),
+        stop=lambda: None, status=lambda: next(statuses),
+        rates_seen={"tactile": 250, "imu": 500, "mag": 125},
+        dropped={"wire_tactile": 0, "wire_imu": 0, "wire_mag": 0},
+    )
+    monkeypatch.setattr(acceptance, "_collect", lambda *args: {
+        "tactile": [], "imu": [], "mag": [],
+    })
+    monkeypatch.setattr(acceptance, "_report_sample_contract", lambda *args: None)
+    report = AcceptanceReport(tmp_path, AcceptanceConfig(), "test")
+    acceptance._check_streams(report, [glove], 0.01, oglo)
+    health = next(c for c in report.checks if "device health during stream" in c.name)
+    assert health.verdict == expected
+    assert health.measurements["tag_short_writes"] == short_writes
+
+
+def test_interrupted_pair_recording_cancels_workers_before_waiting_for_shutdown(tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import Future
+    from oglo.acceptance import _record_replay_pair
+
+    started = threading.Event()
+    finished = []
+
+    def record(path, seconds, *, glove, stop_event):
+        started.set()
+        assert stop_event.wait(2.0), "acceptance did not cancel its recording workers"
+        finished.append(glove.info.side)
+        return path
+
+    def interrupted_result(self):
+        assert started.wait(1.0)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(Future, "result", interrupted_result)
+    gloves = [SimpleNamespace(info=SimpleNamespace(side=side), stop=lambda: None)
+              for side in ("left", "right")]
+    report = AcceptanceReport(tmp_path, AcceptanceConfig(), "test")
+    with pytest.raises(KeyboardInterrupt):
+        _record_replay_pair(report, gloves, 4500, tmp_path / "recordings",
+                            SimpleNamespace(record=record), label="soak")
+    assert sorted(finished) == ["left", "right"]
+    assert (tmp_path / "acceptance-report.json").exists()

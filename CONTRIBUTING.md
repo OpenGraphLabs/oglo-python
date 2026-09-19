@@ -44,12 +44,18 @@ With exactly one left/right USB pair attached:
 python3 -m pytest -m hardware --hardware-seconds 5
 ```
 
+For exactly one attached glove, add `--hardware-single`; the three tests requiring
+both hands are reported as skipped. RAW and CLEAN starting modes are both supported.
+
 State-changing checks require a separate explicit flag and restore the settings they
 change:
 
 ```bash
 python3 -m pytest -m hardware_mutation --hardware-mutations
 ```
+
+The same `--hardware-single` option applies to the mutation test. Its cleanup
+restores the original threshold even when the starting mode was RAW.
 
 Neither command performs a physical zero sweep. See
 [`docs/03_calibration.md`](docs/03_calibration.md).

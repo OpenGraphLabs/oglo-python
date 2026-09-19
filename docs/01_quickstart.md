@@ -1,25 +1,30 @@
 # Quickstart
 
-## Install a release
+## Install the candidate
 
-Download the wheel from the matching
-[GitHub Release](https://github.com/OpenGraphLabs/oglo-python/releases), then:
+Install the prepared wheel supplied with its checksum:
 
 ```bash
-python3 -m pip install ./oglo-0.1.0rc3-py3-none-any.whl
+python3 -m pip install ./oglo-0.1.0rc4-py3-none-any.whl
 ```
 
-Or install the immutable source tag:
+Or evaluate the current source:
 
 ```bash
 python3 -m pip install \
-  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@v0.1.0rc3"
+  "oglo @ git+https://github.com/OpenGraphLabs/oglo-python.git@main"
 ```
 
-Python 3.10 or newer is required. Supported live gloves run firmware 0.9.10 or
-newer with schema 6. The current golden firmware for new flashes is 0.9.12;
-deployed 0.9.10 and 0.9.11 gloves remain supported. `0.1.0rc3` rejects older firmware in both
-live connections and recorded episodes.
+The handoff manifest pins the exact source commit and package hashes. The latest
+published release remains `0.1.0rc3`; it does not contain the candidate's USB fixes.
+Python 3.10 or newer is required. The protocol contract is firmware 0.9.10 or
+newer with CONFIG schema 6; older firmware is rejected for live connections and
+recorded episodes.
+
+**Firmware 0.9.16 sustained USB capture remains unqualified.** This candidate
+improves failure handling but does not fix device firmware. Read the
+[candidate status](08_candidate_status.md) and
+[compatibility guide](06_compatibility.md) before collecting experimental data.
 
 ## Diagnose before collecting data
 

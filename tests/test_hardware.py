@@ -45,10 +45,11 @@ class AttachedGlove:
 
 
 @pytest.fixture(scope="module")
-def attached_pair() -> Sequence[AttachedGlove]:
+def attached_gloves(pytestconfig) -> Sequence[AttachedGlove]:
     candidates = list_candidates()
-    assert len(candidates) == 2, (
-        "the pair suite requires exactly two known OGLO USB devices; saw "
+    expected = 1 if pytestconfig.getoption("--hardware-single") else 2
+    assert len(candidates) == expected, (
+        f"the suite requires exactly {expected} known OGLO USB devices; saw "
         f"{[(c.device, c.serial_number) for c in candidates]}"
     )
     found: List[AttachedGlove] = []
@@ -61,9 +62,19 @@ def attached_pair() -> Sequence[AttachedGlove]:
                     side=glove.info.side,
                 )
             )
-    assert {item.side for item in found} == {"left", "right"}
-    assert len({item.serial.casefold() for item in found}) == 2
+    if expected == 2:
+        assert {item.side for item in found} == {"left", "right"}
+    else:
+        assert found[0].side in {"left", "right"}
+    assert len({item.serial.casefold() for item in found}) == expected
     return tuple(sorted(found, key=lambda item: item.side))
+
+
+@pytest.fixture(scope="module")
+def attached_pair(attached_gloves) -> Sequence[AttachedGlove]:
+    if len(attached_gloves) != 2:
+        pytest.skip("two-hand check requires both gloves; --hardware-single selected")
+    return attached_gloves
 
 
 def _all_zero_loss(counters: Dict[str, int]) -> None:
@@ -101,7 +112,9 @@ def _assert_monotonic(samples: Sequence[object]) -> None:
     assert all(sample.dropped == 0 for sample in samples)
 
 
-def _assert_sample_contract(samples: Dict[str, list], *, tactile_hz: float) -> None:
+def _assert_sample_contract(
+    samples: Dict[str, list], *, tactile_hz: float, stream_clean: bool
+) -> None:
     tactile: List[Frame] = samples["tactile"]
     imu: List[ImuSample] = samples["imu"]
     mag: List[MagSample] = samples["mag"]
@@ -117,8 +130,12 @@ def _assert_sample_contract(samples: Dict[str, list], *, tactile_hz: float) -> N
         assert frame.counts.dtype == np.uint16
         assert int(frame.counts.min()) >= 0 and int(frame.counts.max()) <= 4095
         assert frame.finger(0).shape == (4, 4)
-        assert frame.residual.dtype == np.float32
-        assert np.array_equal(frame.residual, frame.counts.astype(np.float32))
+        if stream_clean:
+            assert frame.residual.dtype == np.float32
+            assert np.array_equal(frame.residual, frame.counts.astype(np.float32))
+        else:
+            with pytest.raises(CleanStreamError):
+                _ = frame.residual
 
     for sample in imu:
         assert len(sample.accel) == len(sample.gyro) == 3
@@ -141,14 +158,14 @@ def _assert_status_healthy(glove: oglo.Glove):
     return status
 
 
-def test_usb_discovery_identity_health_and_zero_readback(attached_pair):
-    assert len({item.port.serial_number for item in attached_pair}) == 2
-    for item in attached_pair:
+def test_usb_discovery_identity_health_and_zero_readback(attached_gloves):
+    assert len({item.port.serial_number for item in attached_gloves}) == len(attached_gloves)
+    for item in attached_gloves:
         with oglo.connect(port=item.port.device) as glove:
             info = glove.info
             assert (info.serial, info.side, info.transport) == (item.serial, item.side, "usb")
             assert _fw_at_least(info.fw_rev, (0, 9, 10))
-            assert info.hw_rev and info.zero_valid and info.stream_clean
+            assert info.hw_rev and info.zero_valid
             assert info.rate_hz == 250 and info.has_mag
             assert info.channels == (
                 ["pinky", "ring", "middle", "index", "thumb"]
@@ -165,8 +182,8 @@ def test_usb_discovery_identity_health_and_zero_readback(attached_pair):
             assert recipe["clean"] is info.stream_clean
 
 
-def test_logical_serial_selection_never_returns_the_other_hand(attached_pair):
-    for item in attached_pair:
+def test_logical_serial_selection_never_returns_the_other_hand(attached_gloves):
+    for item in attached_gloves:
         with oglo.connect(serial=item.serial, timeout=10.0) as glove:
             assert glove.info.serial == item.serial
             assert glove.info.side == item.side
@@ -182,22 +199,26 @@ def test_pair_connects_one_left_and_one_right(attached_pair):
         right.close()
 
 
-def test_each_hand_streams_all_modalities_without_loss(attached_pair, hardware_seconds):
-    for item in attached_pair:
+def test_each_hand_streams_all_modalities_without_loss(attached_gloves, hardware_seconds):
+    for item in attached_gloves:
         with oglo.connect(port=item.port.device) as glove:
             before = _assert_status_healthy(glove)
             samples = _collect(glove, hardware_seconds)
-            _assert_sample_contract(samples, tactile_hz=float(glove.info.rate_hz))
+            _assert_sample_contract(samples, tactile_hz=float(glove.info.rate_hz),
+                                    stream_clean=glove.info.stream_clean)
             _all_zero_loss(glove.dropped)
             after = _assert_status_healthy(glove)
             assert after.uptime_ms >= before.uptime_ms
             assert after.tag_dropped == before.tag_dropped
-            assert after.tag_short_writes == before.tag_short_writes
+            if _fw_at_least(glove.info.fw_rev, (0, 9, 16)):
+                assert after.tag_short_writes >= before.tag_short_writes
+            else:
+                assert after.tag_short_writes == before.tag_short_writes
             assert after.deadline_misses == before.deadline_misses
 
 
-def test_stop_restart_and_public_iterators(attached_pair):
-    for item in attached_pair:
+def test_stop_restart_and_public_iterators(attached_gloves):
+    for item in attached_gloves:
         with oglo.connect(port=item.port.device) as glove:
             tactile = next(glove.tactile(timeout=2.0))
             imu = next(glove.imu(timeout=2.0))
@@ -212,7 +233,36 @@ def test_stop_restart_and_public_iterators(attached_pair):
             _all_zero_loss(glove.dropped)
 
 
-def test_repeated_streaming_context_close_does_not_reboot_a_glove(attached_pair):
+def test_link_ping_authorization_and_cadence_survive_stream_pause(attached_gloves, monkeypatch):
+    for item in attached_gloves:
+        with oglo.connect(port=item.port.device) as glove:
+            if not glove.info.raw.get("link_ping") or not _fw_at_least(glove.info.fw_rev, (0, 9, 16)):
+                pytest.skip("attached firmware does not advertise the LINK PING contract")
+            ping_times = []
+            write = glove._t._s.write
+
+            def observed_write(payload):
+                result = write(payload)
+                if payload == b"LINK PING\n":
+                    ping_times.append(time.monotonic())
+                return result
+
+            monkeypatch.setattr(glove._t._s, "write", observed_write)
+            before = glove.status()
+            _collect(glove, 0.5)
+            glove.stop()
+            paused_at = time.monotonic()
+            time.sleep(2.2)
+            after = glove.status()
+            assert len([t for t in ping_times if t >= paused_at]) >= 2
+            assert all(b - a < 2.0 for a, b in zip(ping_times, ping_times[1:]))
+            assert after.raw.get("wedge_host_authorized") is True
+            assert after.uptime_ms >= before.uptime_ms
+            assert after.raw.get("mcu_boot_id") == before.raw.get("mcu_boot_id")
+            _all_zero_loss(glove.dropped)
+
+
+def test_repeated_streaming_context_close_does_not_reboot_a_glove(attached_gloves):
     """Regression for closing CDC before firmware processes STREAM TAG OFF.
 
     The failure is physical: the port disappears, then returns with a lower uptime
@@ -221,14 +271,14 @@ def test_repeated_streaming_context_close_does_not_reboot_a_glove(attached_pair)
     """
     previous_uptime: Dict[str, int] = {}
     for _ in range(5):
-        for item in attached_pair:
+        for item in attached_gloves:
             with oglo.connect(port=item.port.device) as glove:
                 status = _assert_status_healthy(glove)
                 if item.serial in previous_uptime:
                     assert status.uptime_ms >= previous_uptime[item.serial]
                 previous_uptime[item.serial] = status.uptime_ms
                 assert next(glove.tactile(timeout=2.0)).dropped == 0
-        assert len(list_candidates()) == 2
+        assert len(list_candidates()) == len(attached_gloves)
 
 
 def test_two_hands_stream_concurrently_without_cross_throttling(attached_pair, hardware_seconds):
@@ -241,7 +291,8 @@ def test_two_hands_stream_concurrently_without_cross_throttling(attached_pair, h
             }
             samples = {side: future.result() for side, future in futures.items()}
         for glove in (left, right):
-            _assert_sample_contract(samples[glove.info.side], tactile_hz=float(glove.info.rate_hz))
+            _assert_sample_contract(samples[glove.info.side], tactile_hz=float(glove.info.rate_hz),
+                                    stream_clean=glove.info.stream_clean)
             _all_zero_loss(glove.dropped)
             _assert_status_healthy(glove)
     finally:
@@ -288,17 +339,17 @@ def test_two_hand_record_replay_round_trip(attached_pair, tmp_path):
         right.close()
 
 
-def test_doctor_passes_both_attached_usb_gloves(attached_pair, hardware_seconds):
+def test_doctor_passes_attached_usb_gloves(attached_gloves, hardware_seconds):
     report = doctor(seconds=hardware_seconds)
     failures = [check for check in report.checks if check.verdict != OK]
     assert not failures, str(report)
-    for item in attached_pair:
+    for item in attached_gloves:
         assert any(item.serial in check.name for check in report.checks)
 
 
 @pytest.mark.hardware_mutation
 def test_reversible_raw_clean_threshold_and_rate_changes(
-    attached_pair, hardware_mutations_enabled
+    attached_gloves, hardware_mutations_enabled
 ):
     """Exercise mutations while restoring every observed initial setting.
 
@@ -306,7 +357,7 @@ def test_reversible_raw_clean_threshold_and_rate_changes(
     proves the attached device is at the 500 Hz shipping value before changing it.
     That makes restoring ``imu=500`` evidence-based rather than an assumption.
     """
-    for item in attached_pair:
+    for item in attached_gloves:
         with oglo.connect(port=item.port.device) as glove:
             original_rate = glove.info.rate_hz
             original_clean = glove.info.stream_clean
@@ -339,6 +390,8 @@ def test_reversible_raw_clean_threshold_and_rate_changes(
                 if original_clean:
                     glove.clean(threshold=original_threshold)
                 else:
+                    if glove.info.stream_thr != original_threshold:
+                        glove.clean(threshold=original_threshold)
                     glove.raw()
 
             assert glove.info.rate_hz == original_rate
