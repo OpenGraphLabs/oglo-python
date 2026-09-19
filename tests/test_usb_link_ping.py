@@ -562,27 +562,55 @@ def test_close_is_bounded_when_a_keepalive_write_never_returns(fast_ping, monkey
         def write(self, data: bytes) -> int:
             if data.strip() == b"LINK PING":
                 self.ping_entered.set()
-                self.release_ping.wait(1.0)
+                self.release_ping.wait()
             return super().write(data)
 
     serial = StuckPingSerial()
     transport = UsbTransport(serial)
     transport.read_config(interval=0.01, drain=0)
-    transport.start()
-    assert serial.ping_entered.wait(0.2)
-    worker = transport._keepalive_thread
-    stop_count = serial.commands.count("STREAM TAG OFF")
+    closed = threading.Event()
+    close_errors = []
+    join_timeouts = []
+    worker = None
+    closer = None
 
-    started = time.monotonic()
-    transport.close()
-    assert time.monotonic() - started < 0.15
-    assert serial.closed is True
-    # close did not overlap STREAM OFF with the write that failed to join.
-    assert serial.commands.count("STREAM TAG OFF") == stop_count
+    def close_transport():
+        try:
+            transport.close()
+        except BaseException as exc:
+            close_errors.append(exc)
+        finally:
+            closed.set()
 
-    serial.release_ping.set()
-    assert worker is not None
-    worker.join(timeout=0.5)
+    try:
+        transport.start()
+        worker = transport._keepalive_thread
+        assert serial.ping_entered.wait(2.0)
+        stop_count = serial.commands.count("STREAM TAG OFF")
+        real_join = worker.join
+
+        def observed_join(timeout=None):
+            join_timeouts.append(timeout)
+            return real_join(timeout=timeout)
+
+        monkeypatch.setattr(worker, "join", observed_join)
+        closer = threading.Thread(target=close_transport)
+        closer.start()
+        # The write stays blocked until cleanup. Verify the exact join bound and
+        # that close returns independently, without timing CI scheduler latency.
+        assert closed.wait(2.0), "close waited for the stuck command write"
+        assert not close_errors
+        assert join_timeouts == [0.03]
+        assert worker.is_alive()
+        assert serial.closed is True
+        assert serial.commands.count("STREAM TAG OFF") == stop_count
+    finally:
+        serial.release_ping.set()
+        if closer is not None:
+            closer.join(timeout=2.0)
+        if worker is not None:
+            threading.Thread.join(worker, timeout=2.0)
+        transport.close()
     assert not worker.is_alive()
 
 
