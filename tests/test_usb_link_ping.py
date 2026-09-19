@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -125,7 +126,7 @@ def test_legacy_or_unadvertised_firmware_never_receives_link_ping(cfg, fast_ping
     transport.close()
 
 
-def test_ping_is_immediate_periodic_reply_free_and_independent_of_poll(fast_ping):
+def test_ping_is_reply_free_and_independent_of_poll(fast_ping):
     class TimedSerial(FakeSerial):
         def __init__(self):
             super().__init__(PING_CFG, stream=tagged_burst(4))
@@ -139,24 +140,90 @@ def test_ping_is_immediate_periodic_reply_free_and_independent_of_poll(fast_ping
     serial = TimedSerial()
     transport = UsbTransport(serial)
     transport.read_config(interval=0.01, drain=0)
-    started = time.monotonic()
-    transport.start()
+    try:
+        transport.start()
+        # Deliberately do not call poll(). This checks real worker independence,
+        # not the shared CI host's sub-80 ms scheduling latency. Exact cadence and
+        # missed-deadline behavior are checked with controlled time below.
+        wait_for(lambda: len(serial.ping_times) >= 4, timeout=2.0)
+        assert not serial._out.startswith(b"#")  # LINK PING added no text reply
 
-    # Deliberately do not call poll(): a descheduled/slow reader still has to prove
-    # CDC OUT liveness independently of its bulk-IN consumption cadence.
-    wait_for(lambda: len(serial.ping_times) >= 4)
-    assert serial.ping_times[0] - started < 0.1
-    assert max(b - a for a, b in zip(serial.ping_times, serial.ping_times[1:])) < 0.08
-    assert not serial._out.startswith(b"#")  # LINK PING added no text reply
+        packets = []
+        for _ in range(100):
+            packets.extend(transport.poll())
+            if any(isinstance(packet, w.TactilePacket) for packet in packets):
+                break
+        assert any(isinstance(packet, w.TactilePacket) for packet in packets)
+        assert transport.dropped.malformed_usb == 0
+    finally:
+        transport.close()
 
-    packets = []
-    for _ in range(100):
-        packets.extend(transport.poll())
-        if any(isinstance(packet, w.TactilePacket) for packet in packets):
-            break
-    assert any(isinstance(packet, w.TactilePacket) for packet in packets)
-    assert transport.dropped.malformed_usb == 0
-    transport.close()
+
+@pytest.mark.parametrize("first_write_pause", [0.0, 3.5])
+def test_ping_cadence_is_immediate_and_skips_missed_deadlines(monkeypatch, first_write_pause):
+    clock = [0.0]
+    ping_times = []
+    waits = []
+    workers = []
+
+    class ClockedSerial(FakeSerial):
+        def write(self, data):
+            if data.strip() == b"LINK PING":
+                ping_times.append(clock[0])
+                if len(ping_times) == 1:
+                    clock[0] += first_write_pause
+            return super().write(data)
+
+    class ClockedStop:
+        stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def set(self):
+            self.stopped = True
+
+        def wait(self, delay):
+            waits.append(delay)
+            clock[0] += delay
+            return self.stopped or len(waits) > 4
+
+    class ControlledThread:
+        def __init__(self, *, target, **kwargs):
+            self.target = target
+            workers.append(self)
+
+        def start(self):
+            pass  # Run the actual worker loop synchronously after start() returns.
+
+        def is_alive(self):
+            return False
+
+        def join(self, **kwargs):
+            pass
+
+    serial = ClockedSerial(PING_CFG)
+    transport = UsbTransport(serial)
+    transport.read_config(interval=0.01, drain=0)
+    # Replace only this module's references; real threading/time remain intact.
+    monkeypatch.setattr(_usb, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], sleep=time.sleep,
+    ))
+    monkeypatch.setattr(_usb, "threading", SimpleNamespace(
+        Event=ClockedStop, Thread=ControlledThread, current_thread=threading.current_thread,
+    ))
+    try:
+        transport.start()
+        assert len(workers) == 1
+        workers[0].target()
+        # First ping is immediate. A long write/scheduling pause skips all missed
+        # deadlines instead of issuing a catch-up burst.
+        assert ping_times == pytest.approx([
+            0.0, first_write_pause + 1.0, first_write_pause + 2.0, first_write_pause + 3.0,
+        ])
+        assert waits == pytest.approx([0.0, 1.0, 1.0, 1.0, 1.0])
+    finally:
+        transport.close()
 
 
 def test_stop_keeps_pinging_until_close_ends_the_usb_epoch(fast_ping):
