@@ -125,6 +125,8 @@ storage named in that report. It is not a permanent guarantee for every host.
 Failed short checks prevent the long soak from starting. Use Ctrl-C to cancel an
 active run: its recording workers are asked to stop and seal their data before
 the glove connections close. Cancelled captures do not count as a passed soak.
+If either hand's recorder fails, the other recorder is asked to stop before the
+failure is reported, without waiting for the remaining soak duration.
 
 USB short-write counters are recorded as backpressure observations. They do not
 alone mean lost data on firmware 0.9.16, which retries pending data. Sequence gaps,

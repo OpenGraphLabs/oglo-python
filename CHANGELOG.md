@@ -34,6 +34,8 @@ All notable user-facing changes are recorded here. Versions follow
 
 ### Fixed
 
+- stop the peer recording when either hand fails during acceptance, including a
+  right-hand failure while the left-hand recorder is still running
 - fail silent recordings after five seconds and preserve their incomplete data
   and error metadata; avoid unbounded USB drains after an endpoint fails
 - explicitly lower DTR before closing SDK-owned USB ports, so Linux tty settings

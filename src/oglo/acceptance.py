@@ -20,7 +20,7 @@ import platform
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -924,13 +924,15 @@ def _record_replay_pair(
         with ThreadPoolExecutor(max_workers=2) as pool:
             try:
                 futures = {
-                    g.info.side: pool.submit(
+                    pool.submit(
                         sdk.record, root / g.info.side, seconds, glove=g, stop_event=stop_event
-                    )
+                    ): g.info.side
                     for g in gloves
                 }
-                for side, future in futures.items():
-                    paths[side] = Path(future.result())
+                # Observe whichever hand finishes first. Waiting in left/right
+                # order can hide a right-hand failure for the full soak duration.
+                for future in as_completed(futures):
+                    paths[futures[future]] = Path(future.result())
             except BaseException:
                 # Wake the other recorder before executor shutdown waits for it.
                 stop_event.set()

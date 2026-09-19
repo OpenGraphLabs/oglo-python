@@ -336,7 +336,6 @@ def test_stream_health_distinguishes_backpressure_from_loss(
 
 def test_interrupted_pair_recording_cancels_workers_before_waiting_for_shutdown(tmp_path, monkeypatch):
     import threading
-    from concurrent.futures import Future
     from oglo.acceptance import _record_replay_pair
 
     started = threading.Event()
@@ -348,11 +347,11 @@ def test_interrupted_pair_recording_cancels_workers_before_waiting_for_shutdown(
         finished.append(glove.info.side)
         return path
 
-    def interrupted_result(self):
+    def interrupted_wait(futures):
         assert started.wait(1.0)
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(Future, "result", interrupted_result)
+    monkeypatch.setattr("oglo.acceptance.as_completed", interrupted_wait)
     gloves = [SimpleNamespace(info=SimpleNamespace(side=side), stop=lambda: None)
               for side in ("left", "right")]
     report = AcceptanceReport(tmp_path, AcceptanceConfig(), "test")
@@ -361,3 +360,32 @@ def test_interrupted_pair_recording_cancels_workers_before_waiting_for_shutdown(
                             SimpleNamespace(record=record), label="soak")
     assert sorted(finished) == ["left", "right"]
     assert (tmp_path / "acceptance-report.json").exists()
+
+
+@pytest.mark.parametrize("failed_side", ["left", "right"])
+def test_either_failed_hand_cancels_the_other_recording(tmp_path, failed_side):
+    import threading
+    from oglo.acceptance import _record_replay_pair
+
+    peer_started = threading.Event()
+    peer_cancelled = []
+
+    def record(path, seconds, *, glove, stop_event):
+        if glove.info.side == failed_side:
+            assert peer_started.wait(2.0)
+            raise RuntimeError(f"{failed_side} stream stalled")
+        peer_started.set()
+        # A bounded wait makes the regression fail rather than hanging a test for
+        # the requested 75 minutes when the other hand's failure is ignored.
+        peer_cancelled.append(stop_event.wait(2.0))
+        return path
+
+    gloves = [SimpleNamespace(info=SimpleNamespace(side=side), stop=lambda: None)
+              for side in ("left", "right")]
+    report = AcceptanceReport(tmp_path, AcceptanceConfig(), "test")
+    _record_replay_pair(report, gloves, 4500, tmp_path / "recordings",
+                        SimpleNamespace(record=record), label="soak")
+    assert peer_cancelled == [True]
+    assert report.failed
+    assert report.checks[-1].verdict == FAIL
+    assert f"{failed_side} stream stalled" in report.checks[-1].detail
