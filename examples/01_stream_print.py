@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Connect, calibrate, print. The whole SDK in fifteen lines."""
+"""Capture a new sweep zero, enable clean mode, and print tactile peaks."""
 
 import oglo
 

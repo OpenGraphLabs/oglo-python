@@ -27,20 +27,22 @@ guard detects a stalled capture but does not repair the underlying USB fault.
 ## Reading one back
 
 ```python
+import oglo
+
 e = oglo.replay("out/ep_0001")
 
 print(e.summary())
 for f in e:                  # tactile frames, the same objects a live glove yields
-    f.residual.max()
+    values = f.residual if e.info.stream_clean else f.counts
+    print(values.max())
 ```
 
-An `Episode` has the same shape as a `Glove`: `.info`, `.tactile()`, `.imu()`,
-`.mag()`. That is the point. Swap `oglo.replay(path)` for `oglo.connect()` and nothing
-downstream changes, **so you can write and finish your pipeline before the gloves
-arrive.**
+RAW recordings expose ADC counts through `counts`; `residual` is only available
+for recordings captured in CLEAN mode. Replay preserves the recorded mode.
 
-A test enforces this: it breaks the serial layer so any attempt to touch hardware
-raises, then replays an episode.
+An `Episode` exposes `.info`, `.tactile()`, `.imu()`, and `.mag()` with the same
+sample types as a live `Glove`. Replay requires no hardware and preserves the
+recorded calibration and stream settings.
 
 ## What is on disk
 
@@ -67,10 +69,8 @@ clock remains available for within-glove sample spacing.
 
 ## Three streams, three files, no resampling
 
-Nothing is interpolated onto a common clock. Forcing one rate either invents samples
-for the slow stream or throws them away from the fast one, and a dataset carries that
-choice forever. Each stream keeps its own sequence and its own timestamps, and you
-align them yourself with the numbers in front of you.
+Each stream keeps its own rate, sequence numbers, and timestamps. Align them in
+postprocessing; the SDK does not interpolate or resample.
 
 Nominal USB packet counts are about `IMU:tactile:mag = 4:2:1` at default
 settings. Treat these as packet cadences, not proof of fresh physical sensor samples.
@@ -80,15 +80,10 @@ settings. Treat these as packet cadences, not proof of fresh physical sensor sam
 Record each hand independently, one thread each. Reading one sample from each in turn
 locks them together and throttles both to the slower one.
 
-```python
-left, right = oglo.connect_pair()
-threads = [threading.Thread(target=lambda g=g: oglo.record(f"out/{g.info.side}", 60, glove=g))
-           for g in (left, right)]
-```
-
 Relate their transport-arrival timelines afterwards on `host_t`; samples from one
 read can share a timestamp. This is coarse host alignment, not hardware trigger sync
-or exact sensor-capture alignment. See `examples/04_two_hands.py`.
+or exact sensor-capture alignment. See the complete
+[two-hand example](../examples/04_two_hands.py) for recording, cleanup, and replay.
 
 ## How long you can record
 

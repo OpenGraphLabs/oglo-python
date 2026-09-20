@@ -15,6 +15,7 @@ CURRENT_DOCS = (
     ROOT / "CONTRIBUTING.md",
     ROOT / "SECURITY.md",
     *(ROOT / "docs").glob("*.md"),
+    *(ROOT / "examples/camera_glove").glob("*.md"),
 )
 
 
@@ -30,7 +31,7 @@ def test_current_docs_match_the_release_and_firmware_floor():
     assert "allow-unpaired" not in text
     assert "0.9.16" in text
     assert f"oglo-{package_version}-py3-none-any.whl" in text
-    assert "oglo-python.git@main" in text
+    assert "oglo-python.git@main" not in text
 
 
 def test_current_markdown_relative_links_resolve():
