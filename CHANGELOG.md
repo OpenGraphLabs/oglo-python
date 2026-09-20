@@ -6,6 +6,22 @@ All notable user-facing changes are recorded here. Versions follow
 
 ## [Unreleased]
 
+## [0.1.0rc5] - Candidate preparation
+
+### Fixed
+
+- Stop each acceptance stream in its collecting worker before analyzing samples.
+  On the Pi, post-capture analysis could leave USB unread for about 266 ms while
+  streaming continued, producing device queue drops after an otherwise continuous
+  capture. Snapshot rates and loss counters before stopping, so actual losses
+  still fail the report even when stop clears live session counters.
+- Stop a stream when its acceptance collector raises, before leaving that worker.
+
+### Qualification status
+
+- This fixes the acceptance runner; it does not modify glove firmware or qualify
+  Mac/Linux two-hand capture. rc4 remains a separate, unpublished candidate.
+
 ## [0.1.0rc4] - Candidate preparation
 
 ### Qualification status
@@ -120,7 +136,8 @@ First public release candidate.
 - multi-hour and slow-storage target-host qualification remain deployment tasks
 
 [Unreleased]: https://github.com/OpenGraphLabs/oglo-python/commits/main
-[0.1.0rc4]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc3...main
+[0.1.0rc5]: https://github.com/OpenGraphLabs/oglo-python/compare/425346d3d979db742a767c19fd133f3c49efb493...main
+[0.1.0rc4]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc3...425346d3d979db742a767c19fd133f3c49efb493
 [0.1.0rc3]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc2...v0.1.0rc3
 [0.1.0rc2]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc1...v0.1.0rc2
 [0.1.0rc1]: https://github.com/OpenGraphLabs/oglo-python/releases/tag/v0.1.0rc1

@@ -1,6 +1,6 @@
 # Candidate status
 
-`0.1.0rc4` is prepared for SDK evaluation. The latest published release is still
+`0.1.0rc5` is prepared for SDK evaluation. The latest published release is still
 `0.1.0rc3`. A candidate wheel, passing offline tests or a draft release must not be
 described as a completed physical qualification.
 
@@ -14,6 +14,9 @@ described as a completed physical qualification.
   recovery authorization, including when the host retains DTR on descriptor close.
 - Single-glove acceptance, cooperative recording cancellation, RAW/CLEAN checks
   and firmware 0.9.16 retry-counter interpretation are covered by offline tests.
+- Acceptance stops each hand when its collection ends, before sample analysis.
+  Rates and loss counters are saved before stop clears them. Collector failures
+  also stop the stream; actual-loss checks retain their strict thresholds.
 - Tactile orientation helpers preserve the original wire-order counts.
 
 ## Current physical limitation
@@ -25,8 +28,10 @@ tests, but that intervention is not a qualified firmware release and does not
 establish long-duration SDK reliability. Installing this SDK does not modify or
 repair the glove firmware.
 
-The firmware return comparison, distributable firmware fix and target-host
-recording qualification remain open. The 0.9.10 firmware floor is a protocol
+The stock-firmware return comparison reproduced the failure. An unsigned 0.9.17
+source candidate subsequently passed two five-minute SDK-free probes and a
+60-second rc4 recording on one glove, with independent USB sample comparison.
+Full firmware release and target-host recording qualification remain open. The 0.9.10 firmware floor is a protocol
 compatibility check; it is not a reliability guarantee for every newer firmware.
 Earlier two-hand measurements on 0.9.10 do not qualify a new 0.9.16 combination.
 
@@ -39,7 +44,7 @@ Earlier two-hand measurements on 0.9.10 do not qualify a new 0.9.16 combination.
    python3 -m venv .venv
    # macOS/Linux: source .venv/bin/activate
    # Windows PowerShell: .venv\Scripts\Activate.ps1
-   python -m pip install ./oglo-0.1.0rc4-py3-none-any.whl
+   python -m pip install ./oglo-0.1.0rc5-py3-none-any.whl
    python -c "import oglo; print(oglo.__version__)"
    oglo --help
    ```

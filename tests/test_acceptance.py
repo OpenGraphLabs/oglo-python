@@ -389,3 +389,67 @@ def test_either_failed_hand_cancels_the_other_recording(tmp_path, failed_side):
     assert report.failed
     assert report.checks[-1].verdict == FAIL
     assert f"{failed_side} stream stalled" in report.checks[-1].detail
+
+
+@pytest.mark.parametrize("wire_loss", [0, 3])
+def test_stream_analysis_stops_both_hands_and_keeps_pre_stop_evidence(
+    tmp_path, monkeypatch, wire_loss
+):
+    import threading
+    import oglo.acceptance as acceptance
+
+    barrier = threading.Barrier(2)
+    gloves = []
+    for side in ("left", "right"):
+        glove = SimpleNamespace(
+            info=SimpleNamespace(side=side, serial=side, has_mag=True, fw_rev="0.9.17"),
+            running=False,
+            rates_seen={}, dropped={},
+            status=lambda: SimpleNamespace(healthy=True, uptime_ms=100,
+                tag_dropped=0, deadline_misses=0, tag_short_writes=0),
+        )
+        def stop(g=glove):
+            g.running = False
+            g.rates_seen.clear()
+            g.dropped.clear()
+        glove.stop = stop
+        gloves.append(glove)
+
+    def collect(glove, seconds):
+        glove.running = True
+        glove.rates_seen.update(tactile=250, imu=500, mag=125)
+        glove.dropped.update(wire_tactile=wire_loss, wire_imu=0, wire_mag=0)
+        barrier.wait(timeout=3)
+        return {"tactile": [], "imu": [], "mag": []}
+
+    def analyze(*args):
+        assert all(not glove.running for glove in gloves), "analysis starves active readers"
+
+    monkeypatch.setattr(acceptance, "_collect", collect)
+    monkeypatch.setattr(acceptance, "_report_sample_contract", analyze)
+    report = AcceptanceReport(tmp_path, AcceptanceConfig(), "test")
+    acceptance._check_streams(report, gloves, 0.01, oglo)
+    rates = [c for c in report.checks if "public rates_seen" in c.name]
+    losses = [c for c in report.checks if "host/wire loss counters" in c.name]
+    assert len(rates) == len(losses) == 2
+    assert all(c.verdict == PASS and c.measurements["tactile"] == 250 for c in rates)
+    assert all(c.verdict == (FAIL if wire_loss else PASS) for c in losses)
+    assert all(c.measurements["wire_tactile"] == wire_loss for c in losses)
+
+
+def test_failed_stream_collection_stops_the_started_glove(tmp_path, monkeypatch):
+    import oglo.acceptance as acceptance
+
+    glove = SimpleNamespace(info=SimpleNamespace(side="left"), running=False)
+    glove.stop = lambda: setattr(glove, "running", False)
+    glove.status = lambda: None
+
+    def fail(glove, seconds):
+        glove.running = True
+        raise RuntimeError("reader failed")
+
+    monkeypatch.setattr(acceptance, "_collect", fail)
+    report = AcceptanceReport(tmp_path, AcceptanceConfig(), "test")
+    with pytest.raises(RuntimeError, match="reader failed"):
+        acceptance._check_streams(report, [glove], 0.01, oglo)
+    assert not glove.running

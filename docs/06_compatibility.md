@@ -15,7 +15,7 @@ physical gloves. They are different claims.
 | BLE schema-6 notifications | experimental; parser-tested, not release-qualified |
 | Firmware older than 0.9.10 | rejected for connect, replay, and vector capture |
 
-`0.1.0rc4` has one firmware floor: 0.9.10. Live devices, checked-in vectors, and
+`0.1.0rc5` has one firmware floor: 0.9.10. Live devices, checked-in vectors, and
 recorded episodes below that floor fail closed. Firmware 0.9.11 added a bounded
 TinyUSB write path; 0.9.12 added signed USB application update, and 0.9.16 adds
 host-authorized USB stall recovery while retaining the schema-6 tagged-stream layout. The SDK
@@ -25,7 +25,7 @@ hardware. Deployed schema-6 gloves at or above 0.9.10 remain compatible.
 
 ## Candidate versus published release
 
-The current candidate is `0.1.0rc4`; the latest published release is `0.1.0rc3`.
+The current candidate is `0.1.0rc5`; the latest published release is `0.1.0rc3`.
 The candidate includes tactile orientation helpers and the USB safeguards below.
 Source, package preparation and hardware qualification are separate states; see
 [candidate status](08_candidate_status.md).
