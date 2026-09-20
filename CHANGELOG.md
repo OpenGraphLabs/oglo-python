@@ -14,6 +14,11 @@ All notable user-facing changes are recorded here. Versions follow
 
 ### Changed
 
+- removed unused internal state and superseded timestamp rebasing, and shared
+  sample timestamp defaults without changing public constructors or data formats
+- clarified BLE throughput, raw/clean sample counts, and the calibration state
+  preserved in recordings; removed outdated SDK version labels from BLE errors
+- corrected axis-measurement CLI help and linked its historical measurement files
 - candidate installation now uses a commit-specific CI handoff with matching
   source/examples, source provenance, and SHA-256 checksums
 - camera CI installs the example dependencies and rejects skipped camera tests

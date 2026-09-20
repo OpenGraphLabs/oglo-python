@@ -442,7 +442,8 @@ def test_stream_timeout_is_target_specific_while_other_modalities_keep_arriving(
     assert time.monotonic() - started < 0.1
 
 
-def test_first_ble_notify_just_after_wrap_never_produces_negative_device_time():
+@pytest.mark.parametrize("imu_dt_us", [-32768, -1500, 0, 32767])
+def test_first_ble_notify_just_after_wrap_never_produces_negative_device_time(imu_dt_us):
     from oglo import _wire as w
     from oglo._stream import Demux
 
@@ -456,13 +457,13 @@ def test_first_ble_notify_just_after_wrap_never_produces_negative_device_time():
             return [w.BleSample(
                 seq=0, t_us=100, counts=[550] * 80,
                 accel=(0.0, 0.0, 1.0), gyro=(0.0, 0.0, 0.0),
-                imu_dt_us=-1500, host_received_ns=1_000_000_000,
+                imu_dt_us=imu_dt_us, host_received_ns=1_000_000_000,
             )]
 
     ready = Demux(OnePoll(), stream_clean=False).drain_ready()
     tactile, imu = ready["tactile"][0], ready["imu"][0]
     assert tactile.device_time_us == (1 << 32) + 100
-    assert imu.device_time_us == (1 << 32) - 1400
+    assert imu.device_time_us == (1 << 32) + 100 + imu_dt_us
 
 
 def test_first_usb_batch_around_wrap_never_produces_negative_device_time():

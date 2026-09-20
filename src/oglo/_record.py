@@ -61,7 +61,7 @@ class _Buffer:
     __slots__ = (
         "n", "cap", "seq", "t_us", "device_time_us", "host_t", "host_t_ns",
         "host_received_ns", "dropped", "a", "b", "raw", "raw_valid",
-        "_ashape", "_bshape", "_rawshape", "_used", "_chunk_count", "_work_dir",
+        "_rawshape", "_used", "_chunk_count", "_work_dir",
         "_sealed",
     )
 
@@ -71,8 +71,6 @@ class _Buffer:
             raise ValueError("recording chunk size must be positive")
         self.n = 0
         self.cap = cap
-        self._ashape = ashape
-        self._bshape = bshape
         self._rawshape = rawshape
         self._used = 0
         self._chunk_count = 0

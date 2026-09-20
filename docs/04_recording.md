@@ -42,13 +42,16 @@ for recordings captured in CLEAN mode. Replay preserves the recorded mode.
 
 An `Episode` exposes `.info`, `.tactile()`, `.imu()`, and `.mag()` with the same
 sample types as a live `Glove`. Replay requires no hardware and preserves the
-recorded calibration and stream settings.
+recorded calibration state and stream settings. The SDK episode does not contain
+the per-taxel baseline/noise recipe. The camera/glove collection examples save
+that read-back separately in `calibration.json`; see the
+[collection specification](09_data_specification.md).
 
 ## What is on disk
 
 ```
 ep_0001/
-  meta.json     identity, calibration, status/loss snapshots, complete/error state
+  meta.json     identity, calibration state, settings, loss, complete/error state
   tactile.npz   seq, raw/unwrapped device time, host times, counts, dropped
   imu.npz       seq, times, accel, gyro, raw/raw_valid, dropped
   mag.npz       seq, times, field, raw/raw_valid, dropped

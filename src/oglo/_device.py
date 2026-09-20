@@ -302,7 +302,7 @@ class Glove:
         timeout = _validated_seconds(timeout, "timeout", allow_none=False, allow_zero=False)
         if not getattr(self._t, "replies_in_text", True):
             raise DeviceError(
-                "sweep zero requires USB in SDK 1.0: supported firmware sends its "
+                "sweep zero requires USB: supported firmware sends its "
                 "completion recipe only on the USB text channel, so BLE cannot prove "
                 "that capture and persistence finished"
             )
@@ -395,7 +395,7 @@ class Glove:
         period_ms = self._imu_period_ms(imu) if imu is not None else None
         if period_ms is not None and not getattr(self._t, "replies_in_text", True):
             raise DeviceError(
-                "the applied IMU period is not exposed in BLE config, so SDK 1.0 "
+                "the applied IMU period is not exposed in BLE config, so the SDK "
                 "cannot verify rates(imu=...) over BLE; use USB"
             )
 
@@ -475,7 +475,7 @@ class Glove:
             )
         if not getattr(self._t, "replies_in_text", True):
             raise DeviceError(
-                "raw send() requires USB in SDK 1.0 because firmware has no command "
+                "raw send() requires USB because firmware has no command "
                 "reply channel over BLE; use a typed high-level method whose state can be verified"
             )
         with self._paused():

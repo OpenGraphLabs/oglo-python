@@ -26,15 +26,43 @@ def glove(cfg=CFG_V6, n=40, *, hz=None) -> Glove:
     return Glove(t, info, caps)
 
 
+class _RecordingClock:
+    """Shared simulated time for successful record/replay fixtures."""
+
+    def __init__(self):
+        self.now_ns = 1_000_000_000
+
+    def monotonic(self):
+        return self.now_ns / 1_000_000_000
+
+    def monotonic_ns(self):
+        return self.now_ns
+
+    def time(self):
+        return 1_700_000_000 + self.monotonic()
+
+    def sleep(self, seconds):
+        self.now_ns += round(seconds * 1_000_000_000)
+
+
 def recorded(tmp_path, cfg=CFG_V6, seconds=0.6, n=60):
-    # A paced producer models the physical board and keeps the USB reader from
-    # becoming a synthetic CPU-saturation test. An unpaced infinite refill can
-    # starve either thread on a loaded CI runner and fabricate a stale tail.
-    g = glove(cfg, n, hz=250)
-    try:
-        return record(tmp_path, seconds=seconds, glove=g)
-    finally:
-        g.close()
+    import fake_serial
+    from oglo import _device, _record, _stream, _usb
+
+    # File-format fixtures should not fail because a CI runner pauses between a
+    # synthetic receive and capture finalization. Keep the real transport/decoder
+    # path, but pace the fake producer and reader on the same simulated clock.
+    # Patch module references, not the process-wide time module. Dedicated timing,
+    # loss, cancellation and concurrency tests below use their own clocks/gloves.
+    clock = _RecordingClock()
+    with pytest.MonkeyPatch.context() as patch:
+        for module in (fake_serial, _device, _record, _stream, _usb):
+            patch.setattr(module, "time", clock)
+        g = glove(cfg, n, hz=250)
+        try:
+            return record(tmp_path, seconds=seconds, glove=g)
+        finally:
+            g.close()
 
 
 # --- writing --------------------------------------------------------------------
@@ -70,6 +98,23 @@ def test_episode_number_reservation_is_atomic_under_concurrency(tmp_path):
 def test_all_four_files_are_written(tmp_path):
     ep = recorded(tmp_path)
     assert {p.name for p in ep.iterdir()} == {"meta.json", "tactile.npz", "imu.npz", "mag.npz"}
+
+
+def test_recorded_fixture_is_independent_of_host_delay_before_sealing(tmp_path, monkeypatch):
+    import time
+
+    real_sleep = time.sleep
+    original = Recorder.finish_capture
+
+    def delayed_finish(recorder):
+        real_sleep(0.15)  # A runner pause must not age synthetic fixture samples.
+        original(recorder)
+
+    monkeypatch.setattr(Recorder, "finish_capture", delayed_finish)
+    episode = recorded(tmp_path, seconds=0.05, n=4)
+    metadata = json.loads((episode / "meta.json").read_text())
+    assert metadata["complete"] is True
+    assert metadata["ended_monotonic"] - metadata["started_monotonic"] == pytest.approx(0.05)
 
 
 def test_an_empty_capture_is_refused_rather_than_written(tmp_path):
