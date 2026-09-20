@@ -105,6 +105,21 @@ The devices must report opposite sides and distinct logical serials. Samples fro
 two gloves are not hardware-synchronised; see the [two-hand
 example](examples/04_two_hands.py) before aligning a dataset.
 
+## Record a full session with your camera
+
+The SDK records gloves; the camera is yours. One example shows the whole shape:
+both gloves through `oglo.record()`, a three-method camera skeleton you adapt to
+your device, every frame stamped with the same host clock the gloves use, and one
+`session.json` tying it together.
+
+```bash
+python3 examples/03_full_session.py --seconds 120
+```
+
+Leave the stream raw, keep everything on one computer, and tap a visible taxel when
+prompted. See [Record a full session](docs/09_full_session.md) for the contract and
+what to send.
+
 ## Calibration changes device state
 
 `glove.zero(sweep=5)`, `glove.clean(...)`, `glove.raw()`, and `glove.rates(...)`
@@ -120,6 +135,7 @@ motion range before capturing a new zero.
 - [Data reference](docs/02_data_reference.md)
 - [Calibration](docs/03_calibration.md)
 - [Recording and replay](docs/04_recording.md)
+- [Record a full session for OpenGraph](docs/09_full_session.md)
 - [Troubleshooting](docs/05_troubleshooting.md)
 - [Test your own glove pair](docs/07_acceptance.md)
 
