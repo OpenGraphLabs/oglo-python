@@ -17,7 +17,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, replace
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, List, Optional, Tuple
 
 from . import _wire as w
 from ._config import Capabilities, Info, parse_config
@@ -150,7 +150,6 @@ class BleTransport:
         self._closed = False
         self._samples: Deque[Any] = deque(maxlen=queue_size)
         self._lock = threading.Lock()
-        self._config: Optional[Dict[str, Any]] = None
         self._info: Optional[Info] = None
         self._caps: Optional[Capabilities] = None
         self._subscribed = False
@@ -187,7 +186,6 @@ class BleTransport:
                 f"config characteristic did not parse as JSON ({len(raw)} B read). "
                 "A truncated read points at the BLE stack, not the firmware."
             ) from exc
-        self._config = cfg
         self._info, self._caps = parse_config(cfg, transport="ble")
         return self._info, self._caps
 

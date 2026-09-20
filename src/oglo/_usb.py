@@ -240,7 +240,6 @@ class UsbTransport:
         self._s = serial_like
         self._owns = owns_port
         self._buf = b""
-        self._config: Optional[Dict[str, Any]] = None
         self._caps: Optional[Capabilities] = None
         self._info: Optional[Info] = None
         self._streaming = False
@@ -418,7 +417,6 @@ class UsbTransport:
                     text += chunk
                 cfg = _find_config(text)
                 if cfg is not None:
-                    self._config = cfg
                     self._info, self._caps = parse_config(cfg, transport="usb")
                     return self._info, self._caps
             text = text[-16384:]  # bound the buffer if the board is spewing
