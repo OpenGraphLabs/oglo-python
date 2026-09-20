@@ -43,7 +43,9 @@ def _status(uptime):
 def _meta(counts=None):
     loss = {name: 0 for name in _LOSS_NAMES}
     return {
-        "schema": 2,
+        "schema": 3,
+        "clock_domain": "local_host", "uncertainty_ns": 500_000,
+        "calibration": None, "clean_file": "tactile_left.jsonl",
         "complete": True,
         "sdk_version": "0.1.0rc3",
         "serial": "OGLO-L-TEST01",
@@ -110,18 +112,37 @@ def _columns(n=1):
     }
 
 
+def _write_stream(ep, name, **arrays):
+    """Independent fixture serializer: permits invalid fields for corruption tests."""
+    names = ([f"{finger}_{r}_{c}" for finger in _meta()["channels"]
+              for r in range(4) for c in range(4)] if name == "tactile" else
+             ["ax", "ay", "az", "gx", "gy", "gz"] if name == "imu" else ["mx", "my", "mz"])
+    filename = f"tactile_left.jsonl" if name == "tactile" else f"wrist_{name}_left.jsonl"
+    with (ep / filename).open("w") as output:
+        for index in range(len(arrays["seq"])):
+            extra = {key: value[index].tolist() for key, value in arrays.items() if key not in ("counts", "raw")}
+            if name == "tactile":
+                values = arrays["counts"][index].reshape(80).tolist()
+            else:
+                values = arrays.get("raw", np.zeros((len(arrays["seq"]), len(names)), dtype=np.int16))[index].tolist()
+                extra["raw_valid"] = extra.get("raw_valid", True)
+            row = {
+                "frame_number": index, "capture_ns": int(extra["host_received_ns"]),
+                "clock_source": "host_monotonic", "clock_domain": "local_host",
+                "uncertainty_ns": 500_000, "device_timestamp_ns": int(extra["t_us"]) * 1000,
+                "channels": dict(zip(names, values)), "oglo": extra,
+            }
+            output.write(json.dumps(row) + "\n")
+
+
 def _episode(tmp_path):
     ep = tmp_path / "ep_0001"
     ep.mkdir()
     (ep / "meta.json").write_text(json.dumps(_meta()))
-    np.savez(ep / "tactile.npz", counts=np.zeros((1, 5, 4, 4), dtype=np.uint16), **_columns())
-    np.savez(
-        ep / "imu.npz",
-        accel=np.zeros((1, 3), dtype=np.float32),
-        gyro=np.zeros((1, 3), dtype=np.float32),
-        **_columns(1),
-    )
-    np.savez(ep / "mag.npz", field=np.zeros((1, 3), dtype=np.float32), **_columns(1))
+    _write_stream(ep, "tactile", counts=np.zeros((1, 5, 4, 4), dtype=np.uint16), **_columns())
+    _write_stream(ep, "imu", accel=np.zeros((1, 3), dtype=np.float32),
+                  gyro=np.zeros((1, 3), dtype=np.float32), **_columns())
+    _write_stream(ep, "mag", field=np.zeros((1, 3), dtype=np.float32), **_columns())
     return ep
 
 
@@ -131,20 +152,16 @@ def _two_tactile_rows(ep):
     meta["counts"]["tactile"] = 2
     meta_path.write_text(json.dumps(meta))
     arrays = _columns(2)
-    np.savez(
-        ep / "tactile.npz",
-        counts=np.zeros((2, 5, 4, 4), dtype=np.uint16),
-        **arrays,
-    )
+    _write_stream(ep, "tactile", counts=np.zeros((2, 5, 4, 4), dtype=np.uint16), **arrays)
     return arrays
 
 
-def test_schema2_missing_stream_file_is_not_silently_replayed_as_empty(tmp_path):
+def test_schema3_missing_stream_file_is_not_silently_replayed_as_empty(tmp_path):
     ep = _episode(tmp_path)
-    (ep / "tactile.npz").unlink()
-    with pytest.raises(ReplayError, match="tactile.npz is missing"):
+    (ep / "tactile_left.jsonl").unlink()
+    with pytest.raises(ReplayError, match="tactile_left.jsonl is missing"):
         list(replay(ep).tactile())
-    with pytest.raises(ReplayError, match="tactile.npz is missing"):
+    with pytest.raises(ReplayError, match="tactile_left.jsonl is missing"):
         replay(ep).summary()
 
 
@@ -164,10 +181,9 @@ def test_invalid_header_columns_are_rejected_before_lossy_python_casts(
     tmp_path, column, value, message
 ):
     ep = _episode(tmp_path)
-    with np.load(ep / "tactile.npz", allow_pickle=False) as stored:
-        arrays = {name: stored[name] for name in stored.files}
+    arrays = replay(ep).arrays("tactile")
     arrays[column] = value
-    np.savez(ep / "tactile.npz", **arrays)
+    _write_stream(ep, "tactile", **arrays)
     with pytest.raises(ReplayError, match=message):
         replay(ep).arrays("tactile")
 
@@ -186,12 +202,12 @@ def test_invalid_header_columns_are_rejected_before_lossy_python_casts(
         (lambda a: a["seq"].__setitem__(1, 2), "requires dropped=1"),
     ],
 )
-def test_schema2_rows_cross_validate_clocks_sequences_and_loss(tmp_path, mutate, message):
+def test_schema3_rows_cross_validate_clocks_sequences_and_loss(tmp_path, mutate, message):
     ep = _episode(tmp_path)
     arrays = _two_tactile_rows(ep)
     mutate(arrays)
-    np.savez(
-        ep / "tactile.npz",
+    _write_stream(
+        ep, "tactile",
         counts=np.zeros((2, 5, 4, 4), dtype=np.uint16),
         **arrays,
     )
@@ -213,8 +229,8 @@ def test_partial_sequence_validation_keeps_the_last_accepted_reference(tmp_path)
     arrays["seq"][:] = [5, 4, 6]
     arrays["t_us"][:] = [5, 4, 6]
     arrays["device_time_us"][:] = [5, 4, 6]
-    np.savez(
-        ep / "tactile.npz",
+    _write_stream(
+        ep, "tactile",
         counts=np.zeros((3, 5, 4, 4), dtype=np.uint16),
         **arrays,
     )
@@ -258,7 +274,7 @@ def test_malformed_meta_json_and_noninteger_counts_are_replay_errors(tmp_path):
         ("device_dropped_at_connect", -1, "device_dropped_at_connect.*>=0"),
     ],
 )
-def test_schema2_metadata_rejects_coercion_empty_identity_and_invalid_config(
+def test_schema3_metadata_rejects_coercion_empty_identity_and_invalid_config(
     tmp_path, field, value, message
 ):
     ep = _episode(tmp_path)
@@ -269,7 +285,7 @@ def test_schema2_metadata_rejects_coercion_empty_identity_and_invalid_config(
         replay(ep)
 
 
-def test_schema2_requires_complete_and_all_three_exact_counts(tmp_path):
+def test_schema3_requires_complete_and_all_three_exact_counts(tmp_path):
     ep = _episode(tmp_path)
     meta = _meta()
     del meta["complete"]
@@ -302,7 +318,7 @@ def test_schema2_requires_complete_and_all_three_exact_counts(tmp_path):
         ("error", "claimed success with error", "must have error=null"),
     ],
 )
-def test_complete_schema2_requires_ordered_clocks_and_health_loss_evidence(
+def test_complete_schema3_requires_ordered_clocks_and_health_loss_evidence(
     tmp_path, field, value, message
 ):
     ep = _episode(tmp_path)
@@ -330,7 +346,7 @@ def test_complete_schema2_requires_ordered_clocks_and_health_loss_evidence(
         "error",
     ],
 )
-def test_schema2_requires_each_integrity_field_even_for_fail_closed_parsing(tmp_path, field):
+def test_schema3_requires_each_integrity_field_even_for_fail_closed_parsing(tmp_path, field):
     ep = _episode(tmp_path)
     meta = _meta({"tactile": 0, "imu": 0, "mag": 0})
     meta["complete"] = False
@@ -348,14 +364,14 @@ def test_schema2_requires_each_integrity_field_even_for_fail_closed_parsing(tmp_
         {"tactile": 1, "imu": 1, "mag": 0},
     ],
 )
-def test_complete_schema2_requires_every_fitted_stream(tmp_path, counts):
+def test_complete_schema3_requires_every_fitted_stream(tmp_path, counts):
     ep = _episode(tmp_path)
     (ep / "meta.json").write_text(json.dumps(_meta(counts)))
     with pytest.raises(ReplayError, match="missing a required fitted stream"):
         replay(ep)
 
 
-def test_complete_schema2_rejects_claimed_loss_free_evidence_that_disagrees(tmp_path):
+def test_complete_schema3_rejects_claimed_loss_free_evidence_that_disagrees(tmp_path):
     ep = _episode(tmp_path)
     meta = _meta()
     meta["dropped_end"]["wire_tactile"] = 1
@@ -383,20 +399,20 @@ def test_complete_schema2_rejects_claimed_loss_free_evidence_that_disagrees(tmp_
         replay(ep)
 
 
-def test_complete_schema2_allows_no_mag_samples_when_magnetometer_is_not_fitted(tmp_path):
+def test_complete_schema3_allows_no_mag_samples_when_magnetometer_is_not_fitted(tmp_path):
     ep = _episode(tmp_path)
     meta = _meta({"tactile": 1, "imu": 1, "mag": 0})
     meta["has_mag"] = False
     meta["status_start"]["mag_required"] = False
     meta["status_end"]["mag_required"] = False
     (ep / "meta.json").write_text(json.dumps(meta))
-    np.savez(ep / "mag.npz", field=np.empty((0, 3), dtype=np.float32), **_columns(0))
+    _write_stream(ep, "mag", field=np.empty((0, 3), dtype=np.float32), **_columns(0))
     episode = replay(ep)
     assert episode.info.has_mag is False
     assert list(episode.mag()) == []
 
 
-def test_incomplete_schema2_allows_unfinished_clocks_status_and_empty_loss_maps(tmp_path):
+def test_incomplete_schema3_allows_unfinished_clocks_status_and_empty_loss_maps(tmp_path):
     ep = _episode(tmp_path)
     meta = _meta({"tactile": 0, "imu": 0, "mag": 0})
     meta.update(
@@ -420,16 +436,11 @@ def test_incomplete_schema2_allows_unfinished_clocks_status_and_empty_loss_maps(
     assert replay(ep).meta["complete"] is False
 
 
-def test_schema1_keeps_legacy_defaults_and_normalizes_cast_errors(tmp_path):
-    ep = tmp_path / "legacy"
-    ep.mkdir()
-    (ep / "meta.json").write_text(json.dumps({"serial": "old", "rate_hz": "250"}))
-    legacy = replay(ep)
-    assert legacy.schema == 1
-    assert legacy.info.serial == "old"
-    assert legacy.info.side == "right"
-    assert legacy.info.rate_hz == 250
-
-    (ep / "meta.json").write_text(json.dumps({"schema": 1, "rate_hz": "not-a-number"}))
-    with pytest.raises(ReplayError, match="invalid schema-1 metadata"):
+@pytest.mark.parametrize("schema", [1, 2, 999])
+def test_old_or_unknown_formats_are_refused(tmp_path, schema):
+    ep = _episode(tmp_path)
+    meta = _meta()
+    meta["schema"] = schema
+    (ep / "meta.json").write_text(json.dumps(meta))
+    with pytest.raises(ReplayError, match="expected JSONL schema 3"):
         replay(ep)

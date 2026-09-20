@@ -1,6 +1,6 @@
 """Record tactile, IMU, and magnetometer streams without resampling.
 
-Each episode contains meta.json and one NPZ per stream, preserving timestamps,
+Each episode contains meta.json and backend-compatible JSONL per stream, preserving timestamps,
 sequence numbers, and loss counters. See `docs/04_recording.md` for the format.
 """
 
@@ -12,20 +12,19 @@ import os
 import shutil
 import threading
 import time
-import zipfile
 from copy import deepcopy
 from dataclasses import asdict
 from numbers import Real
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional
 from uuid import uuid4
-
-import numpy as np
 
 from ._frame import Frame, ImuSample, MagSample
 from ._config import _fw_at_least
+from ._jsonl import (make_row, stream_filename, baseline_for, calibration_document,
+                     derive_clean, validate_clock)
 
-SCHEMA = 2
+SCHEMA = 3
 _STREAM_STALL_TIMEOUT_S = 5.0
 
 
@@ -48,151 +47,63 @@ def next_episode_dir(root: Path) -> Path:
 
 
 class _Buffer:
-    """Fixed-size live columns backed by immutable episode-local chunks.
+    """A fixed-size batch of JSONL rows, spilled to episode-local chunks."""
 
-    A recorder used to double these arrays whenever they filled. That is efficient
-    for short captures but still consumes all available RAM if a capture is left
-    running. Here ``cap`` is a hard ceiling: a full block is sealed as one
-    uncompressed ``.npz`` below the episode's hidden working directory, then the
-    arrays are reused. Final NPZ creation streams those chunks and the last live block; it never
-    joins the complete episode in memory.
-    """
-
-    __slots__ = (
-        "n", "cap", "seq", "t_us", "device_time_us", "host_t", "host_t_ns",
-        "host_received_ns", "dropped", "a", "b", "raw", "raw_valid",
-        "_rawshape", "_used", "_chunk_count", "_work_dir",
-        "_sealed",
-    )
-
-    def __init__(self, work_dir: Path, ashape=(), bshape=None, rawshape=None,
-                 cap: int = 4096) -> None:
+    def __init__(self, work_dir: Path, name: str, info: Any, *,
+                 clock_domain: str, uncertainty_ns: int, cap: int = 4096) -> None:
         if cap <= 0:
             raise ValueError("recording chunk size must be positive")
         self.n = 0
         self.cap = cap
-        self._rawshape = rawshape
-        self._used = 0
+        self.name = name
+        self.info = info
+        self.clock_domain = clock_domain
+        self.uncertainty_ns = uncertainty_ns
+        self._rows: List[str] = []
         self._chunk_count = 0
-        self._work_dir = Path(work_dir)
+        self._work_dir = work_dir
         self._sealed = False
-        self.seq = np.empty(cap, dtype=np.uint32)
-        self.t_us = np.empty(cap, dtype=np.uint32)
-        self.device_time_us = np.empty(cap, dtype=np.uint64)
-        self.host_t = np.empty(cap, dtype=np.float64)
-        self.host_t_ns = np.empty(cap, dtype=np.uint64)
-        self.host_received_ns = np.empty(cap, dtype=np.uint64)
-        self.dropped = np.empty(cap, dtype=np.uint32)
-        self.a = np.empty((cap,) + ashape, dtype=np.uint16 if ashape == (5, 4, 4) else np.float32)
-        self.b = np.empty((cap,) + bshape, dtype=np.float32) if bshape else None
-        self.raw = np.empty((cap,) + rawshape, dtype=np.int16) if rawshape else None
-        self.raw_valid = np.empty(cap, dtype=np.bool_) if rawshape else None
+        self.missing_raw = 0
 
     @property
     def live_samples(self) -> int:
-        """Rows currently resident in RAM (always at most ``cap``)."""
-        return self._used
+        return len(self._rows)
 
     @property
     def chunk_count(self) -> int:
         return self._chunk_count
 
-    def _columns(self) -> Iterator[Tuple[str, np.ndarray]]:
-        for name in (
-            "seq", "t_us", "device_time_us", "host_t", "host_t_ns",
-            "host_received_ns", "dropped", "a", "b", "raw", "raw_valid",
-        ):
-            arr = getattr(self, name)
-            if arr is not None:
-                yield name, arr
-
     def _flush(self) -> None:
-        if not self._used:
+        if not self._rows:
             return
         self._work_dir.mkdir(parents=True, exist_ok=True)
-        final = self._work_dir / f"chunk_{self._chunk_count:08d}.npz"
-        tmp = self._work_dir / f".{final.name}.{uuid4().hex}.tmp"
-        try:
-            # One uncompressed container and one fsync, rather than 8-10 separate
-            # fsyncs on the sole reader thread. The latter can pause an SD card long
-            # enough to overflow the device/host receive queue. Final compression is
-            # deferred until acquisition has stopped.
-            with tmp.open("xb") as f:
-                np.savez(f, **{
-                    name: arr[: self._used] for name, arr in self._columns()
-                })
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, final)
-        except BaseException:
-            try:
-                tmp.unlink()
-            except FileNotFoundError:
-                pass
-            raise
+        final = self._work_dir / f"chunk_{self._chunk_count:08d}.jsonl"
+        _atomic_text(final, "".join(self._rows))
         self._chunk_count += 1
-        self._used = 0
+        self._rows.clear()
 
     def add(self, seq, t_us, device_time_us, host_t, host_t_ns, host_received_ns,
             dropped, a, b=None, raw=None) -> None:
         if self._sealed:
             raise RecordError("cannot add samples after this recording was finalized")
-        if self._used == self.cap:
+        row = make_row(self.name, self.info, self.n, {
+            "seq": seq, "t_us": t_us, "device_time_us": device_time_us,
+            "host_t": host_t, "host_t_ns": host_t_ns,
+            "host_received_ns": host_received_ns, "dropped": dropped,
+        }, a, b, raw, clock_domain=self.clock_domain, uncertainty_ns=self.uncertainty_ns)
+        line = json.dumps(row, allow_nan=False, separators=(",", ":")) + "\n"
+        if self.live_samples == self.cap:
             self._flush()
-        i = self._used
-        self.seq[i] = seq
-        self.t_us[i] = t_us
-        self.device_time_us[i] = device_time_us
-        self.host_t[i] = host_t
-        self.host_t_ns[i] = host_t_ns
-        self.host_received_ns[i] = host_received_ns
-        self.dropped[i] = dropped
-        self.a[i] = a
-        if b is not None and self.b is not None:
-            self.b[i] = b
-        if self.raw is not None and self.raw_valid is not None:
-            if raw is None:
-                self.raw[i].fill(0)
-                self.raw_valid[i] = False
-            else:
-                values = np.asarray(raw)
-                if values.shape != self._rawshape:
-                    raise ValueError(
-                        f"raw sensor sample must have shape {self._rawshape}, got {values.shape}"
-                    )
-                if not np.issubdtype(values.dtype, np.integer):
-                    raise ValueError("raw sensor sample must contain integers")
-                if values.size and (int(values.min()) < -32768 or int(values.max()) > 32767):
-                    raise ValueError("raw sensor sample is outside signed int16 range")
-                self.raw[i] = values
-                self.raw_valid[i] = True
-        self._used += 1
+        self._rows.append(line)
+        if self.name != "tactile" and raw is None:
+            self.missing_raw += 1
         self.n += 1
 
-    def shape(self, name: str) -> Tuple[int, ...]:
-        arr = getattr(self, name)
-        if arr is None:
-            raise KeyError(name)
-        return (self.n,) + arr.shape[1:]
-
-    def dtype(self, name: str) -> np.dtype:
-        arr = getattr(self, name)
-        if arr is None:
-            raise KeyError(name)
-        return arr.dtype
-
-    def iter_column(self, name: str) -> Iterator[np.ndarray]:
-        """Yield disk chunks followed by the live tail, each in row order."""
-        if getattr(self, name) is None:
-            raise KeyError(name)
+    def write_to(self, output) -> None:
         for index in range(self._chunk_count):
-            path = self._work_dir / f"chunk_{index:08d}.npz"
-            with np.load(path, allow_pickle=False) as chunk:
-                # Loading one fixed-size column is still bounded by ``cap`` and
-                # avoids ever materializing all columns or all episode rows.
-                yield chunk[name]
-        if self._used:
-            yield getattr(self, name)[: self._used]
+            with (self._work_dir / f"chunk_{index:08d}.jsonl").open(encoding="utf-8") as chunk:
+                shutil.copyfileobj(chunk, output)
+        output.writelines(self._rows)
 
     def seal(self) -> None:
         self._sealed = True
@@ -204,22 +115,27 @@ class _Buffer:
 class Recorder:
     """Collects samples, then writes them. Use `oglo.record()` unless you need this."""
 
-    def __init__(self, glove: Any, path: Path, *, chunk_samples: int = 4096) -> None:
+    def __init__(self, glove: Any, path: Path, *, chunk_samples: int = 4096,
+                 calibration: Optional[Dict[str, Any]] = None,
+                 clock_domain: str = "local_host", uncertainty_ns: int = 500_000) -> None:
         self.glove = glove
         # Metadata describes the semantics at capture start. Reading glove.info at
         # finalization let a later RAW/CLEAN/threshold/rate change retroactively
         # relabel earlier rows. Info is frozen, but its list/dict members are not.
         self.info = deepcopy(glove.info)
+        validate_clock(clock_domain, uncertainty_ns)
+        self.clock_domain = clock_domain
+        self.uncertainty_ns = uncertainty_ns
+        self.calibration = deepcopy(calibration)
+        self.baseline = baseline_for(self.info, self.calibration)
         self.dir = Path(path)
         self._work = self.dir / f".recording-{uuid4().hex}"
         chunks = self._work / "chunks"
-        self._t = _Buffer(chunks / "tactile", ashape=(5, 4, 4), cap=chunk_samples)
-        self._i = _Buffer(
-            chunks / "imu", ashape=(3,), bshape=(3,), rawshape=(6,), cap=chunk_samples
-        )
-        self._m = _Buffer(
-            chunks / "mag", ashape=(3,), rawshape=(3,), cap=chunk_samples
-        )
+        options = {"clock_domain": clock_domain, "uncertainty_ns": uncertainty_ns,
+                   "cap": chunk_samples}
+        self._t = _Buffer(chunks / "tactile", "tactile", self.info, **options)
+        self._i = _Buffer(chunks / "imu", "imu", self.info, **options)
+        self._m = _Buffer(chunks / "mag", "mag", self.info, **options)
         self._started_wall: Optional[float] = None
         self._started_mono: Optional[float] = None
         self._ended_wall: Optional[float] = None
@@ -277,7 +193,7 @@ class Recorder:
             self._marker_published = True
 
     def finish_capture(self) -> None:
-        """Freeze capture-end clocks before status reads and compression work."""
+        """Freeze capture-end clocks before status reads and file publication."""
         if self._ended_wall is None:
             self._ended_wall = time.time()
             self._ended_mono = time.monotonic()
@@ -305,9 +221,9 @@ class Recorder:
                 error=error,
             )
 
-            # Readers may discover a reserved episode while it is being compressed.
+            # Readers may discover a reserved episode while it is being finalized.
             # A fail-closed marker is published first, and complete=true only becomes
-            # visible after every NPZ has been staged and atomically replaced.
+            # visible after every JSONL file has been staged and atomically replaced.
             marker = dict(meta)
             marker.update(
                 complete=False,
@@ -316,31 +232,27 @@ class Recorder:
             )
             _atomic_text(self.dir / "meta.json", json.dumps(marker, indent=1) + "\n")
             stage.mkdir(parents=True)
-            common = {
-                "seq": "seq",
-                "t_us": "t_us",
-                "device_time_us": "device_time_us",
-                "host_t": "host_t",
-                "host_t_ns": "host_t_ns",
-                "host_received_ns": "host_received_ns",
-                "dropped": "dropped",
-            }
-            _write_buffer_npz(stage / "tactile.npz", self._t, {
-                **common, "counts": "a",
-            })
-            _write_buffer_npz(stage / "imu.npz", self._i, {
-                **common, "accel": "a", "gyro": "b", "raw": "raw",
-                "raw_valid": "raw_valid",
-            })
-            _write_buffer_npz(stage / "mag.npz", self._m, {
-                **common, "field": "a", "raw": "raw", "raw_valid": "raw_valid",
-            })
+            files = []
+            for name, buffer in (("tactile", self._t), ("imu", self._i), ("mag", self._m)):
+                filename = stream_filename(name, self.info)
+                _write_buffer_jsonl(stage / filename, buffer)
+                files.append(filename)
+            if self.calibration is not None:
+                filename = f"tactile_{self.info.side}.calibration.json"
+                document = calibration_document(self.info, self.calibration, self.baseline)
+                _atomic_text(stage / filename, json.dumps(document, allow_nan=False, indent=2) + "\n")
+                files.append(filename)
+            if not self.info.stream_clean and self.baseline is not None:
+                filename = f"tactile_{self.info.side}.jsonl"
+                derive_clean(stage / stream_filename("tactile", self.info),
+                             stage / filename, self.baseline, self.info.stream_thr)
+                files.append(filename)
             _atomic_text(stage / "meta.json", json.dumps(meta, indent=1) + "\n")
 
             # Publish data files first and the authoritative metadata last. If any
             # replace fails, the marker remains complete=false and replay cannot
             # mistake a mixed set for a complete episode.
-            for name in ("tactile.npz", "imu.npz", "mag.npz"):
+            for name in files:
                 os.replace(stage / name, self.dir / name)
             os.replace(stage / "meta.json", hidden_meta)
             shutil.rmtree(self._work)
@@ -407,6 +319,12 @@ class Recorder:
 
         return {
             "schema": SCHEMA,
+            "clock_domain": self.clock_domain,
+            "uncertainty_ns": self.uncertainty_ns,
+            "calibration": (f"tactile_{info.side}.calibration.json"
+                            if self.calibration is not None else None),
+            "clean_file": (f"tactile_{info.side}.jsonl"
+                           if info.stream_clean or self.baseline is not None else None),
             "sdk_version": __version__,
             # Identity. A dataset that cannot say which board and which firmware
             # produced it cannot be compared with another one.
@@ -452,34 +370,12 @@ class Recorder:
         }
 
 
-def _write_buffer_npz(path: Path, buffer: _Buffer,
-                      columns: Mapping[str, str]) -> None:
-    """Create an NPZ while holding at most one fixed-size chunk in memory.
-
-    NPZ is a ZIP of ordinary NPY members. Writing the one header for the final
-    shape followed by each chunk's raw bytes is byte-for-byte the same array layout
-    as ``numpy.savez_compressed`` without first concatenating every chunk.
-    """
-    with path.open("xb") as raw_file:
-        with zipfile.ZipFile(
-            raw_file, mode="w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
-        ) as archive:
-            for public_name, internal_name in columns.items():
-                dtype = buffer.dtype(internal_name)
-                header = {
-                    "descr": np.lib.format.dtype_to_descr(dtype),
-                    "fortran_order": False,
-                    "shape": buffer.shape(internal_name),
-                }
-                with archive.open(
-                    f"{public_name}.npy", mode="w", force_zip64=True
-                ) as member:
-                    np.lib.format.write_array_header_1_0(member, header)
-                    for piece in buffer.iter_column(internal_name):
-                        contiguous = np.ascontiguousarray(piece, dtype=dtype)
-                        member.write(memoryview(contiguous).cast("B"))
-        raw_file.flush()
-        os.fsync(raw_file.fileno())
+def _write_buffer_jsonl(path: Path, buffer: _Buffer) -> None:
+    """Join finished chunks and the live tail without loading the whole stream."""
+    with path.open("x", encoding="utf-8") as output:
+        buffer.write_to(output)
+        output.flush()
+        os.fsync(output.fileno())
 
 
 def _atomic_text(path: Path, text: str) -> None:
@@ -498,7 +394,9 @@ def _atomic_text(path: Path, text: str) -> None:
 
 
 def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
-           serial: Optional[str] = None, stop_event: Optional[threading.Event] = None) -> Path:
+           serial: Optional[str] = None, stop_event: Optional[threading.Event] = None,
+           calibration: Optional[Dict[str, Any]] = None,
+           clock_domain: str = "local_host", uncertainty_ns: int = 500_000) -> Path:
     """Capture an episode. Returns the directory written.
 
     With no `glove`, one is opened and closed for you. `seconds=None` records until
@@ -508,6 +406,11 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
     be shorter than ``seconds``; data-integrity checks still apply.
     If a fitted stream delivers no samples for five seconds, capture fails and
     preserves any partial data instead of waiting for the requested duration.
+
+    USB reads the existing GET ZERO recipe automatically. Custom adapters can
+    supply that recipe with ``calibration``. RAW recordings require a valid
+    recipe to create the backend CLEAN file. ``clock_domain`` labels the host;
+    ``uncertainty_ns`` is the adapter timing assumption, not measured accuracy.
     """
     if seconds is not None and (
         isinstance(seconds, bool)
@@ -518,6 +421,7 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
         raise ValueError("seconds must be None or a finite real number greater than zero")
     if stop_event is not None and not isinstance(stop_event, threading.Event):
         raise TypeError("stop_event must be a threading.Event or None")
+    validate_clock(clock_domain, uncertainty_ns)
     own = glove is None
     if own:
         from . import connect
@@ -529,6 +433,15 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
         if begin_recording is not None:
             begin_recording()
             recording_guard = True
+        if calibration is None:
+            read_calibration = getattr(glove, "_read_recording_calibration", None)
+            if read_calibration is not None:
+                calibration = read_calibration()
+            elif hasattr(glove, "send"):
+                reply = glove.send("GET ZERO", expect="#TZERO ", timeout=4.0)
+                calibration = json.loads(reply.removeprefix("#TZERO "))
+        baseline_for(glove.info, calibration)
+
         try:
             start_status = glove.status()
         except Exception as exc:
@@ -546,7 +459,8 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
             glove.start()
 
         target = next_episode_dir(Path(path))
-        rec = Recorder(glove, target)
+        rec = Recorder(glove, target, calibration=calibration,
+                       clock_domain=clock_domain, uncertainty_ns=uncertainty_ns)
         rec.status_start = asdict(start_status)
         rec.dropped_start = dict(getattr(glove, "dropped", {}) or {})
 
@@ -554,7 +468,7 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
                     stop_reason: str) -> Path:
             """Seal files while a real Glove is quiet, then resume a fresh stream.
 
-            Compression and fsync can take long enough on a Raspberry Pi SD card
+            Finalization and fsync can take long enough on a Raspberry Pi SD card
             for an active transport to overflow.  It also leaves stale post-capture
             samples in the public queues.  Custom glove adapters without the SDK's
             private pause context keep their existing behaviour.
@@ -708,6 +622,11 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
                 "insufficient_stream_samples=" + ",".join(too_short_to_check)
             )
         end_issues.extend(_modality_freshness_issues(rec))
+        for name, buffer in (("imu", rec._i), ("mag", rec._m)):
+            if buffer.missing_raw:
+                end_issues.append(f"missing_raw_{name}={buffer.missing_raw}")
+        if not rec.info.stream_clean and rec.baseline is None:
+            end_issues.append("missing_valid_calibration_for_clean_tactile")
 
         host_deltas = _counter_deltas(rec.dropped_start or {}, rec.dropped_end or {})
         for name, value in host_deltas.items():
