@@ -53,11 +53,20 @@ def test_invalid_duration_is_rejected_before_stream_or_episode_side_effects(tmp_
         g.close()
 
 
-def test_an_episode_gets_its_own_numbered_directory(tmp_path):
+def test_an_episode_gets_its_own_numbered_directory(tmp_path, monkeypatch):
+    # Number allocation must not depend on the runner being scheduled within a
+    # sensor freshness interval. Advance the fake producer and recorder together;
+    # transport timing and stale-modality rejection have separate tests below.
+    clock = [10.0]
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("time.monotonic_ns", lambda: int(clock[0] * 1e9))
+    monkeypatch.setattr("time.sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
     a = recorded(tmp_path)
+    original = {path.name: path.read_bytes() for path in a.iterdir()}
     b = recorded(tmp_path)
     assert a.name == "ep_0001" and b.name == "ep_0002"
     assert a != b, "a second recording must never overwrite the first"
+    assert {path.name: path.read_bytes() for path in a.iterdir()} == original
 
 
 def test_episode_number_reservation_is_atomic_under_concurrency(tmp_path):
