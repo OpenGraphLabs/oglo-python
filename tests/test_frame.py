@@ -13,6 +13,37 @@ def grid(fill=550):
     return np.full(SHAPE, fill, dtype=np.uint16)
 
 
+@pytest.fixture(params=[Frame, ImuSample, MagSample])
+def sample_type_and_values(request):
+    values = {
+        Frame: {"counts": grid()},
+        ImuSample: {"accel": (0.0, 0.0, 1.0), "gyro": (0.0, 0.0, 0.0)},
+        MagSample: {"field": (0.0, 0.0, 0.5)},
+    }
+    return request.param, values[request.param]
+
+
+def test_sample_timestamps_default_to_the_supplied_device_and_host_times(sample_type_and_values):
+    sample_type, values = sample_type_and_values
+    sample = sample_type(seq=1, t_us=7, host_t=1.25, **values)
+    assert sample.device_time_us == 7
+    assert sample.device_time_ns == 7000
+    assert sample.host_t_ns == 1_250_000_000
+    assert sample.host_received_ns == 1_250_000_000
+
+
+def test_sample_preserves_explicit_unwrapped_and_receive_times_including_zero(sample_type_and_values):
+    sample_type, values = sample_type_and_values
+    sample = sample_type(
+        seq=1, t_us=7, host_t=1.25, device_time_us=(1 << 32) + 7,
+        host_t_ns=0, host_received_ns=19, **values,
+    )
+    assert sample.device_time_us == (1 << 32) + 7
+    assert sample.device_time_ns == ((1 << 32) + 7) * 1000
+    assert sample.host_t_ns == 0
+    assert sample.host_received_ns == 19
+
+
 def test_counts_are_a_5x4x4_grid_in_wire_order():
     g = counts_to_grid(list(range(80)))
     assert g.shape == SHAPE and g.dtype == np.uint16

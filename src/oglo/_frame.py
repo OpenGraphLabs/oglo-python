@@ -102,9 +102,10 @@ class CleanStreamError(RuntimeError):
 class Frame:
     """One tactile sample.
 
-    `counts` are raw 12-bit ADC counts in wire order `(finger, row, col)`, **not
-    force**. An untouched taxel reads around 550, not 0. Finger order comes from
-    `info.channels`; the left hand is reversed.
+    `counts` are 12-bit ADC counts, raw or device-cleaned according to the stream
+    mode, in wire order `(finger, row, col)`, **not force**. In raw mode an untouched
+    taxel reads around 550, not 0. Finger order comes from `info.channels`; the left
+    hand is reversed.
     """
 
     seq: int
@@ -167,12 +168,7 @@ class Frame:
             raise ValueError(f"counts must be {SHAPE}, got {self.counts.shape}")
         if self.counts.size and (int(self.counts.min()) < 0 or int(self.counts.max()) > 4095):
             raise ValueError("counts contain a value outside the 12-bit ADC range 0..4095")
-        if self.device_time_us is None:
-            object.__setattr__(self, "device_time_us", int(self.t_us) & 0xFFFFFFFF)
-        if self.host_t_ns is None:
-            object.__setattr__(self, "host_t_ns", int(round(self.host_t * 1_000_000_000)))
-        if self.host_received_ns is None:
-            object.__setattr__(self, "host_received_ns", self.host_t_ns)
+        _set_default_timestamps(self)
 
     @property
     def device_time_ns(self) -> int:
@@ -200,12 +196,7 @@ class ImuSample:
 
     def __post_init__(self) -> None:
         _validate_wire_header(self.seq, self.t_us)
-        if self.device_time_us is None:
-            object.__setattr__(self, "device_time_us", int(self.t_us) & 0xFFFFFFFF)
-        if self.host_t_ns is None:
-            object.__setattr__(self, "host_t_ns", int(round(self.host_t * 1_000_000_000)))
-        if self.host_received_ns is None:
-            object.__setattr__(self, "host_received_ns", self.host_t_ns)
+        _set_default_timestamps(self)
 
     @property
     def device_time_ns(self) -> int:
@@ -251,12 +242,7 @@ class MagSample:
 
     def __post_init__(self) -> None:
         _validate_wire_header(self.seq, self.t_us)
-        if self.device_time_us is None:
-            object.__setattr__(self, "device_time_us", int(self.t_us) & 0xFFFFFFFF)
-        if self.host_t_ns is None:
-            object.__setattr__(self, "host_t_ns", int(round(self.host_t * 1_000_000_000)))
-        if self.host_received_ns is None:
-            object.__setattr__(self, "host_received_ns", self.host_t_ns)
+        _set_default_timestamps(self)
 
     @property
     def device_time_ns(self) -> int:
@@ -268,6 +254,16 @@ class MagSample:
         sanity check that the scale factor and the part are both right."""
         x, y, z = self.field
         return float((x * x + y * y + z * z) ** 0.5)
+
+
+def _set_default_timestamps(sample: Frame | ImuSample | MagSample) -> None:
+    """Fill missing sample timestamps without changing explicit capture times."""
+    if sample.device_time_us is None:
+        object.__setattr__(sample, "device_time_us", int(sample.t_us) & 0xFFFFFFFF)
+    if sample.host_t_ns is None:
+        object.__setattr__(sample, "host_t_ns", int(round(sample.host_t * 1_000_000_000)))
+    if sample.host_received_ns is None:
+        object.__setattr__(sample, "host_received_ns", sample.host_t_ns)
 
 
 def counts_to_grid(counts) -> np.ndarray:
