@@ -1,6 +1,6 @@
 # Candidate status
 
-`0.1.0rc5` is prepared for SDK evaluation. The latest published release is still
+`0.1.0rc6` is prepared for SDK evaluation. The latest published release is still
 `0.1.0rc3`. A candidate wheel, passing offline tests or a draft release must not be
 described as a completed physical qualification.
 
@@ -17,6 +17,10 @@ described as a completed physical qualification.
 - Acceptance stops each hand when its collection ends, before sample analysis.
   Rates and loss counters are saved before stop clears them. Collector failures
   also stop the stream; actual-loss checks retain their strict thresholds.
+- Acceptance also stops each hand when its recording returns or raises, before
+  waiting for the other recorder or replaying files. The public recorder resumes
+  caller-owned gloves, so rc5 could leave USB unread during this transition.
+  Existing rc5 failure evidence and all recording integrity checks are retained.
 - Tactile orientation helpers preserve the original wire-order counts.
 
 ## Current physical limitation
@@ -30,8 +34,11 @@ repair the glove firmware.
 
 The stock-firmware return comparison reproduced the failure. An unsigned 0.9.17
 source candidate subsequently passed two five-minute SDK-free probes and a
-60-second rc4 recording on one glove, with independent USB sample comparison.
-Full firmware release and target-host recording qualification remain open. The 0.9.10 firmware floor is a protocol
+60-second recording on each of three gloves, with independent USB sample
+comparison. rc5 pair acceptance passed short capture but failed at the next
+recording's health check after leaving streams active during replay. rc6 repairs
+that acceptance transition; long-duration and target-host qualification remain
+open. The 0.9.10 firmware floor is a protocol
 compatibility check; it is not a reliability guarantee for every newer firmware.
 Earlier two-hand measurements on 0.9.10 do not qualify a new 0.9.16 combination.
 
@@ -44,7 +51,7 @@ Earlier two-hand measurements on 0.9.10 do not qualify a new 0.9.16 combination.
    python3 -m venv .venv
    # macOS/Linux: source .venv/bin/activate
    # Windows PowerShell: .venv\Scripts\Activate.ps1
-   python -m pip install ./oglo-0.1.0rc5-py3-none-any.whl
+   python -m pip install ./oglo-0.1.0rc6-py3-none-any.whl
    python -c "import oglo; print(oglo.__version__)"
    oglo --help
    ```
