@@ -1,6 +1,7 @@
 """Primary JSONL recording: backend fields, exact replay, and damaged files."""
 
 import json
+import tracemalloc
 from dataclasses import replace
 
 import numpy as np
@@ -171,3 +172,44 @@ def test_mismatched_calibration_validity_is_rejected_before_creating_an_episode(
     with pytest.raises(ValueError, match="validity must match"):
         recorded(tmp_path)
     assert not list(tmp_path.iterdir())
+
+
+def test_replay_does_not_accumulate_python_taxel_objects_for_the_whole_stream(tmp_path):
+    g = glove(n=0)
+    recorder = Recorder(g, tmp_path / "episode", chunk_samples=127)
+    counts = np.full((5, 4, 4), 600, dtype=np.uint16)  # Outside Python's small-int cache.
+    try:
+        for index in range(5000):
+            recorder.add_tactile(Frame(seq=index, t_us=index * 4000,
+                                       host_t=1.0 + index * 0.004, counts=counts))
+        recorder.write(complete=False, error="memory fixture", stop_reason="test")
+    finally:
+        g.close()
+
+    tracemalloc.start()
+    try:
+        arrays = replay(recorder.dir).arrays("tactile")
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert arrays["counts"].shape == (5000, 5, 4, 4)
+    assert np.all(arrays["counts"] == 600)
+    assert peak < 8 * sum(array.nbytes for array in arrays.values())
+
+
+def test_short_replay_does_not_retain_unused_batch_storage(tmp_path):
+    g = glove(n=0)
+    recorder = Recorder(g, tmp_path / "episode")
+    try:
+        recorder.add_tactile(Frame(seq=1, t_us=2, host_t=3.0,
+                                   counts=np.full((5, 4, 4), 600, dtype=np.uint16)))
+        recorder.write(complete=False, error="short fixture", stop_reason="test")
+    finally:
+        g.close()
+    arrays = replay(recorder.dir).arrays("tactile")
+    assert arrays["counts"].shape == (1, 5, 4, 4)
+    for array in arrays.values():
+        backing = array
+        while isinstance(backing.base, np.ndarray):
+            backing = backing.base
+        assert backing.nbytes == array.nbytes

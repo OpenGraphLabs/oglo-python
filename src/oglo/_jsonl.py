@@ -22,6 +22,7 @@ COMMON_DTYPES = {
 }
 CLEAN_FORMULA = "v=max(0,raw-baseline); if v<threshold then 0 else v"
 MAX_ROW_BYTES = 65536
+READ_BATCH_ROWS = 4096
 
 
 def validate_clock(clock_domain, uncertainty_ns):
@@ -194,7 +195,6 @@ def row_sample(row, name, info, index, clock_domain, uncertainty_ns):
 
 
 def read_arrays(path, name, info, *, clock_domain, uncertainty_ns):
-    columns = {key: [] for key in COMMON_DTYPES}
     if name == "tactile":
         payload = {"counts": ("uint16", (5, 4, 4))}
     else:
@@ -206,17 +206,43 @@ def read_arrays(path, name, info, *, clock_domain, uncertainty_ns):
             payload.update(accel=("float32", (3,)), gyro=("float32", (3,)))
         else:
             payload["field"] = ("float32", (3,))
-    columns.update({key: [] for key in payload})
+    layout = {key: (dtype, ()) for key, dtype in COMMON_DTYPES.items()}
+    layout.update(payload)
+    chunks = {key: [] for key in layout}
+    batch = None
+    used = 0
     for index, row in enumerate(json_rows(path)):
         sample = row_sample(row, name, info, index, clock_domain, uncertainty_ns)
-        for key in columns:
-            columns[key].append(sample[key])
-    count = len(columns["seq"])
-    return {
-        **{key: np.asarray(columns[key], dtype=dtype) for key, dtype in COMMON_DTYPES.items()},
-        **{key: np.asarray(columns[key], dtype=dtype).reshape((count, *shape))
-           for key, (dtype, shape) in payload.items()},
-    }
+        if batch is None:
+            batch = {key: np.empty((READ_BATCH_ROWS, *shape), dtype=dtype)
+                     for key, (dtype, shape) in layout.items()}
+        for key, (dtype, shape) in layout.items():
+            value = sample[key]
+            if shape:
+                value = np.asarray(value, dtype=dtype).reshape(shape)
+            batch[key][used] = value
+        used += 1
+        if used == READ_BATCH_ROWS:
+            for key in chunks:
+                chunks[key].append(batch[key])
+            batch = None
+            used = 0
+    if batch is not None:
+        for key in chunks:
+            chunks[key].append(batch[key][:used].copy())
+        batch = None
+    # Only typed arrays survive between batches; retaining Python numbers and
+    # nested taxel lists for the whole stream can require many GB on long runs.
+    result = {}
+    for key, (dtype, shape) in layout.items():
+        pieces = chunks.pop(key)
+        if not pieces:
+            result[key] = np.empty((0, *shape), dtype=dtype)
+        elif len(pieces) == 1:
+            result[key] = pieces[0]
+        else:
+            result[key] = np.concatenate(pieces)
+    return result
 
 
 def baseline_for(info, calibration):
