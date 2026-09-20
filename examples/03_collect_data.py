@@ -3,7 +3,7 @@
 
 Run oglo doctor first. This example preserves the glove's current calibration,
 stream mode, and rates. Send the entire episode directory, without editing its
-JSON or NPZ files. See README.md for the file layout and handoff instructions.
+JSON or JSONL files. See README.md for the file layout and handoff instructions.
 """
 
 import argparse
