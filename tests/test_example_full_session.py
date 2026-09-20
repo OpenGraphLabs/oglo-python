@@ -75,6 +75,7 @@ def test_session_directory_holds_both_episodes_the_camera_and_a_manifest(tmp_pat
         manifest["markers"],
     ):
         assert (session / rel).exists(), rel
+        assert "\\" not in rel, "manifest paths must also be readable on a different OS"
     assert (session / manifest["gloves"]["left"]["episode"] / "tactile.npz").exists()
     assert manifest["gloves"]["left"]["serial"] == "OGLO-L-TEST01"
     assert manifest["gloves"]["right"]["serial"] == "OGLO-R-TEST02"

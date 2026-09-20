@@ -437,7 +437,7 @@ def _episode_summary(session: Path, glove: oglo.Glove, outcome: Dict[str, Any]) 
     if episode is not None:
         meta = json.loads((Path(episode) / "meta.json").read_text())
         summary.update(
-            episode=str(Path(episode).relative_to(session)),
+            episode=Path(episode).relative_to(session).as_posix(),
             complete=bool(meta.get("complete")),
             stream_clean=meta.get("stream_clean"),
             stop_reason=meta.get("stop_reason"),
@@ -583,8 +583,8 @@ def run_session(out_root: Path, left: oglo.Glove, right: oglo.Glove, camera: Fra
         camera_finalized = recorder.finalized
         manifest["camera"] = {
             **(asdict(recorder.info) if recorder.info else {}),
-            "video": str(recorder.video_path.relative_to(session)) if recorder.video_path else None,
-            "timestamps": str(recorder.timestamps_path.relative_to(session))
+            "video": recorder.video_path.relative_to(session).as_posix() if recorder.video_path else None,
+            "timestamps": recorder.timestamps_path.relative_to(session).as_posix()
                           if recorder.timestamps_path.exists() else None,
             "finalized": camera_finalized,
             "frames": recorder.frames if camera_finalized else None,

@@ -34,6 +34,8 @@ sessions/session_20260920T101500Z/
   markers.jsonl                  prompt times, NOT measured physical contact times
 ```
 
+Manifest file references are session-relative paths using `/` on every OS, so
+Windows recordings can be opened on a Linux postprocessing host unchanged.
 The two glove episodes use the [SDK recording format](04_recording.md). An
 initial `complete=false` manifest is published before camera setup or RAW changes.
 Startup/capture/cleanup failures remain in `errors` and the CLI exits nonzero.
