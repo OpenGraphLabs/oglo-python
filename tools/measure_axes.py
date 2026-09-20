@@ -266,8 +266,9 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--serial", default=None, help="which glove, if more than one is attached")
     ap.add_argument("--seconds", type=float, default=2.0, help="averaging time per pose")
-    ap.add_argument("--out", default=None, help="where to write the result (default: alongside this tool)")
-    ap.add_argument("--yes", action="store_true", help="do not wait for Enter (for a dry run)")
+    ap.add_argument("--out", default=None, help="where to write the result (default: spec/axes.json in the checkout)")
+    ap.add_argument("--yes", action="store_true",
+                    help="skip Enter prompts; still connects to and measures real hardware")
     args = ap.parse_args()
 
     g = oglo.connect(args.serial)

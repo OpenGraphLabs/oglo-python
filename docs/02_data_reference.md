@@ -138,6 +138,9 @@ frame X = +sensor y     frame Y = +sensor x     frame Z = -sensor z
 ```
 
 Reproduce it with `python3 tools/measure_axes.py`.
+The historical measurements are retained for the [right](../spec/axes.json) and
+[left](../spec/axes_left.json) boards. They document the axis mapping, not
+qualification of the currently supported firmware.
 
 **The magnetometer axes are not known.** The same procedure gave different answers on
 the two boards, and `|B|` swung between 0.70 and 1.34 G across poses when Earth's field

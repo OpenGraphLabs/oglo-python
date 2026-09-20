@@ -74,10 +74,11 @@ def connect(serial: Optional[str] = None, *, transport: str = "usb",
     so `port=` exists only as an escape hatch for a board that does not enumerate the
     way discovery expects.
 
-    `transport="ble"` connects wirelessly. It delivers the same tactile rate but
-    **not the same IMU rate**: BLE carries one IMU slot per tactile sample, so ~194 Hz
-    of a 500 Hz stream arrives and the magnetometer repeats. Use USB when IMU rate or
-    timing matters. `transport="auto"` tries USB and falls back to BLE.
+    `transport="ble"` connects wirelessly. Each tactile sample carries one IMU slot
+    and an optional magnetometer slot, so these streams share a packet cadence and
+    may repeat sensor measurements. Actual throughput depends on the host and link;
+    use USB when rate or timing matters. `transport="auto"` tries USB and falls back
+    to BLE only when no matching USB glove is found.
     """
     if transport == "ble":
         from ._ble import connect_ble

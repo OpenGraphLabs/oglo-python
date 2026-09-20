@@ -1,6 +1,7 @@
 """Replay recorded samples through the same stream interface as a live Glove.
 
-Counts retain the calibration in meta.json; replay never re-zeros or re-thresholds.
+Counts retain their recorded mode and threshold; replay never re-zeros or
+re-thresholds. meta.json stores calibration state, not the per-taxel zero recipe.
 """
 
 from __future__ import annotations
@@ -368,7 +369,7 @@ class Episode:
 
     @property
     def info(self) -> Info:
-        """Identity and the calibration that was in force when this was captured."""
+        """Identity, calibration state, and stream settings at capture time."""
         return self._info
 
     def __repr__(self) -> str:
