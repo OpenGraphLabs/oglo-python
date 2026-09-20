@@ -20,6 +20,19 @@ python3 -m pytest
 The default suite is hardware-free. It must remain safe to run without a glove and
 must not mutate attached devices.
 
+To include camera capture, video decoding, alignment, and the simulated OVISION
+adapter tests, use Python 3.12+ and install the example dependencies:
+
+```bash
+python -m pip install -r examples/camera_glove/requirements-ovision.txt
+python -m pytest tests/test_camera_glove.py
+```
+
+The dedicated Linux CI camera job runs these tests and rejects skipped tests.
+After all test jobs pass, the package job uploads a commit-specific handoff with
+the wheel, source/examples archive, source commit, and checksums. See the
+[candidate guide](docs/08_candidate_status.md#evaluate-the-package).
+
 ## Pull requests
 
 - keep protocol decoders pure and fail closed on malformed or unknown data
