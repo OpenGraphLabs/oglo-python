@@ -5,7 +5,7 @@
 Install the prepared wheel supplied with its checksum:
 
 ```bash
-python3 -m pip install ./oglo-0.1.0rc6-py3-none-any.whl
+python3 -m pip install ./oglo-0.1.0rc7-py3-none-any.whl
 ```
 
 Or evaluate the current source:

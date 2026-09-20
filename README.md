@@ -9,7 +9,7 @@ Python access to the OGLO five-finger tactile glove: 80 taxels per hand at a
 nominal 250 Hz over USB, plus accelerometer, gyroscope, and optional magnetometer
 streams.
 
-> **Candidate preparation:** this checkout is `0.1.0rc6`, a USB-first research SDK
+> **Candidate preparation:** this checkout is `0.1.0rc7`, a USB-first research SDK
 > for firmware 0.9.10 or newer with CONFIG schema 6. Sustained USB capture on
 > firmware 0.9.16 has a reproduced failure and remains unqualified. The SDK
 > improvements below do not repair device firmware. See the
@@ -40,7 +40,7 @@ private or staging repository is an active upstream.
 For candidate evaluation, install the prepared wheel supplied with its checksum:
 
 ```bash
-python3 -m pip install ./oglo-0.1.0rc6-py3-none-any.whl
+python3 -m pip install ./oglo-0.1.0rc7-py3-none-any.whl
 ```
 
 To evaluate the current source before a release is published:

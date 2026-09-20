@@ -1,6 +1,6 @@
 # Candidate status
 
-`0.1.0rc6` is prepared for SDK evaluation. The latest published release is still
+`0.1.0rc7` is prepared for SDK evaluation. The latest published release is still
 `0.1.0rc3`. A candidate wheel, passing offline tests or a draft release must not be
 described as a completed physical qualification.
 
@@ -22,6 +22,10 @@ described as a completed physical qualification.
   caller-owned gloves, so rc5 could leave USB unread during this transition.
   Existing rc5 failure evidence and all recording integrity checks are retained.
 - Tactile orientation helpers preserve the original wire-order counts.
+- rc7 moves chunk writes and fsync to a bounded storage worker. A blocked disk
+  no longer blocks the recording reader until the explicit storage limit is
+  reached; exceeding that limit fails capture. File publication waits for the
+  worker, and disk errors never produce a complete episode.
 
 ## Current physical limitation
 
@@ -37,8 +41,14 @@ source candidate subsequently passed two five-minute SDK-free probes and a
 60-second recording on each of three gloves, with independent USB sample
 comparison. rc5 pair acceptance passed short capture but failed at the next
 recording's health check after leaving streams active during replay. rc6 repairs
-that acceptance transition; long-duration and target-host qualification remain
-open. The 0.9.10 firmware floor is a protocol
+that acceptance transition. Its subsequent Linux pair 75-minute recording failed:
+left lost 558 samples and right 542, both marked incomplete. Both gloves remained
+responsive with preserved firmware/boot/settings/zero and no capture-window USB
+bulk completion errors. Reader pauses aligned with storage chunk boundaries;
+the storage timing diagnosis is separate from the original terminal USB fault.
+rc7 addresses synchronous chunk I/O on the reader thread, but its physical
+long-duration and target-host qualification remain open.
+The 0.9.10 firmware floor is a protocol
 compatibility check; it is not a reliability guarantee for every newer firmware.
 Earlier two-hand measurements on 0.9.10 do not qualify a new 0.9.16 combination.
 
@@ -51,7 +61,7 @@ Earlier two-hand measurements on 0.9.10 do not qualify a new 0.9.16 combination.
    python3 -m venv .venv
    # macOS/Linux: source .venv/bin/activate
    # Windows PowerShell: .venv\Scripts\Activate.ps1
-   python -m pip install ./oglo-0.1.0rc6-py3-none-any.whl
+   python -m pip install ./oglo-0.1.0rc7-py3-none-any.whl
    python -c "import oglo; print(oglo.__version__)"
    oglo --help
    ```

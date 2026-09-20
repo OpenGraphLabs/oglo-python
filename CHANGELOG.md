@@ -6,6 +6,17 @@ All notable user-facing changes are recorded here. Versions follow
 
 ## [Unreleased]
 
+## [0.1.0rc7] - Candidate preparation
+
+- Move recording chunk writes and fsync off the glove reader into a bounded
+  storage worker. Immutable copied blocks preserve rows when live arrays are
+  reused. Backlog exhaustion fails promptly instead of blocking acquisition.
+- Wait for pending writes before publishing complete metadata; storage errors
+  leave an incomplete episode and stop the writer. Integrity limits are unchanged.
+- Preserve the rc6 Linux pair 75-minute failure: 558/542 missing samples despite
+  responsive gloves and zero capture-window USB completion errors. The rc7
+  storage correction still requires physical qualification on Linux and Mac.
+
 ## [0.1.0rc6] - Candidate preparation
 
 ### Fixed
@@ -158,3 +169,5 @@ First public release candidate.
 [0.1.0rc3]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc2...v0.1.0rc3
 [0.1.0rc2]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc1...v0.1.0rc2
 [0.1.0rc1]: https://github.com/OpenGraphLabs/oglo-python/releases/tag/v0.1.0rc1
+
+[0.1.0rc7]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc6...v0.1.0rc7

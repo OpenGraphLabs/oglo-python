@@ -97,6 +97,11 @@ def test_recorder_memory_is_bounded_and_large_chunked_capture_round_trips(tmp_pa
     counts = np.arange(80, dtype=np.uint16).reshape(5, 4, 4)
     try:
         for seq in range(10_000):
+            if seq and seq % (127 * 4) == 0:
+                # This unpaced fixture supplies hours of data in milliseconds.
+                # Give its deliberately tiny storage blocks time to persist;
+                # backlog exhaustion is exercised separately with a blocked disk.
+                rec._writer._queue.join()
             rec.add_tactile(Frame(
                 seq=seq,
                 t_us=seq * 4,
