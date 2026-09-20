@@ -6,9 +6,14 @@ an editable camera interface, frame timestamps and one session manifest. It is a
 collection example, not a firmware fix or a hardware qualification. Review the
 [candidate status](08_candidate_status.md) before collecting research data.
 
+The SDK wheel does not install `examples/`. Clone the matching source checkout
+containing this example, then run from its root. The following installs the SDK
+from that checkout (the example needs rc4's `stop_event`):
+
 ```bash
-# Install the maintainer-supplied SDK candidate first; the example needs rc4's stop_event.
-python3 -m pip install opencv-python                    # optional webcam adapter
+git clone https://github.com/OpenGraphLabs/oglo-python.git
+cd oglo-python
+python3 -m pip install . opencv-python
 python3 examples/03_full_session.py --seconds 120        # webcam 0, two minutes
 python3 examples/03_full_session.py                      # until Ctrl-C
 python3 examples/03_full_session.py --camera fake        # real gloves, synthetic camera
@@ -37,7 +42,9 @@ Each episode may still be useful even when the overall session is incomplete.
 ## The camera contract
 
 Adapt `FrameSource.open/read/close` and, when necessary, `VideoSink`. All camera
-operations and cleanup belong to one worker. `read()` must have a bounded timeout
+operations and cleanup belong to one worker. `VideoSink.open()` returns its output
+path beneath the supplied camera directory (absolute paths are accepted), or None
+for a dry run. Keeping files there makes the session portable. `read()` must have a bounded timeout
 in your real adapter; OpenCV's generic webcam API cannot guarantee one on every OS.
 
 ```python
@@ -128,7 +135,11 @@ restoration failures are recorded and prevent a successful CLI exit. Fix reporte
 settings before using the glove again. A blocked camera is reported after bounded
 waiting; its worker retains exclusive ownership of its handles until the driver
 returns, and the session is incomplete. It is never closed concurrently by the
-main thread.
+main thread. A blocked encoder also leaves `camera.finalized=false`, with final
+frame count/time bounds set to null. `frames_observed_at_stop` is only a diagnostic
+snapshot. Files can remain in flight until the driver/encoder returns; do not
+transfer or consume them as finalized artifacts. The worker suppresses new
+sidecar publication after an encoder shutdown timeout.
 
 Send the whole directory, including partial files when reporting a failure. Check:
 

@@ -110,9 +110,13 @@ example](examples/04_two_hands.py) before aligning a dataset.
 The SDK records gloves; the camera is yours. One example shows the whole shape:
 both gloves through `oglo.record()`, a three-method camera skeleton you adapt to
 your device, every frame stamped with the same host clock the gloves use, and one
-`session.json` tying it together.
+`session.json` tying it together. Examples are source files, not installed by the
+SDK wheel. From a checkout of this repository:
 
 ```bash
+git clone https://github.com/OpenGraphLabs/oglo-python.git
+cd oglo-python
+python3 -m pip install . opencv-python
 python3 examples/03_full_session.py --seconds 120
 ```
 
