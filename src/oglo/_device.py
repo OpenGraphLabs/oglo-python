@@ -216,6 +216,18 @@ class Glove:
                 raise DeviceError("this glove is already being recorded")
             self._recording_owner = threading.get_ident()
 
+    def _read_recording_calibration(self) -> Optional[Dict[str, Any]]:
+        """Read the existing recipe under recording ownership; never run a sweep."""
+        self._ensure_recording_owner("read calibration")
+        if not getattr(self._t, "replies_in_text", True):
+            return None
+        with self._paused():
+            reply = self._command("GET ZERO", expect="#TZERO ", timeout=4.0)
+        recipe = json.loads(reply.removeprefix("#TZERO "))
+        if not isinstance(recipe, dict):
+            raise DeviceError("GET ZERO must return a JSON object")
+        return recipe
+
     def _end_recording(self) -> None:
         with self._recording_lock:
             if self._recording_owner == threading.get_ident():
@@ -246,7 +258,7 @@ class Glove:
         chew through binary to reach it. It also keeps ASCII out of the user's data
         stream, which a frame parser would otherwise have to resynchronise past.
         ``record()`` also uses ``resume=False`` while it publishes the final files;
-        otherwise a slow compression/fsync phase builds a queue of stale samples.
+        otherwise a slow finalization/fsync phase builds a queue of stale samples.
         """
         if self._closed:
             raise DeviceError("this glove is closed; call oglo.connect() to open it again")
