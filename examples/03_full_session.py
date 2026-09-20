@@ -126,7 +126,11 @@ class FrameSource(Protocol):
 
 
 class VideoSink(Protocol):
-    """Where frames go. `open()` returns the file it will write, or None for none."""
+    """open() returns its output Path beneath the supplied camera directory, or None.
+
+    Absolute paths are accepted. Keep output inside this directory so the whole
+    session remains portable. write() must preserve frame order.
+    """
 
     def open(self, path: Path, info: CameraInfo) -> Optional[Path]: ...
 
@@ -285,6 +289,7 @@ class CameraRecorder:
         self.last_host_t_ns: Optional[int] = None
         self._stop = threading.Event()
         self._ready = threading.Event()
+        self._abandoned = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> CameraInfo:
@@ -301,11 +306,19 @@ class CameraRecorder:
 
     def _run(self) -> None:
         try:
-            self.info = self.source.open()
+            info = self.source.open()
+            if not math.isfinite(info.fps) or info.fps < 0:
+                raise ValueError("camera must report a finite non-negative nominal fps")
+            self.info = info
             if self._stop.is_set():
                 return
             self.directory.mkdir(parents=True, exist_ok=True)
-            self.video_path = self.sink.open(self.directory / f"{self.stem}.mp4", self.info)
+            output = self.sink.open(self.directory / f"{self.stem}.mp4", self.info)
+            if output is not None:
+                output = Path(output).resolve()
+                if not output.is_relative_to(self.directory.resolve()):
+                    raise ValueError("video sink output must be inside the camera directory")
+                self.video_path = output
             with self.timestamps_path.open("x", encoding="utf-8") as timestamps:
                 while not self._stop.is_set():
                     frame = self.source.read()
@@ -327,6 +340,8 @@ class CameraRecorder:
                     ):
                         raise ValueError("native camera time requires a finite value, unit and clock domain")
                     self.sink.write(frame.image)
+                    if self._abandoned.is_set():
+                        break  # A timed-out encoder must not publish a later timestamp.
                     timestamps.write(json.dumps({
                         "frame_number": self.frames, "host_t_ns": host_t_ns,
                         "wall_ns": wall_ns,
@@ -336,6 +351,8 @@ class CameraRecorder:
                         "device_timestamp_meaning": frame.device_timestamp_meaning,
                     }, allow_nan=False) + "\n")
                     timestamps.flush()
+                    if self._abandoned.is_set():
+                        break
                     if self.first_host_t_ns is None:
                         self.first_host_t_ns = host_t_ns
                     self.last_host_t_ns = host_t_ns
@@ -363,11 +380,16 @@ class CameraRecorder:
             return "camera stopped delivering frames"
         return None
 
+    @property
+    def finalized(self) -> bool:
+        return self._thread is not None and not self._thread.is_alive()
+
     def stop(self) -> int:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=CAMERA_TIMEOUT_S)
             if self._thread.is_alive():
+                self._abandoned.set()
                 self._fail("camera thread did not stop within the shutdown timeout")
         return self.frames
 
@@ -452,7 +474,7 @@ def run_session(out_root: Path, left: oglo.Glove, right: oglo.Glove, camera: Fra
         raise ValueError("run_session requires a left and a right glove")
     stop_event = stop_event if stop_event is not None else threading.Event()
     started_wall, started_mono_ns = time.time(), time.monotonic_ns()
-    session = new_session_dir(Path(out_root), started_wall)
+    session = new_session_dir(Path(out_root).resolve(), started_wall)
     errors: list = []
     manifest = {
         "schema": "oglo.session.v1", "sdk_version": oglo.__version__,
@@ -558,13 +580,18 @@ def run_session(out_root: Path, left: oglo.Glove, right: oglo.Glove, camera: Fra
                 errors.append(f"{side} metadata: {type(exc).__name__}: {exc}")
             if manifest["gloves"][side].get("complete") is not True:
                 errors.append(f"{side}: episode missing or incomplete")
+        camera_finalized = recorder.finalized
         manifest["camera"] = {
             **(asdict(recorder.info) if recorder.info else {}),
             "video": str(recorder.video_path.relative_to(session)) if recorder.video_path else None,
             "timestamps": str(recorder.timestamps_path.relative_to(session))
                           if recorder.timestamps_path.exists() else None,
-            "frames": recorder.frames, "first_host_t_ns": recorder.first_host_t_ns,
-            "last_host_t_ns": recorder.last_host_t_ns, "error": recorder.error,
+            "finalized": camera_finalized,
+            "frames": recorder.frames if camera_finalized else None,
+            "frames_observed_at_stop": recorder.frames,
+            "first_host_t_ns": recorder.first_host_t_ns if camera_finalized else None,
+            "last_host_t_ns": recorder.last_host_t_ns if camera_finalized else None,
+            "error": recorder.error,
         }
         manifest.update(ended_wall=time.time(), ended_monotonic_ns=time.monotonic_ns(),
                         stop_reason="error" if errors else "cancelled" if stop_event.is_set() else "duration",

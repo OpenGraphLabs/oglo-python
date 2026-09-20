@@ -94,6 +94,8 @@ def test_camera_frames_share_the_host_clock_with_the_gloves(tmp_path):
     manifest = json.loads((session / "session.json").read_text())
 
     rows = read_jsonl(session / manifest["camera"]["timestamps"])
+    assert len(rows) == manifest["camera"]["frames"]
+    assert manifest["camera"]["finalized"] is True
     assert [r["frame_number"] for r in rows] == list(range(len(rows)))
     host = np.array([r["host_t_ns"] for r in rows], dtype=np.int64)
     assert np.all(np.diff(host) >= 0), "host_t_ns must never run backwards"
@@ -363,7 +365,6 @@ def test_blocked_camera_retains_worker_ownership_until_read_returns(tmp_path, mo
     entered = threading.Event()
     release = threading.Event()
     closed = []
-    monkeypatch.setattr(ex, "CAMERA_TIMEOUT_S", 0.1)
 
     class BlockedCamera(ex.FakeCamera):
         def read(self):
@@ -380,6 +381,7 @@ def test_blocked_camera_retains_worker_ownership_until_read_returns(tmp_path, mo
     try:
         recorder.start()
         assert entered.wait(timeout=2)
+        monkeypatch.setattr(ex, "CAMERA_TIMEOUT_S", 0.1)
         recorder.stop()
         assert "shutdown timeout" in recorder.error
         assert closed == [], "main thread closed a camera while its reader still owned it"
@@ -434,5 +436,100 @@ def test_opencv_adapter_writes_decodable_frames_with_matching_timestamp_rows(tmp
         assert not decoder.read()[0]
     finally:
         decoder.release()
-    assert len(rows) == 6
+    assert len(rows) == recorder.frames == 6
     assert all(row["device_timestamp"] is None for row in rows)
+
+
+def test_keep_mode_preserves_mixed_raw_clean_inputs_without_mutations(tmp_path):
+    ex = load_example()
+    left, right = fake_pair()
+    right.raw()
+    before = {g.info.side: len(g._t._s.commands) for g in (left, right)}
+    session = run(tmp_path, ex, left, right, seconds=0.6, stream="keep")
+    for glove, expected_clean in ((left, True), (right, False)):
+        commands = glove._t._s.commands[before[glove.info.side]:]
+        assert not any(command.startswith("SET STREAM") for command in commands)
+        meta = json.loads((session / glove.info.side / "ep_0001/meta.json").read_text())
+        assert meta["stream_clean"] is expected_clean
+        assert glove.info.stream_clean is expected_clean
+
+
+@pytest.mark.parametrize("outside", [False, True])
+def test_custom_sink_absolute_path_is_portable_or_recorded_as_error(tmp_path, monkeypatch, outside):
+    ex = load_example()
+    left, right = fake_pair()
+    monkeypatch.chdir(tmp_path)
+
+    class AbsoluteSink(ex.NullVideoSink):
+        def open(self, path, info):
+            output = (tmp_path / "outside.mp4") if outside else path.resolve()
+            output.touch()
+            return output
+
+    try:
+        session = ex.run_session(Path("relative-sessions"), left, right, ex.FakeCamera(),
+                                 AbsoluteSink(), seconds=0.6)
+    finally:
+        left.close()
+        right.close()
+    manifest = json.loads((session / "session.json").read_text())
+    if outside:
+        assert not manifest["complete"]
+        assert any("inside the camera directory" in error for error in manifest["errors"])
+    else:
+        assert manifest["complete"]
+        assert manifest["camera"]["video"] == "camera/video.mp4"
+        assert (session / manifest["camera"]["video"]).is_file()
+
+
+def test_timed_out_encoder_does_not_publish_late_timestamp_rows(tmp_path, monkeypatch):
+    ex = load_example()
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockedSink(ex.NullVideoSink):
+        def __init__(self):
+            self.count = 0
+
+        def write(self, frame):
+            self.count += 1
+            if self.count == 2:
+                entered.set()
+                release.wait(timeout=5)
+
+    recorder = ex.CameraRecorder(ex.FakeCamera(), BlockedSink(), tmp_path)
+    try:
+        recorder.start()
+        assert entered.wait(timeout=2)
+        monkeypatch.setattr(ex, "CAMERA_TIMEOUT_S", 0.1)
+        recorder.stop()
+        assert not recorder.finalized
+        assert recorder.frames == 1
+        rows_before = recorder.timestamps_path.read_text()
+    finally:
+        release.set()
+        recorder._thread.join(timeout=2)
+    assert recorder.timestamps_path.read_text() == rows_before
+    assert recorder.frames == 1
+
+
+def test_invalid_camera_fps_still_produces_a_failure_manifest(tmp_path):
+    ex = load_example()
+    left, right = fake_pair()
+
+    class InvalidInfo(ex.FakeCamera):
+        def open(self):
+            info = super().open()
+            info.fps = float("nan")
+            return info
+
+    try:
+        session = ex.run_session(tmp_path, left, right, InvalidInfo(),
+                                 ex.NullVideoSink(), seconds=0.6)
+    finally:
+        left.close()
+        right.close()
+    manifest = json.loads((session / "session.json").read_text())
+    assert not manifest["complete"]
+    assert any("finite non-negative" in error for error in manifest["errors"])
+    assert left.info.stream_clean and right.info.stream_clean
