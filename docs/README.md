@@ -12,6 +12,7 @@ issues, pull requests, tags, releases, and documentation updates belong there.
 6. [Troubleshooting](05_troubleshooting.md) - start with `oglo doctor`
 7. [Test your own glove pair](07_acceptance.md) - guided public-API acceptance and reports
 8. [Candidate status](08_candidate_status.md) - package evaluation and remaining physical checks
+9. [Record a full session](09_full_session.md) - both gloves plus your camera, one host clock, what to send
 
 The public wire-level contract needed by SDK users is documented in the
 [data reference](02_data_reference.md) and locked by the captured vectors under
