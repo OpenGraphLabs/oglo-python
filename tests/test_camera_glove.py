@@ -14,6 +14,7 @@ import pytest
 from fake_serial import CFG_V6, FakeSerial, tagged_burst
 from oglo._device import Glove
 from oglo._usb import UsbTransport
+from oglo._jsonl import stream_filename, channel_names
 
 cv2 = pytest.importorskip("cv2")
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples/camera_glove"
@@ -56,8 +57,8 @@ class Camera:
         self.released = True
 
 
-def simulated_glove(side):
-    config = {**CFG_V6, "side": side, "serial": f"OGLO-{side}-CAMERA-TEST"}
+def simulated_glove(side, clean=True):
+    config = {**CFG_V6, "side": side, "serial": f"OGLO-{side}-CAMERA-TEST", "stream_clean": clean}
     if side == "right":
         config["channels"] = list(reversed(config["channels"]))
     serial = FakeSerial(config, stream=tagged_burst(60), hz=250)
@@ -66,14 +67,14 @@ def simulated_glove(side):
     return Glove(transport, info, caps)
 
 
-def setup_capture(tmp_path, monkeypatch, pair=False, fail_after=None):
+def setup_capture(tmp_path, monkeypatch, pair=False, fail_after=None, clean=True):
     camera = Camera(fail_after=fail_after)
     original = cv2.VideoCapture
     monkeypatch.setattr(capture.cv2, "VideoCapture",
                         lambda source: camera if isinstance(source, int) else original(source))
-    monkeypatch.setattr(capture.oglo, "connect", lambda **_: simulated_glove("left"))
+    monkeypatch.setattr(capture.oglo, "connect", lambda **_: simulated_glove("left", clean))
     monkeypatch.setattr(capture.oglo, "connect_pair",
-                        lambda: (simulated_glove("left"), simulated_glove("right")))
+                        lambda: (simulated_glove("left", clean), simulated_glove("right", clean)))
     args = argparse.Namespace(output=tmp_path / "session", camera=0, seconds=0.5,
                               fps=30, task="synthetic contact", serial=None, pair=pair,
                               preview=False)
@@ -92,9 +93,9 @@ def test_camera_timestamp_is_taken_before_any_conversion(monkeypatch):
     ))
 
 
-@pytest.mark.parametrize("pair", [False, True])
-def test_capture_decode_and_join_preserve_source_files(tmp_path, monkeypatch, pair):
-    args, camera = setup_capture(tmp_path, monkeypatch, pair=pair)
+@pytest.mark.parametrize("pair,clean", [(False, True), (True, True), (True, False)])
+def test_capture_decode_and_join_preserve_source_files(tmp_path, monkeypatch, pair, clean):
+    args, camera = setup_capture(tmp_path, monkeypatch, pair=pair, clean=clean)
     root = capture.capture(args)
     assert camera.released
     manifest = json.loads((root / "manifest.json").read_text())
@@ -113,7 +114,25 @@ def test_capture_decode_and_join_preserve_source_files(tmp_path, monkeypatch, pa
     joined = [json.loads(line) for line in output.read_text().splitlines()]
     for hand in manifest["gloves"]:
         assert (root / hand["calibration"]).is_file()
-        data = capture.oglo.replay(root / hand["episode"]).arrays("tactile")
+        episode = capture.oglo.replay(root / hand["episode"])
+        data = episode.arrays("tactile")
+        samples = [json.loads(line) for line in
+                   (episode.dir / stream_filename("tactile", episode.info)).read_text().splitlines()]
+        assert len(samples) == len(data["seq"])
+        labels = channel_names("tactile", episode.info)
+        assert [samples[0]["channels"][label] for label in labels] == data["counts"][0].reshape(80).tolist()
+        assert samples[0]["capture_ns"] == int(data["host_received_ns"][0])
+        calibration = json.loads((episode.dir / episode.meta["calibration"]).read_text())
+        assert calibration["transform"]["mode"] == ("firmware_clean" if clean else "host_clean_from_raw")
+        clean_file = episode.dir / f"tactile_{hand['side']}.jsonl"
+        assert clean_file.is_file()
+        assert "jsonl" not in hand  # One primary recording, no extra conversion directory.
+        if not clean:
+            cleaned = json.loads(clean_file.read_text().splitlines()[0])
+            baseline = calibration["zero"]["baseline"]
+            expected = [max(0, samples[0]["channels"][label] - base) for label, base in zip(labels, baseline)]
+            expected = [v if v >= calibration["transform"]["threshold_counts"] else 0 for v in expected]
+            assert [cleaned["channels"][label] for label in labels] == expected
         matches = [glove["tactile"] for frame in joined for glove in frame["gloves"]
                    if glove["serial"] == hand["serial"] and glove["tactile"] is not None]
         assert matches
@@ -167,6 +186,25 @@ def test_existing_session_is_not_overwritten(tmp_path, monkeypatch):
     with pytest.raises(FileExistsError):
         capture.capture(args)
     assert marker.read_text() == "original"
+
+
+def test_jsonl_finalization_failure_keeps_session_incomplete(tmp_path, monkeypatch):
+    import oglo._record as recording
+
+    args, camera = setup_capture(tmp_path, monkeypatch, clean=False)
+
+    def fail_clean(*args):
+        raise OSError("JSONL disk full")
+
+    monkeypatch.setattr(recording, "derive_clean", fail_clean)
+    with pytest.raises(capture.oglo.RecordError, match="JSONL disk full"):
+        capture.capture(args)
+    manifest = json.loads((args.output / "manifest.json").read_text())
+    assert camera.released
+    assert manifest["complete"] is False
+    assert "JSONL disk full" in manifest["error"]
+    for hand in manifest["gloves"]:
+        assert capture.oglo.replay(args.output / hand["episode"]).meta["complete"] is False
 
 
 def test_nearest_sample_preserves_integer_precision_and_resolves_ties():
@@ -241,6 +279,7 @@ def test_ovision_rejects_inconsistent_native_metadata(tmp_path, ovision, fault):
 def test_ovision_capture_uses_published_sidecars_and_common_join(tmp_path, monkeypatch, ovision):
     native = pytest.importorskip("syncfield.adapters.ovision_camera")
     from syncfield.adapters.ovision_metadata import OvisionImuSample
+    from syncfield.types import SensorSample
 
     class SimulatedOvision(native.OvisionCameraStream):
         """Keep the real adapter serializer/finalization; replace only device IO."""
@@ -304,6 +343,18 @@ def test_ovision_capture_uses_published_sidecars_and_common_join(tmp_path, monke
     assert manifest["camera"]["kind"] == "ovision"
     assert manifest["camera"]["frames_decoded"] > 2
     assert len(manifest["gloves"]) == 2
+    for hand in manifest["gloves"]:
+        episode = root / hand["episode"]
+        assert (episode / f"tactile_{hand['side']}.jsonl").stat().st_size > 0
+        assert (episode / f"wrist_imu_{hand['side']}.jsonl").stat().st_size > 0
+        assert (episode / f"wrist_mag_{hand['side']}.jsonl").is_file()
+        assert json.loads((episode / "meta.json").read_text())["schema"] == 3
+        for path in episode.glob("*.jsonl"):
+            for line in path.read_text().splitlines():
+                row = json.loads(line)
+                assert SensorSample.from_dict(row).to_dict() == {
+                    key: value for key, value in row.items() if key != "oglo"
+                }
     original = {p: p.read_bytes() for p in (root / "camera").iterdir()}
     count = alignment.align(root, root / "alignment.preview.jsonl", 50)
     assert count == manifest["camera"]["frames_decoded"]

@@ -1,10 +1,7 @@
 # Contributing
 
-Thank you for improving the OGLO Python SDK.
-
-[`OpenGraphLabs/oglo-python`](https://github.com/OpenGraphLabs/oglo-python) is the
-sole canonical repository. Fork and branch from its `main`; do not use a private,
-staging, or pre-public repository as an upstream.
+Use [OpenGraphLabs/oglo-python](https://github.com/OpenGraphLabs/oglo-python) as
+the source repository. Branch from `main` or fork it.
 
 ## Set up
 
@@ -12,65 +9,67 @@ staging, or pre-public repository as an upstream.
 git clone https://github.com/OpenGraphLabs/oglo-python.git
 cd oglo-python
 python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -e ".[dev]"
-python3 -m pytest
 ```
 
-The default suite is hardware-free. It must remain safe to run without a glove and
-must not mutate attached devices.
+Activate `.venv` with `source .venv/bin/activate` on macOS/Linux, or
+`.venv\Scripts\Activate.ps1` in Windows PowerShell. Then:
 
-To include camera capture, video decoding, alignment, and the simulated OVISION
-adapter tests, use Python 3.12+ and install the example dependencies:
+```bash
+python -m pip install -e ".[dev]"
+python -m pytest
+```
+
+The default tests must work without a glove and must not change attached devices.
+
+## Camera tests
+
+Use Python 3.12+ to include simulated webcam and OVISION tests:
 
 ```bash
 python -m pip install -r examples/camera_glove/requirements-ovision.txt
 python -m pytest tests/test_camera_glove.py
 ```
 
-The dedicated Linux CI camera job runs these tests and rejects skipped tests.
-After all test jobs pass, the package job uploads a commit-specific handoff with
-the wheel, source/examples archive, source commit, and checksums. See the
-[candidate guide](docs/08_candidate_status.md#evaluate-the-package).
-
-## Pull requests
-
-- keep protocol decoders pure and fail closed on malformed or unknown data
-- add focused tests for behavioral changes
-- preserve raw device values, timestamps, and loss information instead of silently
-  normalising or interpolating them
-- update public documentation and `CHANGELOG.md` for user-facing changes
-- do not commit recordings, real device identifiers, credentials, local coverage
-  databases, or operating-system metadata
-
-Hardware-specific changes should include the firmware revision, schema, host OS,
-test duration, and before/after loss counters. Do not present an automated test as
-physical validation unless a physical glove was actually exercised. Live-device
-qualification requires firmware 0.9.10 or newer with schema 6. Checked-in wire
-vectors must come from that same supported contract and redact real device serials.
+These tests exercise simulated devices, real video encoding/decoding, and data
+alignment. The Linux camera CI job requires them to run without skips.
 
 ## Hardware tests
 
-With exactly one left/right USB pair attached:
+These commands use attached devices. Firmware must be 0.9.10+ with schema 6.
+
+| Attached hardware | Command |
+| --- | --- |
+| Exactly one left/right USB pair | `python -m pytest -m hardware --hardware-seconds 5` |
+| Exactly one glove | Add `--hardware-single` to that command |
+
+One-glove runs skip the three checks that require a pair. Both RAW and CLEAN
+starting modes are supported.
+
+To test setting changes:
 
 ```bash
-python3 -m pytest -m hardware --hardware-seconds 5
+python -m pytest -m hardware_mutation --hardware-mutations
 ```
 
-For exactly one attached glove, add `--hardware-single`; the three tests requiring
-both hands are reported as skipped. RAW and CLEAN starting modes are both supported.
+Add `--hardware-single` for one glove. The tests attempt to restore settings,
+including the original threshold in RAW mode. They do not perform a physical
+zero sweep; see [calibration](docs/03_calibration.md).
 
-State-changing checks require a separate explicit flag and restore the settings they
-change:
+## Before a pull request
 
-```bash
-python3 -m pytest -m hardware_mutation --hardware-mutations
-```
+- Keep packet decoders independent of device I/O and reject malformed data.
+- Add focused tests for behavior changes.
+- Preserve original values, clocks, and loss information.
+- Update the affected guides and `CHANGELOG.md` for user-facing changes.
+- Exclude recordings, real device identifiers, credentials, coverage files, and
+  operating-system files from commits.
 
-The same `--hardware-single` option applies to the mutation test. Its cleanup
-restores the original threshold even when the starting mode was RAW.
+For hardware changes, report firmware/schema, host OS, duration, and loss counters
+before and after testing. Clearly distinguish simulated tests from physical tests.
+Test packets captured from hardware must use the supported protocol and redact
+real serial numbers.
 
-Neither command performs a physical zero sweep. See
-[`docs/03_calibration.md`](docs/03_calibration.md).
+After CI passes, its package job provides a wheel, matching source/examples,
+commit details, and checksums. See [package evaluation](docs/08_candidate_status.md#evaluate-the-package).
 
-By submitting a contribution, you agree that it is licensed under Apache-2.0.
+Contributions are licensed under Apache-2.0.

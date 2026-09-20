@@ -95,9 +95,12 @@ def test_episode_number_reservation_is_atomic_under_concurrency(tmp_path):
     assert all(path.is_dir() for path in paths)
 
 
-def test_all_four_files_are_written(tmp_path):
+def test_backend_jsonl_and_metadata_are_written(tmp_path):
     ep = recorded(tmp_path)
-    assert {p.name for p in ep.iterdir()} == {"meta.json", "tactile.npz", "imu.npz", "mag.npz"}
+    assert {p.name for p in ep.iterdir()} == {
+        "meta.json", "tactile_left.jsonl", "wrist_imu_left.jsonl", "wrist_mag_left.jsonl",
+        "tactile_left.calibration.json",
+    }
 
 
 def test_recorded_fixture_is_independent_of_host_delay_before_sealing(tmp_path, monkeypatch):
@@ -156,7 +159,7 @@ def test_recorder_memory_is_bounded_and_large_chunked_capture_round_trips(tmp_pa
     assert not any(p.name.startswith(".recording-") for p in (tmp_path / "ep_0001").iterdir())
 
 
-def test_empty_modalities_are_valid_npz_files_with_schema_shapes(tmp_path):
+def test_empty_modalities_are_valid_jsonl_files_with_schema_shapes(tmp_path):
     g = glove(n=0)
     rec = Recorder(g, tmp_path / "ep_0001", chunk_samples=2)
     try:
@@ -168,17 +171,18 @@ def test_empty_modalities_are_valid_npz_files_with_schema_shapes(tmp_path):
     finally:
         g.close()
 
-    with np.load(tmp_path / "ep_0001" / "imu.npz", allow_pickle=False) as imu:
-        assert imu["accel"].shape == (0, 3)
-        assert imu["gyro"].shape == (0, 3)
-        assert imu["raw"].shape == (0, 6) and imu["raw"].dtype == np.int16
-        assert imu["raw_valid"].shape == (0,) and imu["raw_valid"].dtype == np.bool_
-    with np.load(tmp_path / "ep_0001" / "mag.npz", allow_pickle=False) as mag:
-        assert mag["field"].shape == (0, 3)
-        assert mag["raw"].shape == (0, 3) and mag["raw"].dtype == np.int16
+    episode = replay(tmp_path / "ep_0001")
+    imu = episode.arrays("imu")
+    assert imu["accel"].shape == (0, 3)
+    assert imu["gyro"].shape == (0, 3)
+    assert imu["raw"].shape == (0, 6) and imu["raw"].dtype == np.int16
+    assert imu["raw_valid"].shape == (0,) and imu["raw_valid"].dtype == np.bool_
+    mag = episode.arrays("mag")
+    assert mag["field"].shape == (0, 3)
+    assert mag["raw"].shape == (0, 3) and mag["raw"].dtype == np.int16
 
 
-def test_npz_staging_failure_keeps_fail_closed_metadata_and_exposes_path(tmp_path, monkeypatch):
+def test_jsonl_staging_failure_keeps_fail_closed_metadata_and_exposes_path(tmp_path, monkeypatch):
     import oglo._record as record_module
 
     g = glove(n=0)
@@ -187,7 +191,7 @@ def test_npz_staging_failure_keeps_fail_closed_metadata_and_exposes_path(tmp_pat
         seq=1, t_us=2, host_t=3.0,
         counts=np.zeros((5, 4, 4), dtype=np.uint16),
     ))
-    original = record_module._write_buffer_npz
+    original = record_module._write_buffer_jsonl
     calls = 0
 
     def fail_on_second(*args, **kwargs):
@@ -197,7 +201,7 @@ def test_npz_staging_failure_keeps_fail_closed_metadata_and_exposes_path(tmp_pat
             raise OSError("simulated full disk")
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(record_module, "_write_buffer_npz", fail_on_second)
+    monkeypatch.setattr(record_module, "_write_buffer_jsonl", fail_on_second)
     try:
         with pytest.raises(RecordError, match="could not finalize") as caught:
             rec.write()
@@ -209,7 +213,7 @@ def test_npz_staging_failure_keeps_fail_closed_metadata_and_exposes_path(tmp_pat
     assert meta["complete"] is False
     assert meta["stop_reason"] == "write_error"
     assert "simulated full disk" in meta["error"]
-    assert not list((tmp_path / "ep_0001").glob("*.npz")), "nothing publishes before all staging succeeds"
+    assert not list((tmp_path / "ep_0001").glob("*.jsonl")), "nothing publishes before all staging succeeds"
     assert any(p.name.startswith(".recording-") for p in (tmp_path / "ep_0001").iterdir())
 
 
@@ -545,8 +549,8 @@ def test_record_stops_on_sustained_silence_and_preserves_partial_data(
                           host_t=clock[0], host_received_ns=int(clock[0] * 1e9))
             rows = {
                 "tactile": (Frame(**common, counts=np.zeros((5, 4, 4), dtype=np.uint16)),),
-                "imu": (ImuSample(**common, accel=(0, 0, 1), gyro=(0, 0, 0)),),
-                "mag": (MagSample(**common, field=(0.1, 0.2, 0.3)),),
+                "imu": (ImuSample(**common, accel=(0, 0, 1), gyro=(0, 0, 0), raw=(0, 0, 4096, 0, 0, 0)),),
+                "mag": (MagSample(**common, field=(0.1, 0.2, 0.3), raw=(684, 1368, 2053)),),
             }
             if not has_mag:
                 rows["mag"] = ()
@@ -630,11 +634,11 @@ def test_duration_boundary_drains_bytes_queued_during_host_deschedule(tmp_path, 
             ) for i in (1, 2))
             imu = tuple(ImuSample(
                 seq=i, t_us=i, host_t=10.2, host_received_ns=received_ns,
-                accel=(0, 0, 1), gyro=(0, 0, 0),
+                accel=(0, 0, 1), gyro=(0, 0, 0), raw=(0, 0, 4096, 0, 0, 0),
             ) for i in (1, 2))
             mag = tuple(MagSample(
                 seq=i, t_us=i, host_t=10.2, host_received_ns=received_ns,
-                field=(0.1, 0.2, 0.3),
+                field=(0.1, 0.2, 0.3), raw=(684, 1368, 2053),
             ) for i in (1, 2))
             return SampleBatch(tactile=tactile, imu=imu, mag=mag)
 
@@ -662,14 +666,14 @@ def test_capture_end_timestamp_is_frozen_before_slow_finalization(tmp_path, monk
     rec.finish_capture()
     ended_wall = rec._ended_wall
     ended_mono = rec._ended_mono
-    original = record_module._write_buffer_npz
+    original = record_module._write_buffer_jsonl
 
     def finalization_happens_later(*args, **kwargs):
         monkeypatch.setattr(record_module.time, "time", lambda: 9_999_999_999.0)
         monkeypatch.setattr(record_module.time, "monotonic", lambda: 8_888_888_888.0)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(record_module, "_write_buffer_npz", finalization_happens_later)
+    monkeypatch.setattr(record_module, "_write_buffer_jsonl", finalization_happens_later)
     try:
         rec.write(complete=False, error="timestamp fixture", stop_reason="test")
     finally:
@@ -897,8 +901,8 @@ def test_keyboard_interrupt_during_final_status_seals_partial_before_reraising(t
     assert episode == tmp_path / "ep_0001"
     meta = json.loads((episode / "meta.json").read_text())
     assert meta["complete"] is False and meta["stop_reason"] == "status_error"
-    assert {path.name for path in episode.glob("*.npz")} == {
-        "tactile.npz", "imu.npz", "mag.npz",
+    assert {path.name for path in episode.glob("*.jsonl")} == {
+        "tactile_left.jsonl", "wrist_imu_left.jsonl", "wrist_mag_left.jsonl",
     }
 
 
@@ -1193,6 +1197,6 @@ def test_metadata_count_disagreement_is_detected_before_replay(tmp_path):
 
 def test_asking_for_a_stream_that_was_not_saved_is_an_error(tmp_path):
     ep_dir = recorded(tmp_path)
-    (ep_dir / "mag.npz").unlink()
-    with pytest.raises(ReplayError, match="mag.npz.*missing"):
+    (ep_dir / "wrist_mag_left.jsonl").unlink()
+    with pytest.raises(ReplayError, match="wrist_mag_left.jsonl.*missing"):
         replay(ep_dir).arrays("mag")

@@ -1,80 +1,84 @@
 # Calibration
 
-There is exactly one calibration: the **per-taxel zero**. It lives on the device.
+Calibration records the pressure caused by wearing and bending the glove. The
+device saves one baseline for each of its 80 touch sensors.
 
-## Why a still hand is not enough
+**A new calibration replaces the stored baseline.** It requires a person wearing
+the glove and a USB connection.
 
-Velostat responds to pressure, and bending a finger applies pressure on its own. A
-baseline captured with your hand held still is only correct for a hand held still.
-Make a fist afterwards and every taxel in that finger reads high, and the data shows
-a grip that never happened.
+## Calibrate while moving your hand
 
-So the calibration is a **sweep**: open and close your hand for a few seconds while
-the board records the maximum each taxel reaches. That envelope becomes the baseline.
+Wear the glove. Touch nothing. Open and close your hand throughout the sweep:
 
 ```python
-g.zero(sweep=5)      # wear the glove, open and close, touch nothing
+import oglo
+
+with oglo.connect() as glove:
+    glove.zero(sweep=5)
 ```
 
-Five seconds is the default and is usually enough. The firmware clamps to 1-30 s.
+Five seconds is the default; firmware limits the duration to 1–30 seconds.
+The device records each sensor's highest value during the sweep.
+
+Keep moving: a baseline recorded with a still hand can mistake finger bending
+for contact later.
+
+Over USB, the SDK checks that the sweep started and finished, validates all 80
+baseline and noise values, reads the recipe back with `GET ZERO`, and checks
+`zero_valid` in the device configuration.
 
 ## Raw versus clean
 
-The zero can be applied on the device or not at all.
+| Mode | `frame.counts` | `frame.residual` | Use it for |
+| --- | --- | --- | --- |
+| RAW | Original ADC values, often around 550 at rest | Raises an error | Keeping the original measurements |
+| CLEAN | Baseline removed and threshold applied by firmware | The same values as float32 | Reading contact values directly |
+
+Choose the mode explicitly on a connected glove:
 
 ```python
-g.clean(threshold=30)    # device subtracts the baseline and applies a deadband
-g.raw()                  # device sends unprocessed counts
+glove.clean(threshold=30)  # Use the stored baseline and a cutoff of 30 counts.
+glove.raw()               # Return to original ADC values.
 ```
 
-**Clean is the recommended path**, because it is the only way USB, BLE and any
-third-party client see byte-identical data. The transform happens once, on the board.
+These calls change device settings. CLEAN applies the same transformation for
+all clients, including USB and BLE. RAW keeps information that cleaning removes.
+The [recorder](04_recording.md#raw-and-clean) keeps RAW data and also creates
+CLEAN data from the stored recipe.
 
-| | `f.counts` | `f.residual` |
-| --- | --- | --- |
-| clean | already zeroed | same values |
-| raw | raw ADC (~550 idle) | **raises**; there is no host-baseline fallback |
+## The threshold is a cutoff
 
-## The deadband is a cutoff, not a subtraction
+Cleaning uses this rule:
 
+```text
+value = max(0, raw - baseline)
+if value < threshold:
+    value = 0
 ```
-out = (raw - baseline) < thr ? 0 : (raw - baseline)
-```
 
-A value one count above the threshold reports `thr + 1`, **not** `1`. A host that
-subtracts the threshold again changes the data and is wrong for the supported
-contract.
+With a threshold of 30, values of 29, 30, and 31 become **0, 30, and 31**.
+The threshold is not subtracted from the result.
 
-`thr` is one scalar shared by all 80 taxels. The per-taxel `noise` the board stores
-alongside the baseline is diagnostic only and must not be used to size it.
+One threshold applies to all 80 sensors. The stored per-sensor `noise` values are
+diagnostic information; they are not separate thresholds.
 
-## Record the threshold with your data
+## Keep the settings with the data
 
-`stream_thr` is mutable at runtime. Asking the board later returns **today's** value,
-not the one your data was taken under, so counts recorded without it cannot be
-interpreted afterwards.
+`oglo.record()` saves the mode and threshold in `meta.json`. Use those recorded
+settings when interpreting old data; the glove's current settings may differ.
 
-`oglo.record()` writes it into `meta.json` automatically. If you build your own
-capture path, carry it yourself.
+USB recording saves the full baseline/noise recipe in
+`tactile_<side>.calibration.json`. A custom device adapter can pass the matching
+`GET ZERO` response with `record(..., calibration=recipe)`.
 
-## What is intended to survive a power cycle
+## Check persistence when it matters
 
-The firmware stores the zero and stream mode in device flash, and
-`g.info.zero_valid` reports the active state after connection. Supported firmware does
-not report the flash-write result or perform a power-cycle readback, so the SDK alone
-cannot prove persistence. Reboot, reconnect and compare the recipe when that is a
-release or factory gate.
+Firmware is intended to save calibration and mode in flash. The SDK cannot prove
+that they survive a power cycle. To check, unplug the glove, reconnect it, and
+compare the recipe and settings.
 
-## Over BLE
+## BLE limits
 
-`clean()` and tactile-rate changes can be confirmed by re-reading config. Firmware
-does not expose the applied IMU period in BLE config, so `rates(imu=...)` is also
-USB-only rather than returning an unverified success.
-`zero()` is deliberately USB-only: supported firmware sends the start/completion lines
-and full `GET ZERO` recipe only over serial. Without those, BLE can send the command
-but cannot prove capture or persistence completed, so the SDK fails immediately
-instead of waiting and then pretending success.
-
-Over USB, `zero()` requires the start acknowledgement, validates all 80 baseline and
-noise values, re-reads them with `GET ZERO`, and finally verifies `zero_valid` in
-config before returning.
+BLE supports verified CLEAN and tactile-rate changes. `zero()` and
+`rates(imu=...)` require USB because BLE does not provide the responses needed
+to verify those operations.
