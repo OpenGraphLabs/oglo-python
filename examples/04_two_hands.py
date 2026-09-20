@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
 """Record both hands at once and replay the exact directories returned.
 
-Two things to get right, and one trap to avoid.
-
-RIGHT:  relate transport arrivals on host_t, never across devices on t_us. Each glove
-        counts microseconds from its own power-on. host_t is the shared computer's
-        USB-read boundary, so samples from one read may have the same value; it is not
-        hardware-trigger synchronization.
-
-RIGHT:  finger order comes from info.channels, per hand. The left hand is reversed
-        (pinky first), so one hardcoded list mislabels every left-hand dataset in a
-        way the numbers never show.
-
-TRAP:   do NOT read `next(left_iter)` then `next(right_iter)` in a loop. That locks
-        the two hands together and throttles both to whichever is slower. Drain each
-        hand independently -- a thread each is the simplest way.
+Use host_t for approximate alignment: device clocks have independent origins.
+Samples from one USB read can share a host timestamp; there is no hardware sync.
+Finger order comes from each glove's info.channels (left is pinky-first).
+Read each hand on its own thread so the slower hand does not throttle the other.
 """
 
 from concurrent.futures import ThreadPoolExecutor

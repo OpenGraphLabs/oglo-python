@@ -18,10 +18,6 @@ g.zero(sweep=5)      # wear the glove, open and close, touch nothing
 
 Five seconds is the default and is usually enough. The firmware clamps to 1-30 s.
 
-The still-hand and two-pose variants that older tools offered were removed, not
-hidden: on a worn glove they capture an average that live readings exceed about half
-the time. This SDK does not offer them back.
-
 ## Raw versus clean
 
 The zero can be applied on the device or not at all.
@@ -38,9 +34,6 @@ third-party client see byte-identical data. The transform happens once, on the b
 | --- | --- | --- |
 | clean | already zeroed | same values |
 | raw | raw ADC (~550 idle) | **raises**; there is no host-baseline fallback |
-
-`residual` raising on a raw stream is deliberate. Silently handing back raw counts
-that look like a residual is how a dataset ends up quietly wrong.
 
 ## The deadband is a cutoff, not a subtraction
 
@@ -85,8 +78,3 @@ instead of waiting and then pretending success.
 Over USB, `zero()` requires the start acknowledgement, validates all 80 baseline and
 noise values, re-reads them with `GET ZERO`, and finally verifies `zero_valid` in
 config before returning.
-
-That proves the active firmware recipe is consistent. Supported firmware does not report
-the NVS write result or re-read flash before replying, so the SDK cannot prove power-
-cycle persistence without an actual reboot/reconnect check. Do that as a release or
-factory gate; do not interpret a successful call as an atomic-flash guarantee.

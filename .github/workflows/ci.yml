@@ -50,8 +50,33 @@ jobs:
       - name: Test without hardware
         run: python -m pytest -o pythonpath=tests --import-mode=importlib
 
+  camera:
+    name: Camera capture and alignment without hardware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install SDK and camera dependencies
+        run: python -m pip install ".[dev]" -r examples/camera_glove/requirements-ovision.txt
+      - name: Test camera examples with installed SDK
+        run: |
+          python tools/check_installed.py
+          python -m pytest -o pythonpath=tests --import-mode=importlib tests/test_camera_glove.py --junitxml=camera-results.xml
+      - name: Require camera tests to run without skips
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = ET.parse("camera-results.xml").findall(".//testcase")
+          if not cases or any(case.find("skipped") is not None for case in cases):
+              raise SystemExit("Camera coverage is required: no empty or skipped test runs")
+          PY
+
   package:
     name: Build and install distributions
+    needs: [test, minimum-dependencies, camera]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -76,3 +101,34 @@ jobs:
           python tools/check_installed.py
           python -m pip install pytest
           python -m pytest -o pythonpath=tests --import-mode=importlib
+      - name: Prepare candidate handoff
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from importlib.metadata import version
+          from pathlib import Path
+
+          dist = Path("dist")
+          commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          manifest = {
+              "sdk_version": version("oglo"),
+              "source_commit": commit,
+              "ci_run": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+          }
+          (dist / "handoff.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          files = sorted([*dist.glob("*.whl"), *dist.glob("*.tar.gz"), dist / "handoff.json"])
+          (dist / "SHA256SUMS.txt").write_text("".join(
+              f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+              for path in files
+          ), encoding="utf-8")
+          PY
+      - name: Upload candidate handoff
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oglo-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90

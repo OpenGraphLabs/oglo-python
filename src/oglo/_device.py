@@ -1,9 +1,4 @@
-"""`Glove`: the object a user holds.
-
-Seven public members, and every one of them exists because leaving it out would make
-the documentation contradict itself. The device commands are spelled exactly as the
-firmware accepts them, which is less obvious than it sounds -- see `zero()`.
-"""
+"""Glove connection, sample streams, and verified device commands."""
 
 from __future__ import annotations
 
@@ -20,11 +15,6 @@ from ._config import Capabilities, Info
 from ._frame import Frame, ImuSample, MagSample
 from ._stream import Demux
 from ._status import DeviceStatus
-
-#: `SWEEP` with no argument is a DIFFERENT COMMAND. The firmware matches
-#: `"DIAG SWEEP" || "SWEEP"` first and runs the settle-timing diagnostic; only
-#: `SWEEP <n>` reaches the calibration handler. Always send the number.
-_SWEEP_NEEDS_ARG = True
 
 #: `SET IMURATE` takes a period in MILLISECONDS, not a rate in Hz.
 _IMU_PERIOD_MIN_MS = 1

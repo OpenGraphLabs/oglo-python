@@ -1,24 +1,20 @@
 # Troubleshooting
 
-The candidate USB transport bounds command writes and avoids the unbounded
-`flush()`/`tcdrain()` call that can hang macOS after an endpoint fails. A failed or
-partial command invalidates that connection; close it and reconnect instead of
-appending another command to an uncertain firmware input line. The error includes
-the underlying serial exception. These safeguards do not prove that a recurring
-USB stall has been repaired; see the [candidate status](08_candidate_status.md).
-
-Run this first. It measures your machine rather than asking you to read a table.
+Start with a connection, health, and rate check:
 
 ```bash
 oglo doctor
 ```
 
+A failed or partial USB command invalidates the connection; close it and reconnect.
+For current firmware validation details, see [candidate status](08_candidate_status.md).
+
 ## Everything reads about 550 and nothing is pressed
 
-Correct. Those are raw ADC counts and an untouched taxel sits near its idle offset,
-not at zero. Use `f.residual`, or `g.clean(threshold=30)` to have the board do it.
-
-If `residual` raises, the device has no zero yet. Run `g.zero(sweep=5)`.
+Raw ADC counts include an idle offset. `f.residual` requires a clean stream:
+use `g.clean(threshold=30)` to apply the existing zero. If `g.info.zero_valid` is
+false, first capture a [sweep zero](03_calibration.md). A raw stream raises even
+when a stored zero exists.
 
 ## Making a fist lights up every taxel
 
@@ -55,9 +51,8 @@ rejected when the handshake does not return the strict OGLO schema.
 PortBusyError: /dev/cu.usbmodem... is already held by PID 1234
 ```
 
-A USB glove has exactly **one** owner. A viewer, a notebook kernel or a stale session
-still has it open. If you have used a Wuji glove this will surprise you: theirs is a
-network device and serves several subscribers at once.
+A USB glove has one owner. Close the viewer, notebook kernel, or other session
+holding the port before connecting again.
 
 ## The board answers nothing at all
 
@@ -81,11 +76,8 @@ Keep RTS low. The two together are what a USB-UART bridge decodes as a reset req
 
 BLE notification delivery can vary with the host and radio environment. Before
 suspecting your code, compare the SDK with a raw bleak subscription on the same
-machine. If both are slow, the bottleneck is below the SDK:
-
-```python
-# minimal: subscribe to 4652535f-424c-4500-0001-000000000001 and count
-```
+machine. Subscribe to `4652535f-424c-4500-0001-000000000001` and count notifications.
+If both are slow, the bottleneck is below the SDK.
 
 Things that have mattered:
 
@@ -125,22 +117,11 @@ Use `accel`, `gyro` and `field` only after independently calibrating the
 magnetometer's axes and hard/soft-iron error. Mounting geometry alone is not enough
 to establish a trustworthy heading.
 
-## Two hands report the same side
-
-```
-UsbError: both gloves report the same side
-```
-
-Side is stored on the device. Fix it there:
-
-```python
-g.send("SET SIDE left")
-```
-
 ## Two-hand connection is refused
 
 `connect_pair()` refuses duplicate logical serials or two devices reporting the same
-side. Correct `SET SERIAL` or `SET SIDE` on the affected glove before reconnecting.
+side. Correct `SET SERIAL` or `SET SIDE` on the affected glove before reconnecting,
+for example `g.send("SET SIDE left")`.
 
 ## Something else
 

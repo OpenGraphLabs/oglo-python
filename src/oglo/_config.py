@@ -1,11 +1,4 @@
-"""Validate the single supported OGLO contract and expose its runtime state.
-
-This SDK intentionally starts at firmware 0.9.10. Older firmware and schemas are rejected at
-connect time instead of entering a compatibility mode whose semantics differ.
-
-The config is read from `GET CONFIG` over serial or from the config characteristic
-over BLE; either way it is the same JSON and this module does not care which.
-"""
+"""Validate USB/BLE config for firmware 0.9.10+ and schema 6."""
 
 from __future__ import annotations
 
@@ -201,15 +194,6 @@ def _config_bool(cfg: Dict[str, Any], name: str) -> bool:
     value = cfg[name]
     if value is not True and value is not False:
         raise ConfigError(f"{name} must be a JSON boolean, got {value!r}")
-    return value
-
-
-def _config_string(cfg: Dict[str, Any], name: str, *, allow_empty: bool = False) -> str:
-    if name not in cfg:
-        raise ConfigError(f"config is missing {name}")
-    value = cfg[name]
-    if not isinstance(value, str) or (not allow_empty and not value):
-        raise ConfigError(f"{name} must be a JSON string")
     return value
 
 

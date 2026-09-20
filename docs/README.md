@@ -1,18 +1,19 @@
 # OGLO SDK documentation
 
-This documentation belongs to the sole canonical SDK repository,
-[`OpenGraphLabs/oglo-python`](https://github.com/OpenGraphLabs/oglo-python). All
-issues, pull requests, tags, releases, and documentation updates belong there.
+Start with the [README quickstart](../README.md#install).
 
-1. [Quickstart](01_quickstart.md) - install, diagnose, and read the first frames
-2. [Compatibility](06_compatibility.md) - supported and measured scope
-3. [Data reference](02_data_reference.md) - streams, units, frames, taxel addressing
-4. [Calibration](03_calibration.md) - the sweep, raw vs clean, the deadband
-5. [Recording and replay](04_recording.md) - episode format, two hands
-6. [Troubleshooting](05_troubleshooting.md) - start with `oglo doctor`
-7. [Test your own glove pair](07_acceptance.md) - guided public-API acceptance and reports
-8. [Candidate status](08_candidate_status.md) - package evaluation and remaining physical checks
+| Guide | Contents |
+| --- | --- |
+| [Data reference](02_data_reference.md) | Streams, units, axes, clocks, and loss |
+| [Collection data specification](09_data_specification.md) | `OGLData`, required collection fields, shapes, units, and example records |
+| [Calibration](03_calibration.md) | Sweep zero, raw/clean modes, and thresholds |
+| [Recording and replay](04_recording.md) | Episodes, cancellation, and two hands |
+| [USB webcam + glove](../examples/camera_glove/README.md) | Webcam setup, concurrent capture, timestamp fields, and offline joins |
+| [OVISION v1 + glove](../examples/camera_glove/OVISION.md) | Native stereo/IMU capture, calibration, and camera-to-glove field mapping |
+| [Troubleshooting](05_troubleshooting.md) | Connection and data problems |
+| [Compatibility](06_compatibility.md) | Supported protocol and validation scope |
+| [Acceptance](07_acceptance.md) | Physical glove checks and reports |
+| [Candidate status](08_candidate_status.md) | Package evaluation and remaining qualification |
 
-The public wire-level contract needed by SDK users is documented in the
-[data reference](02_data_reference.md) and locked by the captured vectors under
-[`spec/vectors/`](../spec/vectors/).
+The wire contract is covered by the data reference and captured
+[test vectors](../spec/vectors/).

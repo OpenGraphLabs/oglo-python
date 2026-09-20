@@ -6,6 +6,23 @@ All notable user-facing changes are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- `OGLData` and nested dictionary types for the existing camera/glove session
+  format, with a collection specification covering required fields, units,
+  array shapes, and example records
+
+### Changed
+
+- candidate installation now uses a commit-specific CI handoff with matching
+  source/examples, source provenance, and SHA-256 checksums
+- camera CI installs the example dependencies and rejects skipped camera tests
+- replay documentation handles both RAW and CLEAN recordings
+- current firmware guidance reflects the team's successful 0.9.16 functionality tests
+- consolidated the quickstart into the README, shortened repeated guidance, and
+  removed unused internal code without changing the public API or data formats
+
+
 ## [0.1.0rc7] - Candidate preparation
 
 - Move recording chunk writes and fsync off the glove reader into a bounded

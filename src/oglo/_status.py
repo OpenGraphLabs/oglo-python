@@ -41,10 +41,9 @@ def parse_status(raw: Dict[str, Any]) -> DeviceStatus:
         raise StatusError("status is empty")
     if "imu" not in raw:
         raise StatusError("status is missing imu")
-    imu_value = raw["imu"]
-    if not isinstance(imu_value, dict):
+    imu = raw["imu"]
+    if not isinstance(imu, dict):
         raise StatusError("imu status must be an object")
-    imu = imu_value
 
     def nonnegative(name: str, *, maximum: int = 0xFFFFFFFF) -> int:
         if name not in raw:
@@ -71,20 +70,17 @@ def parse_status(raw: Dict[str, Any]) -> DeviceStatus:
         raise StatusError("status imu object is missing mag_ok")
     if "sensor_ok" not in raw:
         raise StatusError("status is missing sensor_ok")
-    imu_ok_value = raw["imu_ok"]
     imu_sample_ok = boolean("imu.ok", imu["ok"])
-    imu_ok = boolean("imu_ok", imu_ok_value)
+    imu_ok = boolean("imu_ok", raw["imu_ok"])
     if imu_ok != imu_sample_ok:
         raise StatusError(
             f"status imu_ok={imu_ok} disagrees with imu.ok={imu_sample_ok}"
         )
-    mag_ok_value = imu["mag_ok"]
-
     return DeviceStatus(
         uptime_ms=nonnegative("uptime_ms"),
         seq=nonnegative("seq"),
         imu_ok=imu_ok,
-        mag_ok=boolean("mag_ok", mag_ok_value),
+        mag_ok=boolean("mag_ok", imu["mag_ok"]),
         sensor_ok=boolean("sensor_ok", raw["sensor_ok"]),
         error_flags=nonnegative("error_flags"),
         deadline_misses=nonnegative("deadline_misses"),
