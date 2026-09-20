@@ -1,39 +1,64 @@
 # Candidate status
 
-`0.1.0rc4` is prepared for SDK evaluation. The latest published release is still
-`0.1.0rc3`. A candidate wheel, passing offline tests or a draft release must not be
-described as a completed physical qualification.
+`0.1.0rc4` is prepared for SDK evaluation; the latest published release is
+`0.1.0rc3`. See the [changelog](../CHANGELOG.md) for SDK changes and
+[compatibility](06_compatibility.md) for the supported contract.
 
-## What changed in the SDK
+## Firmware status
 
-- Capability-gated USB keepalive runs independently of stream reads.
-- USB command writes time out; partial/failed writes invalidate the connection.
-- Recordings detect silent streams within five seconds and preserve failed
-  partial episodes, including their error and `complete=false` metadata.
-- Closing an SDK-owned USB port explicitly lowers DTR to end its firmware
-  recovery authorization, including when the host retains DTR on descriptor close.
-- Single-glove acceptance, cooperative recording cancellation, RAW/CLEAN checks
-  and firmware 0.9.16 retry-counter interpretation are covered by offline tests.
-- Tactile orientation helpers preserve the original wire-order counts.
+The team reports successful functionality testing on firmware 0.9.16 and confirms
+that the previously reported problems are resolved on its tested setups. The
+earlier USB incident is historical context, not a current release blocker.
 
-## Current physical limitation
+For a new deployment, retain the firmware version and acceptance report for its
+host, gloves, and storage. The [acceptance guide](07_acceptance.md) includes a
+75-minute soak for checking device-clock rollover and long recordings.
 
-Sustained USB reception failures were reproduced on firmware 0.9.16, including
-tests that did not import the SDK. One device USB-driver FIFO-allocation defect
-was confirmed. A private firmware intervention completed two five-minute traffic
-tests, but that intervention is not a qualified firmware release and does not
-establish long-duration SDK reliability. Installing this SDK does not modify or
-repair the glove firmware.
+## Evaluate the package
 
-The firmware return comparison, distributable firmware fix and target-host
-recording qualification remain open. The 0.9.10 firmware floor is a protocol
-compatibility check; it is not a reliability guarantee for every newer firmware.
-Earlier two-hand measurements on 0.9.10 do not qualify a new 0.9.16 combination.
+1. Open the [CI runs](https://github.com/OpenGraphLabs/oglo-python/actions/workflows/ci.yml)
+   and select a successful run for the commit you intend to evaluate. In its
+   **Artifacts** section, download `oglo-<full-commit-sha>` and unzip it. This
+   handoff is produced by runs containing the candidate-upload workflow, after
+   the SDK, minimum-dependency, and camera tests pass. Older runs will not have it.
+   GitHub sign-in is required to download CI artifacts. They are retained for
+   90 days; keep the downloaded bundle with your project. For a public release,
+   maintainers can attach the same bundle to
+   [GitHub Releases](https://github.com/OpenGraphLabs/oglo-python/releases).
 
-## Evaluate the prepared package
+   The bundle contains:
 
-1. Verify the supplied `SHA256SUMS.txt` and source commit in the handoff manifest.
-2. Install the candidate in a clean virtual environment:
+   ```text
+   oglo-0.1.0rc4-py3-none-any.whl   installable SDK
+   oglo-0.1.0rc4.tar.gz            matching source, docs, tests, and examples
+   handoff.json                  SDK version, exact source commit, CI run URL
+   SHA256SUMS.txt                 checksums for the three files above
+   ```
+
+2. From the unpacked directory, verify the checksums before installation:
+
+   ```bash
+   # Linux
+   sha256sum -c SHA256SUMS.txt
+   # macOS
+   shasum -a 256 -c SHA256SUMS.txt
+   ```
+
+   On Windows PowerShell:
+
+   ```powershell
+   Get-Content SHA256SUMS.txt | ForEach-Object {
+       $expected, $file = $_ -split '  ', 2
+       if ((Get-FileHash $file -Algorithm SHA256).Hash -ne $expected) {
+           throw "Checksum mismatch: $file"
+       }
+   }
+   ```
+
+   Check that `handoff.json` names the expected source commit and CI run. The SDK
+   version alone does not distinguish two candidate builds from different commits.
+
+3. Install the candidate wheel in a clean environment:
 
    ```bash
    python3 -m venv .venv
@@ -44,15 +69,20 @@ Earlier two-hand measurements on 0.9.10 do not qualify a new 0.9.16 combination.
    oglo --help
    ```
 
-3. Review the [quickstart](01_quickstart.md) and [recording format](04_recording.md).
-   Reading examples and replaying supplied captures can be evaluated without
-   claiming that live recording is qualified.
-4. Once the compatible firmware and physical setup are ready, run the
-   [acceptance checks](07_acceptance.md), then its 75-minute soak on the intended
-   storage. Use `--single` for one glove; qualify both gloves together when the
-   deployment needs two hands.
+4. Extract the matching source archive to use its documentation and examples:
 
-Offline CI covers Python 3.10–3.14 on Linux, macOS and Windows using installed
-packages. It cannot establish USB timing, cable quality, actual sensor response or
-target-disk reliability. BLE throughput, two-hand hardware synchronisation and
-force calibration are outside this USB candidate's qualification.
+   ```bash
+   python -m tarfile -e oglo-0.1.0rc4.tar.gz .
+   cd oglo-0.1.0rc4
+   ```
+
+   Follow its README and [recording guide](04_recording.md). Run camera examples
+   from this extracted directory so their version matches the installed wheel.
+   Replay can be evaluated without hardware.
+5. For a new hardware deployment, run the [acceptance checks](07_acceptance.md)
+   on the intended setup. Use `--single` for one glove; test both together for
+   two-hand deployments.
+
+A candidate package, passing offline tests, or a draft release does not establish
+physical qualification. BLE throughput, hardware synchronisation, and force
+calibration are outside this USB candidate's scope.

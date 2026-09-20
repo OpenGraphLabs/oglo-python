@@ -6,7 +6,7 @@ import oglo
 ep = oglo.record("out/", seconds=60)
 print("wrote", ep)
 
-# From here on, no hardware is involved. Everything below runs on a plane.
+# Replay requires no hardware.
 e = oglo.replay(ep)
 print(e.summary())
 

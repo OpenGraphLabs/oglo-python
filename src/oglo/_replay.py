@@ -1,15 +1,6 @@
-"""Reading an episode back.
+"""Replay recorded samples through the same stream interface as a live Glove.
 
-An `Episode` has the same shape as a `Glove`: `.info`, `.tactile()`, `.imu()`,
-`.mag()`, yielding the same `Frame` / `ImuSample` / `MagSample` objects. That is the
-point. A team can write and test their whole pipeline against recorded data and then
-swap `oglo.replay(path)` for `oglo.connect()` without touching anything downstream,
-which means the pipeline can be finished before the gloves arrive.
-
-Replay reproduces what was recorded and does not reprocess it. There is no option to
-re-threshold or re-zero on the way out: the counts on disk were produced under the
-calibration named in `meta.json`, and quietly applying a different one would make the
-replayed data disagree with the live data it is supposed to stand in for.
+Counts retain the calibration in meta.json; replay never re-zeros or re-thresholds.
 """
 
 from __future__ import annotations

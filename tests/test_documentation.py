@@ -15,12 +15,13 @@ CURRENT_DOCS = (
     ROOT / "CONTRIBUTING.md",
     ROOT / "SECURITY.md",
     *(ROOT / "docs").glob("*.md"),
+    *(ROOT / "examples/camera_glove").glob("*.md"),
 )
 
 
 def test_current_docs_match_the_release_and_firmware_floor():
-    text = "\n".join(path.read_text() for path in CURRENT_DOCS)
-    package_version = re.search(r'(?m)^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text()).group(1)
+    text = "\n".join(path.read_text(encoding="utf-8") for path in CURRENT_DOCS)
+    package_version = re.search(r'(?m)^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(encoding="utf-8")).group(1)
     assert oglo.__version__ == package_version
     assert MIN_FIRMWARE == (0, 9, 10)
     assert "0.1.0rc2" not in text
@@ -30,14 +31,14 @@ def test_current_docs_match_the_release_and_firmware_floor():
     assert "allow-unpaired" not in text
     assert "0.9.16" in text
     assert f"oglo-{package_version}-py3-none-any.whl" in text
-    assert "oglo-python.git@main" in text
+    assert "oglo-python.git@main" not in text
 
 
 def test_current_markdown_relative_links_resolve():
     pattern = re.compile(r"\[[^]]*\]\(([^)]+)\)")
     missing = []
     for document in CURRENT_DOCS:
-        for target in pattern.findall(document.read_text()):
+        for target in pattern.findall(document.read_text(encoding="utf-8")):
             target = target.strip().split("#", 1)[0]
             if not target or "://" in target or target.startswith(("mailto:", "#")):
                 continue

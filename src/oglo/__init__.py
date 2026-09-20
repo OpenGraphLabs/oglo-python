@@ -24,6 +24,7 @@ import time
 from typing import List, Optional, Tuple
 
 from ._config import Info
+from .data import OGLData
 from ._device import CalibrationLocked, DeviceError, Glove, SampleBatch
 from ._frame import (FINGERS, R_FRAME_FROM_IMU, CleanStreamError, Frame, ImuSample, MagSample, oriented_counts)
 from ._status import DeviceStatus, StatusError
@@ -45,6 +46,7 @@ __all__ = [
     "ImuSample",
     "MagSample",
     "Info",
+    "OGLData",
     "R_FRAME_FROM_IMU",
     "FINGERS",
     "oriented_counts",

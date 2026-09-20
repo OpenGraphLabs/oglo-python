@@ -1,24 +1,16 @@
 """USB transport: discovery, handshake, and the read loop.
 
-Discovery never opens a port. `serial.tools.list_ports` reads the USB descriptor, so
-vendor, product and serial number are available without touching the device -- which
-matters because opening a port to find out what it is can hang. A NIIMBOT label
-printer enumerates as `/dev/cu.usbmodem*` on the same bus and blocked for two minutes
-when probed.
-
-The transport is constructed around an already-open serial-like object rather than
-opening one itself. That is what lets the whole read path be tested against a fake,
-and it is the same seam `replay` will use later.
+Discovery reads USB descriptors without opening ports. The transport accepts an
+open serial-like object so the read path can also run against a test double.
 """
 
 from __future__ import annotations
 
-import os
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, replace
-from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from . import _wire as w
 from ._config import Capabilities, Info, _fw_at_least, parse_config
@@ -62,31 +54,15 @@ class UsbError(RuntimeError):
 
 
 class NoGloveFound(UsbError):
-    """Discovery saw no glove at all.
-
-    Distinct from every other UsbError on purpose: it is the only failure where
-    falling back to another transport makes sense. "The port is held by someone else"
-    means the glove IS there, and going wireless instead would hide the real problem
-    and hand back a link with different characteristics.
-    """
+    """No glove was discovered; only this USB error allows automatic BLE fallback."""
 
 
 class DisconnectedError(UsbError):
-    """The glove went away mid-session.
-
-    Its own type because it is the failure people actually hit -- a cable knocked
-    out, a hub resetting -- and because pyserial's own exception for it says
-    "Attempting to use a port that is not open", which tells a researcher nothing.
-    """
+    """The glove disconnected during a session."""
 
 
 class PortBusyError(UsbError):
-    """The port exists but something else owns it.
-
-    Worth its own type because it is the first thing anyone arriving from Wuji hits:
-    their glove is a network device and serves several subscribers, while a USB CDC
-    port has exactly one owner.
-    """
+    """Another process owns the USB port."""
 
 
 @dataclass(frozen=True)

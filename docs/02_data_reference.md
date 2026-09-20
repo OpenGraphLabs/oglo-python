@@ -1,5 +1,8 @@
 # Data reference
 
+For what to collect and how the camera/glove session is structured, see the
+[`OGLData` collection specification](09_data_specification.md).
+
 ## The three streams
 
 Over USB each tagged stream has its own rate, sequence number and timestamp. BLE
