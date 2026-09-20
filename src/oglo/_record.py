@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import queue
 import shutil
 import threading
 import time
@@ -31,6 +32,83 @@ _STREAM_STALL_TIMEOUT_S = 5.0
 
 class RecordError(RuntimeError):
     pass
+
+
+def _write_chunk(path: Path, columns: Dict[str, np.ndarray]) -> None:
+    """Persist one immutable chunk; called only by the storage worker."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with tmp.open("xb") as f:
+            np.savez(f, **columns)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+class _ChunkWriter:
+    """Bound disk latency without blocking the thread that drains USB/BLE.
+
+    At most eight sealed blocks wait behind the one being written. Each block
+    owns a copy of its rows, so a live buffer can immediately be reused. If disk
+    cannot keep up even with this reserve, fail explicitly instead of blocking
+    reception, growing memory without limit, or silently dropping a block.
+    """
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue = queue.Queue(maxsize=8)
+        self._thread: Optional[threading.Thread] = None
+        self._error: Optional[BaseException] = None
+        self._closed = False
+        self._closing = False
+
+    def check(self) -> None:
+        if self._error is not None:
+            raise RecordError(f"recording storage failed: {self._error}") from self._error
+
+    def submit(self, path: Path, columns: Dict[str, np.ndarray]) -> None:
+        self.check()
+        if self._closed or self._closing:
+            raise RecordError("recording storage is already closed")
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, name="oglo-record-storage", daemon=True)
+            self._thread.start()
+        try:
+            self._queue.put_nowait((path, columns))
+        except queue.Full:
+            raise RecordError("recording storage backlog is full; stopping capture") from None
+
+    def _run(self) -> None:
+        while True:
+            job = self._queue.get()
+            try:
+                if job is None:
+                    return
+                if self._error is None:
+                    try:
+                        _write_chunk(*job)
+                    except BaseException as exc:
+                        self._error = exc
+            finally:
+                self._queue.task_done()
+                del job
+
+    def close(self, *, check: bool = True) -> None:
+        # This wait belongs after capture has stopped, never in add()/read_batch().
+        if not self._closed:
+            if self._thread is not None:
+                if not self._closing:
+                    self._queue.put(None)
+                    self._closing = True
+                self._thread.join()
+            self._closed = True
+        if check:
+            self.check()
 
 
 def next_episode_dir(root: Path) -> Path:
@@ -62,11 +140,11 @@ class _Buffer:
         "n", "cap", "seq", "t_us", "device_time_us", "host_t", "host_t_ns",
         "host_received_ns", "dropped", "a", "b", "raw", "raw_valid",
         "_ashape", "_bshape", "_rawshape", "_used", "_chunk_count", "_work_dir",
-        "_sealed",
+        "_sealed", "_writer",
     )
 
     def __init__(self, work_dir: Path, ashape=(), bshape=None, rawshape=None,
-                 cap: int = 4096) -> None:
+                 cap: int = 4096, *, writer: _ChunkWriter) -> None:
         if cap <= 0:
             raise ValueError("recording chunk size must be positive")
         self.n = 0
@@ -78,6 +156,7 @@ class _Buffer:
         self._chunk_count = 0
         self._work_dir = Path(work_dir)
         self._sealed = False
+        self._writer = writer
         self.seq = np.empty(cap, dtype=np.uint32)
         self.t_us = np.empty(cap, dtype=np.uint32)
         self.device_time_us = np.empty(cap, dtype=np.uint64)
@@ -111,27 +190,10 @@ class _Buffer:
     def _flush(self) -> None:
         if not self._used:
             return
-        self._work_dir.mkdir(parents=True, exist_ok=True)
         final = self._work_dir / f"chunk_{self._chunk_count:08d}.npz"
-        tmp = self._work_dir / f".{final.name}.{uuid4().hex}.tmp"
-        try:
-            # One uncompressed container and one fsync, rather than 8-10 separate
-            # fsyncs on the sole reader thread. The latter can pause an SD card long
-            # enough to overflow the device/host receive queue. Final compression is
-            # deferred until acquisition has stopped.
-            with tmp.open("xb") as f:
-                np.savez(f, **{
-                    name: arr[: self._used] for name, arr in self._columns()
-                })
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, final)
-        except BaseException:
-            try:
-                tmp.unlink()
-            except FileNotFoundError:
-                pass
-            raise
+        self._writer.submit(final, {
+            name: arr[: self._used].copy() for name, arr in self._columns()
+        })
         self._chunk_count += 1
         self._used = 0
 
@@ -139,6 +201,7 @@ class _Buffer:
             dropped, a, b=None, raw=None) -> None:
         if self._sealed:
             raise RecordError("cannot add samples after this recording was finalized")
+        self._writer.check()
         if self._used == self.cap:
             self._flush()
         i = self._used
@@ -215,12 +278,16 @@ class Recorder:
         self.dir = Path(path)
         self._work = self.dir / f".recording-{uuid4().hex}"
         chunks = self._work / "chunks"
-        self._t = _Buffer(chunks / "tactile", ashape=(5, 4, 4), cap=chunk_samples)
+        self._writer = _ChunkWriter()
+        self._t = _Buffer(chunks / "tactile", ashape=(5, 4, 4), cap=chunk_samples,
+                          writer=self._writer)
         self._i = _Buffer(
-            chunks / "imu", ashape=(3,), bshape=(3,), rawshape=(6,), cap=chunk_samples
+            chunks / "imu", ashape=(3,), bshape=(3,), rawshape=(6,), cap=chunk_samples,
+            writer=self._writer,
         )
         self._m = _Buffer(
-            chunks / "mag", ashape=(3,), rawshape=(3,), cap=chunk_samples
+            chunks / "mag", ashape=(3,), rawshape=(3,), cap=chunk_samples,
+            writer=self._writer,
         )
         self._started_wall: Optional[float] = None
         self._started_mono: Optional[float] = None
@@ -299,6 +366,7 @@ class Recorder:
         meta: Optional[Dict[str, Any]] = None
         try:
             self.finish_capture()
+            self._writer.close()
             self.dir.mkdir(parents=True, exist_ok=True)
             meta = self._meta()
             meta.update(
@@ -526,6 +594,7 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
 
         glove = connect(serial)
     recording_guard = False
+    rec: Optional[Recorder] = None
     try:
         begin_recording = getattr(glove, "_begin_recording", None)
         if begin_recording is not None:
@@ -738,6 +807,8 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
                 _discard_empty_reservation(target, rec)
             raise
     finally:
+        if rec is not None:
+            rec._writer.close(check=False)
         if recording_guard:
             glove._end_recording()
         if own:

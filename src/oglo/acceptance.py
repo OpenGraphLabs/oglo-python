@@ -492,17 +492,28 @@ def _check_streams(
                 f"{type(exc).__name__}: {exc}",
             )
 
+    def collect_and_stop(glove: Any) -> tuple:
+        try:
+            samples = _collect(glove, seconds)
+            # stop() clears session rates and loss counters. Preserve evidence
+            # before stopping, including nonzero counters that must still fail.
+            return samples, dict(glove.rates_seen), dict(glove.dropped)
+        finally:
+            # Each hand stops in its own worker as soon as collection ends.
+            # Validating thousands of samples while USB remains active can
+            # overflow the device queue even though the measured prefix is sound.
+            glove.stop()
+
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {g.info.side: pool.submit(_collect, g, seconds) for g in gloves}
+        futures = {g.info.side: pool.submit(collect_and_stop, g) for g in gloves}
         collected = {side: future.result() for side, future in futures.items()}
 
     stats: Dict[str, Dict[str, float]] = {}
     for glove in gloves:
         side = glove.info.side
-        samples = collected[side]
+        samples, public_rates, loss_counters = collected[side]
         stats[side] = _sample_stats(samples)
         _report_sample_contract(report, glove, samples, stats[side], sdk)
-        public_rates = dict(glove.rates_seen)
         rates_seen_ok = all(
             float(public_rates.get(name, 0.0)) > 0
             for name in ("tactile", "imu") + (("mag",) if glove.info.has_mag else ())
@@ -513,7 +524,7 @@ def _check_streams(
             ", ".join(f"{name}={hz:.1f}" for name, hz in public_rates.items()),
             public_rates,
         )
-        _report_loss(report, glove)
+        _report_loss(report, glove, counters=loss_counters)
         try:
             after = glove.status()
             start = before.get(side)
@@ -672,8 +683,13 @@ def _report_sample_contract(
         )
 
 
-def _report_loss(report: AcceptanceReport, glove: Any) -> None:
-    counters = dict(glove.dropped)
+def _report_loss(
+    report: AcceptanceReport,
+    glove: Any,
+    *,
+    counters: Optional[Mapping[str, int]] = None,
+) -> None:
+    counters = dict(glove.dropped if counters is None else counters)
     strict = {
         name: int(value)
         for name, value in counters.items()
@@ -920,13 +936,23 @@ def _record_replay_pair(
     paths: Dict[str, Path] = {}
     report.write()
     stop_event = threading.Event()
+
+    def record_and_stop(glove: Any) -> Path:
+        try:
+            return Path(sdk.record(
+                root / glove.info.side, seconds, glove=glove, stop_event=stop_event
+            ))
+        finally:
+            # record() resumes caller-owned gloves. Stop in this worker before
+            # waiting for the other hand or replaying files on the main thread;
+            # both can otherwise leave a transmitting glove without a reader.
+            glove.stop()
+
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             try:
                 futures = {
-                    pool.submit(
-                        sdk.record, root / g.info.side, seconds, glove=g, stop_event=stop_event
-                    ): g.info.side
+                    pool.submit(record_and_stop, g): g.info.side
                     for g in gloves
                 }
                 # Observe whichever hand finishes first. Waiting in left/right

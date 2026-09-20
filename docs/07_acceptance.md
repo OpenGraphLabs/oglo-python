@@ -44,7 +44,13 @@ acceptance-results/
 ```
 
 Each check is `PASS`, `WARN`, `FAIL`, or `SKIP` and includes the measured rates and
-counters where useful. A failed run exits with status 2. Optional checks that were not
+counters where useful. After each hand finishes its stream measurement, its worker snapshots rates and
+loss counters, then stops acquisition before the samples are analyzed. This keeps
+report generation from filling an unread device queue, and retains any measured
+losses even though `stop()` clears live session counters. Collector failures also
+stop that hand before the worker exits.
+
+A failed run exits with status 2. Optional checks that were not
 requested are `SKIP` and do not turn a healthy read-only run into a failure.
 
 Use a different result root with `--output PATH`. Skip the short recording with

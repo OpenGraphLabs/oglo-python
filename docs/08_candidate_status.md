@@ -1,14 +1,27 @@
 # Candidate status
 
-`0.1.0rc4` is prepared for SDK evaluation; the latest published release is
+`0.1.0rc7` is prepared for SDK evaluation; the latest published release is
 `0.1.0rc3`. See the [changelog](../CHANGELOG.md) for SDK changes and
 [compatibility](06_compatibility.md) for the supported contract.
 
 ## Firmware status
 
-The team reports successful functionality testing on firmware 0.9.16 and confirms
-that the previously reported problems are resolved on its tested setups. The
-earlier USB incident is historical context, not a current release blocker.
+Successful functionality checks on some setups do not qualify sustained capture
+on the current bench. Stock 0.9.16 reproduced a terminal USB failure on three
+physical gloves, including SDK-free tests. An unsigned FIFO-allocation correction
+in 0.9.17 passed matched five-minute probes and 60-second recording comparisons
+on all three; it is not yet a qualified firmware release.
+
+SDK rc6 fixed unread transmission between acceptance steps. Its subsequent Linux
+two-hand 75-minute recording nevertheless failed: left lost 558 samples and right
+542. Both episodes are marked incomplete. Both gloves remained responsive with
+unchanged firmware/boot/settings/zero, no new deadline misses, and zero
+capture-window USB bulk completion errors. Reader pauses near chunk boundaries
+are being compared with actual storage timing.
+
+rc7 moves chunk writes/fsync to a bounded storage worker, preserving strict loss
+checks and incomplete-file handling. Its Mac/Linux two-hand physical qualification
+remains open. No package is approved here for NTU experimental data collection.
 
 For a new deployment, retain the firmware version and acceptance report for its
 host, gloves, and storage. The [acceptance guide](07_acceptance.md) includes a
@@ -29,8 +42,8 @@ host, gloves, and storage. The [acceptance guide](07_acceptance.md) includes a
    The bundle contains:
 
    ```text
-   oglo-0.1.0rc4-py3-none-any.whl   installable SDK
-   oglo-0.1.0rc4.tar.gz            matching source, docs, tests, and examples
+   oglo-0.1.0rc7-py3-none-any.whl   installable SDK
+   oglo-0.1.0rc7.tar.gz            matching source, docs, tests, and examples
    handoff.json                  SDK version, exact source commit, CI run URL
    SHA256SUMS.txt                 checksums for the three files above
    ```
@@ -64,7 +77,7 @@ host, gloves, and storage. The [acceptance guide](07_acceptance.md) includes a
    python3 -m venv .venv
    # macOS/Linux: source .venv/bin/activate
    # Windows PowerShell: .venv\Scripts\Activate.ps1
-   python -m pip install ./oglo-0.1.0rc4-py3-none-any.whl
+   python -m pip install ./oglo-0.1.0rc7-py3-none-any.whl
    python -c "import oglo; print(oglo.__version__)"
    oglo --help
    ```
@@ -72,8 +85,8 @@ host, gloves, and storage. The [acceptance guide](07_acceptance.md) includes a
 4. Extract the matching source archive to use its documentation and examples:
 
    ```bash
-   python -m tarfile -e oglo-0.1.0rc4.tar.gz .
-   cd oglo-0.1.0rc4
+   python -m tarfile -e oglo-0.1.0rc7.tar.gz .
+   cd oglo-0.1.0rc7
    ```
 
    Follow its README and [recording guide](04_recording.md). Run camera examples

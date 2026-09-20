@@ -87,8 +87,11 @@ or exact sensor-capture alignment. See the complete
 
 ## How long you can record
 
-`record()` keeps only a fixed-size block for each stream in RAM. Full blocks are
-spooled below the episode's hidden working directory, and final NPZ files are built
+`record()` keeps a fixed-size live block for each stream in RAM. A separate storage
+worker spools immutable copies of full blocks below the episode's hidden working
+directory. Its queue holds at most eight blocks in addition to the block being
+written. Disk writes and `fsync` do not run on the thread that drains the glove.
+Final NPZ files wait for all queued blocks and are built
 from those blocks without joining the whole capture in memory. Episode directory
 numbers are atomically reserved, so simultaneous recorders cannot overwrite one
 another.
@@ -108,9 +111,11 @@ while the host was descheduled are included before that freshness check.
 On an exception, the original exception is re-raised with `partial_episode` pointing
 to that directory; the CLI prints the path.
 
-This bounds SDK memory, but it is not proof of unlimited recording. A chunk flush is
-a synchronous write and `fsync` on the same thread that drains USB; a slow Raspberry
-Pi SD-card stall can still cause receive loss. The SDK refuses to mark the episode
+This bounds SDK memory, but it is not proof of unlimited recording. If storage
+cannot keep up and the queue fills, capture stops with an explicit storage-backlog
+error and saves the accepted rows as an incomplete episode. A write failure also
+prevents `complete=true`; recoverable chunks and failure metadata remain available.
+The SDK refuses to mark the episode
 complete when a sequence gap, overflow, malformed frame or
 sustained freshness gap is observable. Supported firmware has no end-to-end CRC or
 read-failure counters, so that is not proof that every short tail loss is detectable;

@@ -9,7 +9,7 @@
 | CONFIG schema | exactly 6 |
 | USB | Tagged schema-6 stream |
 | BLE | Experimental schema-6 notifications |
-| Current committed golden firmware | 0.9.16 for Rev-D-TIA; team functionality tests passed |
+| Current committed golden firmware | 0.9.16 for Rev-D-TIA; long-capture qualification remains open |
 
 Live connections, replay, and vector capture reject firmware below 0.9.10 and
 incompatible schemas or packet dimensions. There is no upper firmware bound.
