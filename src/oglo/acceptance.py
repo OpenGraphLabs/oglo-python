@@ -936,13 +936,23 @@ def _record_replay_pair(
     paths: Dict[str, Path] = {}
     report.write()
     stop_event = threading.Event()
+
+    def record_and_stop(glove: Any) -> Path:
+        try:
+            return Path(sdk.record(
+                root / glove.info.side, seconds, glove=glove, stop_event=stop_event
+            ))
+        finally:
+            # record() resumes caller-owned gloves. Stop in this worker before
+            # waiting for the other hand or replaying files on the main thread;
+            # both can otherwise leave a transmitting glove without a reader.
+            glove.stop()
+
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             try:
                 futures = {
-                    pool.submit(
-                        sdk.record, root / g.info.side, seconds, glove=g, stop_event=stop_event
-                    ): g.info.side
+                    pool.submit(record_and_stop, g): g.info.side
                     for g in gloves
                 }
                 # Observe whichever hand finishes first. Waiting in left/right

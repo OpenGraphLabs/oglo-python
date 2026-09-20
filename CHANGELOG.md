@@ -6,6 +6,22 @@ All notable user-facing changes are recorded here. Versions follow
 
 ## [Unreleased]
 
+## [0.1.0rc6] - Candidate preparation
+
+### Fixed
+
+- Stop each acceptance recording's glove in its worker before waiting for the
+  other hand or replaying the files. The public recorder resumes caller-owned
+  gloves; leaving them active during analysis could overflow device queues and
+  make the next recording fail its health check. Stop both on recording errors
+  as well, retaining peer cancellation and all recording integrity checks.
+
+### Qualification status
+
+- This candidate fixes the acceptance runner's transition between recordings.
+  Mac/Linux two-hand long-duration qualification remains pending. rc5 is retained
+  as a separate, unpublished candidate with its failed pair report.
+
 ## [0.1.0rc5] - Candidate preparation
 
 ### Fixed
@@ -136,6 +152,7 @@ First public release candidate.
 - multi-hour and slow-storage target-host qualification remain deployment tasks
 
 [Unreleased]: https://github.com/OpenGraphLabs/oglo-python/commits/main
+[0.1.0rc6]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc5...v0.1.0rc6
 [0.1.0rc5]: https://github.com/OpenGraphLabs/oglo-python/compare/425346d3d979db742a767c19fd133f3c49efb493...main
 [0.1.0rc4]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc3...425346d3d979db742a767c19fd133f3c49efb493
 [0.1.0rc3]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc2...v0.1.0rc3

@@ -371,6 +371,7 @@ def test_either_failed_hand_cancels_the_other_recording(tmp_path, failed_side):
     peer_cancelled = []
 
     def record(path, seconds, *, glove, stop_event):
+        glove.running = True
         if glove.info.side == failed_side:
             assert peer_started.wait(2.0)
             raise RuntimeError(f"{failed_side} stream stalled")
@@ -380,15 +381,79 @@ def test_either_failed_hand_cancels_the_other_recording(tmp_path, failed_side):
         peer_cancelled.append(stop_event.wait(2.0))
         return path
 
-    gloves = [SimpleNamespace(info=SimpleNamespace(side=side), stop=lambda: None)
+    gloves = [SimpleNamespace(info=SimpleNamespace(side=side), running=False)
               for side in ("left", "right")]
+    for glove in gloves:
+        glove.stop = lambda g=glove: setattr(g, "running", False)
     report = AcceptanceReport(tmp_path, AcceptanceConfig(), "test")
     _record_replay_pair(report, gloves, 4500, tmp_path / "recordings",
                         SimpleNamespace(record=record), label="soak")
     assert peer_cancelled == [True]
+    assert all(not glove.running for glove in gloves)
     assert report.failed
     assert report.checks[-1].verdict == FAIL
     assert f"{failed_side} stream stalled" in report.checks[-1].detail
+
+
+@pytest.mark.parametrize("early_side", ["left", "right"])
+def test_pair_recording_stops_each_hand_before_peer_wait_and_replay(tmp_path, early_side):
+    import threading
+    from oglo.acceptance import _record_replay_pair
+
+    early_stopped = threading.Event()
+    peer_saw_stopped = []
+    replay_states = []
+    gloves = [SimpleNamespace(
+        info=SimpleNamespace(side=side, serial=side, has_mag=True), running=False,
+    ) for side in ("left", "right")]
+    for glove in gloves:
+        def stop(g=glove):
+            was_running = g.running
+            g.running = False
+            if was_running and g.info.side == early_side:
+                early_stopped.set()
+        glove.stop = stop
+
+    def record(path, seconds, *, glove, stop_event):
+        # Public record() resumes a caller-owned glove when it returns.
+        glove.running = True
+        if glove.info.side != early_side:
+            peer_saw_stopped.append(early_stopped.wait(1.0))
+        return path
+
+    class Episode:
+        meta = {"stop_reason": "duration"}
+
+        def __init__(self, side):
+            self.info = SimpleNamespace(serial=side)
+            self.side = side
+
+        def summary(self):
+            return {"complete": True, "serial": self.side, "side": self.side,
+                    **{name: {"n": 2, "dropped": 0} for name in ("tactile", "imu", "mag")}}
+
+        def __len__(self):
+            return 2
+
+        def __iter__(self):
+            return iter([object(), object()])
+
+        tactile = imu = mag = __iter__
+
+        def arrays(self, name):
+            return {"seq": [0, 1]}
+
+    def replay(path):
+        replay_states.append([g.running for g in gloves])
+        return Episode(path.name)
+
+    sdk = SimpleNamespace(record=record, replay=replay,
+                          Frame=object, ImuSample=object, MagSample=object)
+    report = AcceptanceReport(tmp_path, AcceptanceConfig(), "test")
+    _record_replay_pair(report, gloves, 60, tmp_path / "recordings", sdk, label="record")
+    assert peer_saw_stopped == [True], "the first completed hand kept streaming while waiting"
+    assert replay_states == [[False, False], [False, False]]
+    assert not report.failed
 
 
 @pytest.mark.parametrize("wire_loss", [0, 3])
