@@ -1,25 +1,11 @@
-"""BLE transport.
+"""BLE transport backed by a dedicated asyncio thread.
 
-Same shape as `UsbTransport`, so `Glove` does not know which one it holds. Two things
-are genuinely different and neither can be papered over:
-
-**There is no command reply channel.** The firmware writes command output to `Serial`
-only; the BLE command characteristic is write-only and the log characteristic carries
-a periodic status JSON, not replies. So a command is confirmed by re-reading the
-config characteristic until the state actually changes. `Glove` handles that via
-`replies_in_text = False`; the consequence is that a command with nothing observable
-in the config cannot be confirmed at all.
-
-**BLE does not deliver what USB delivers.** The notify packet still uses the
-interleaved v6 slot: one IMU and one magnetometer reading per tactile sample. So the
-IMU loses half of what the board produces (~194 Hz of a 500 Hz stream) and the
-magnetometer arrives duplicated. Tactile is unaffected. Measured ceiling is 312 Hz
-tactile / 45.4 kB/s. **Use USB when IMU rate or timing matters.**
-
-bleak is async and this SDK is not, so the client runs on its own event loop in a
-background thread. That is also what avoids a trap: driving bleak from a loop that a
-synchronous read blocks makes notifications stop silently, reporting zero packets a
-second while the link is perfectly healthy.
+There is no command reply channel: Glove confirms changes by re-reading CONFIG
+(`replies_in_text = False`). The log characteristic carries periodic status only.
+Notifications include one IMU and magnetometer reading per tactile sample, losing
+USB's independent IMU cadence and repeating magnetometer values. Use USB when
+rate or timing matters. The background loop keeps notifications flowing while
+the synchronous caller blocks.
 """
 
 from __future__ import annotations

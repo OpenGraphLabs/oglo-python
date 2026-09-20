@@ -1,13 +1,4 @@
-"""`oglo doctor`: measure this machine, do not ask the user to read a table.
-
-Published rates are what a board did on our bench. What matters to someone with a
-problem is what their machine is receiving right now, so this connects, streams for a
-few seconds and reports the delivered rate per stream against what the board says it
-is producing.
-
-Every check returns a verdict rather than a number alone. A number needs a reader who
-knows the expected value; a verdict does not.
-"""
+"""Check connected gloves and report health, loss, and delivered stream rates."""
 
 from __future__ import annotations
 
@@ -17,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from numbers import Real
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, List, Optional
 
 from ._config import _fw_at_least
 

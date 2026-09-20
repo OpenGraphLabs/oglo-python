@@ -1,8 +1,4 @@
-"""`oglo` on the command line.
-
-The point of a CLI here is that the first thing anyone does with new hardware is
-check whether it works at all, and that should not require writing Python.
-"""
+"""Command-line diagnostics, recording, replay, and acceptance checks."""
 
 from __future__ import annotations
 

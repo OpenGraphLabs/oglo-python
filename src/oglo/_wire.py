@@ -1,23 +1,14 @@
-"""Pure decoders: bytes in, values out. No I/O, no device, no state.
+"""Pure USB tagged-stream and BLE decoders for firmware 0.9.10+, schema 6.
 
-This module exists so the parser layer can be tested without hardware. Everything
-here is a function of its arguments, which is what makes the golden vectors in
-`spec/vectors/` possible: the same bytes must decode to the same values forever.
-
-The public contract is documented in `docs/02_data_reference.md` and locked by the
-captured vectors under `spec/vectors/`. The implementation was also read back from
-the schema-6 firmware source (`oglo_rdr02_tia.ino`, FW 0.9.12) rather than inferred
-from prose alone.
-
-There is one supported wire contract: firmware 0.9.10+, schema 6. USB is the tagged
-stream with packed12 tactile payloads; BLE is the packed schema-6 notification.
+The contract is documented in `docs/02_data_reference.md` and tested against
+captured vectors in `spec/vectors/`.
 """
 
 from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
-from typing import Iterator, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 # --- constants, all confirmed against the firmware source ---------------------
 

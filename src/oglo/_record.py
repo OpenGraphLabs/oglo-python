@@ -1,22 +1,7 @@
-"""Writing an episode to disk.
+"""Record tactile, IMU, and magnetometer streams without resampling.
 
-Three streams at three rates, stored as three arrays. **Nothing is resampled onto a
-common clock.** Forcing one rate either fabricates samples for the slow stream or
-throws them away from the fast one, and both are lies a dataset carries forever. Each
-stream keeps its own sequence, its own device timestamp and its own host timestamp,
-and a consumer that wants them aligned does the aligning with the numbers in front of
-it.
-
-Layout:
-
-    ep_0001/
-      meta.json     device identity, calibration in force, rates, wall-clock anchor
-      tactile.npz   seq, t_us, host_t, counts (N,5,4,4) uint16, dropped
-      imu.npz       seq/times, accel, gyro, raw/raw_valid, dropped
-      mag.npz       seq/times, field, raw/raw_valid, dropped
-
-`.npz` because numpy is already a dependency, the files stay small, and anyone can
-open one without this SDK. A text format at 250 Hz x 80 taxels would be neither.
+Each episode contains meta.json and one NPZ per stream, preserving timestamps,
+sequence numbers, and loss counters. See `docs/04_recording.md` for the format.
 """
 
 from __future__ import annotations
