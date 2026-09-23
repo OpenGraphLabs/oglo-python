@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OGLO Studio · Pair collection</title>
+  <link rel="stylesheet" href="/studio.css">
+  <script defer src="/studio.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="mark">O</span><span>OGLO <strong>Studio</strong><small>LOCAL COLLECTION</small></span></div>
+    <div class="top-right"><span class="local-dot"></span><span>On this laptop</span><span id="state-pill" class="pill">Disconnected</span></div>
+  </header>
+  <main>
+    <nav class="steps" aria-label="Collection steps">
+      <button class="step-button active" data-step="1"><span>1</span> Connect &amp; check</button>
+      <button class="step-button" data-step="2"><span>2</span> Calibrate</button>
+      <button class="step-button" data-step="3"><span>3</span> Set up button</button>
+      <button class="step-button" data-step="4"><span>4</span> Record &amp; review</button>
+      <button class="step-button" data-step="5"><span>5</span> Export</button>
+    </nav>
+    <div id="notice" class="notice" role="status" aria-live="polite"></div>
+
+    <section id="step-1" class="step-panel">
+      <p class="eyebrow">STEP 1 OF 5 · DEVICE CHECK</p><h1>Connect and check your setup</h1>
+      <p class="lead">Studio requires a left and right OGLO glove, plus one camera on the same laptop. Check that both frame counters advance; briefly touch a fingertip on each glove to see taxels light up.</p>
+      <div class="card connect-card">
+        <div class="device-selectors">
+          <label>USB camera<select id="camera-index"><option value="">Scanning cameras…</option></select></label>
+          <label>Left OGLO glove<select id="left-port"><option value="">Scanning gloves…</option></select></label>
+          <label>Right OGLO glove<select id="right-port"><option value="">Scanning gloves…</option></select></label>
+        </div>
+        <div class="inline device-controls"><button id="refresh-devices" class="button subtle">Refresh devices</button><button id="connect" class="button primary" disabled>Connect selected devices</button><span id="device-discovery" class="muted" role="status">Scanning USB devices…</span></div>
+        <div class="device-checks"><div><span class="status-dot" id="left-dot"></span><strong>Left glove</strong><small id="left-device">Waiting</small></div><div><span class="status-dot" id="right-dot"></span><strong>Right glove</strong><small id="right-device">Waiting</small></div><div><span class="status-dot" id="camera-dot"></span><strong>Camera</strong><small id="camera-device">Waiting</small></div></div>
+      </div>
+      <div class="live-layout">
+        <div class="card"><div class="card-title"><h2>Live camera</h2><span id="camera-live-badge" class="live-badge">Waiting for frames</span></div><div class="preview"><img class="camera-preview" alt="Live camera feed"><span class="preview-placeholder">Connect a camera to see its live view</span></div><p class="fine">Make sure both hands and the contact surface are visible.</p></div>
+        <div class="card"><div class="card-title"><h2>Live tactile</h2><span class="muted">80 taxels per glove</span></div><div class="glove-stack"><div class="glove-view"><div class="glove-header"><strong>Left hand</strong><small id="setup-left-status">Waiting for glove</small></div><div class="taxel-display" data-hand="left"></div></div><div class="glove-view"><div class="glove-header"><strong>Right hand</strong><small id="setup-right-status">Waiting for glove</small></div><div class="taxel-display" data-hand="right"></div></div></div></div>
+      </div>
+      <div class="step-actions"><span class="muted">Both glove streams and the camera must be live.</span><button id="next-1" class="button primary" disabled>Looks good — calibrate →</button></div>
+    </section>
+
+    <section id="step-2" class="step-panel" hidden>
+      <p class="eyebrow">STEP 2 OF 5 · CALIBRATION</p><h1>Calibrate both gloves</h1>
+      <p class="lead">A sweep measures the pressure caused by wearing and bending each glove. Choose a fresh sweep when the fit has changed, or explicitly reuse a saved baseline that still matches the fit.</p>
+      <div class="card calibration-card">
+        <div class="calibration-pair"><div><span class="status-dot" id="cal-left-dot"></span><strong>Left glove</strong><small id="cal-left-status">Not checked</small></div><div><span class="status-dot" id="cal-right-dot"></span><strong>Right glove</strong><small id="cal-right-status">Not checked</small></div></div>
+        <div class="calibration-instructions"><strong>For a fresh sweep</strong><ol><li>Wear both gloves and hold your hands clear of objects.</li><li>Start the sweep, then repeatedly open and close both hands for five seconds.</li><li>Do not touch anything, including fingertip to fingertip. Keep moving until verification finishes.</li></ol><p>A new sweep replaces the baseline saved on each glove.</p></div>
+        <label class="calibration-threshold">Contact threshold for a fresh sweep <input id="calibration-threshold" type="number" min="0" max="500" step="10" value="70"><span class="hint">ADC counts below this cutoff will read as no contact. The raw recording remains unchanged.</span></label>
+        <div class="inline calibration-controls"><button id="calibrate" class="button primary">Start 5-second sweep</button><button id="reuse-calibration" class="button subtle">Use saved calibration</button></div>
+        <p id="calibration-help" class="fine" role="status">Choose a fresh sweep or reuse verified saved baselines.</p>
+        <div id="calibration-result" class="calibration-result" hidden><h2>Sweep saved and verified</h2><p>Spread is the change each taxel saw while the hands moved. Larger spread can reduce light-touch sensitivity there.</p><div id="calibration-maps" class="calibration-maps"></div><p id="calibration-summary" class="fine"></p><p class="fine">Green: under 50 counts · Orange: 50–149 · Red: 150 or more. Check red contact areas; edge or fold areas may be less important. Repeat the sweep if the result does not fit your task.</p></div>
+      </div>
+      <div class="card calibration-live"><div class="card-title"><h2>Check fingertip response</h2><span class="muted">After a sweep, briefly touch a fingertip on each glove.</span></div><div class="glove-stack"><div class="glove-view"><div class="glove-header"><strong>Left hand</strong><small id="cal-live-left-status">Waiting for glove</small></div><div class="taxel-display" data-hand="left"></div></div><div class="glove-view"><div class="glove-header"><strong>Right hand</strong><small id="cal-live-right-status">Waiting for glove</small></div><div class="taxel-display" data-hand="right"></div></div></div></div>
+      <div id="calibration-overlay" class="calibration-overlay" role="status" aria-live="polite" hidden><div class="calibration-overlay-content"><p class="eyebrow">SWEEP CALIBRATION</p><h2>Open and close both hands</h2><p>Keep moving. Touch nothing, including fingertip to fingertip.</p><strong id="calibration-countdown">5</strong><small>Studio will verify both saved baselines when the sweep finishes.</small></div></div>
+      <div class="step-actions"><button class="button subtle back" data-back="1">← Device check</button><button id="next-2" class="button primary" disabled>Both calibrated — set up button →</button></div>
+    </section>
+
+    <section id="step-3" class="step-panel" hidden>
+      <p class="eyebrow">STEP 3 OF 5 · HANDS-FREE CONTROL</p><h1>Set up your USB button</h1>
+      <p class="lead">Many foot pedals send keyboard keys. Test each physical button, then assign its key. You can also continue with on-screen controls.</p>
+      <div class="card"><div class="card-title"><h2>Button test</h2><span id="input-status" class="muted">The page must stay focused for keyboard pedals</span></div><button id="test-input" class="button">Connect / test USB button</button><div id="mapping" class="mapping"></div><p class="fine">A keyboard pedal cannot be identified by USB model or detected when unplugged. <a href="/guide" target="_blank" rel="noopener">Connection guidance for macOS, Windows, Linux, and other input modes</a>.</p></div>
+      <div class="step-actions"><button class="button subtle back" data-back="2">← Calibration</button><button id="next-3" class="button primary">Continue to recording →</button></div>
+    </section>
+
+    <section id="step-4" class="step-panel" hidden>
+      <p class="eyebrow">STEP 4 OF 5 · COLLECTION</p><h1>Record and review</h1>
+      <p class="lead">Start and stop with the mapped pedal or the on-screen buttons. Review each take, then Keep or Discard without reconnecting your devices.</p>
+      <div class="record-layout">
+        <div class="card"><div class="card-title"><h2>Live check</h2><span id="record-live-badge" class="live-badge">Waiting for streams</span></div><div class="preview record-preview"><img class="camera-preview" alt="Live camera feed during collection"><span class="preview-placeholder">Camera live view</span></div><div class="glove-stack compact"><div class="glove-view"><div class="glove-header"><strong>Left hand</strong><small id="record-left-status">Waiting</small></div><div class="taxel-display" data-hand="left"></div></div><div class="glove-view"><div class="glove-header"><strong>Right hand</strong><small id="record-right-status">Waiting</small></div><div class="taxel-display" data-hand="right"></div></div></div></div>
+        <div class="card"><h2>Episode controls</h2><label>Task description<input id="task" maxlength="500" placeholder="e.g. Pick up a cup and put it down"></label><label>Delivery profile<select id="profile"><option value="source_archive">Portable source archive</option><option value="annotation_handoff">Annotation handoff (native camera time required)</option></select></label><p id="profile-status" class="fine"></p><div class="session-state"><span id="record-dot" class="record-dot"></span><div><strong id="record-state">Ready when devices are connected</strong><small id="record-detail">F9 starts and stops by default</small></div></div><div class="controls"><button id="start" class="button primary" disabled>Start recording</button><button id="stop" class="button danger" disabled>Stop</button></div><p class="fine">Studio saves RAW values and derives CLEAN data from the calibration used for this episode.</p></div>
+      </div>
+      <div class="card episode-card"><div class="card-title"><h2>Review takes</h2><span id="episode-count" class="muted">No episodes yet</span></div><div id="episodes" class="episodes"><p class="empty">No takes yet. Your first recording will appear here.</p></div></div>
+      <div class="step-actions"><button class="button subtle back" data-back="3">← Button setup</button><button id="next-4" class="button primary" disabled>Export kept takes →</button></div>
+    </section>
+
+    <section id="step-5" class="step-panel" hidden>
+      <p class="eyebrow">STEP 5 OF 5 · DATASET</p><h1>Export your dataset</h1>
+      <p class="lead">The ZIP contains complete, kept episodes with video, both glove streams, timing, calibration, validation, and checksums.</p>
+      <div class="card"><div class="export-summary"><strong id="export-count">0 kept episodes</strong><span id="export-status" class="muted">Nothing to export yet</span></div><a id="export" class="button primary" href="#" aria-disabled="true">Download dataset ZIP</a><p class="caution">An ordinary webcam cannot provide native camera exposure timestamps. Its export is a source archive; the annotation handoff profile requires a native-timestamp camera adapter.</p></div>
+      <div class="step-actions"><button class="button subtle back" data-back="4">← Record more takes</button></div>
+    </section>
+  </main>
+</body>
+</html>

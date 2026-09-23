@@ -36,6 +36,7 @@ Source = "https://github.com/OpenGraphLabs/oglo-python"
 [project.optional-dependencies]
 dev = ["build>=1", "pytest>=7", "twine>=5", "cryptography>=43"]
 firmware = ["cryptography>=43"]
+studio = ["fastapi>=0.110", "uvicorn>=0.30", "opencv-python>=4.10,<5"]
 
 [project.scripts]
 oglo = "oglo.cli:main"

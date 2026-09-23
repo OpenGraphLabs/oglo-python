@@ -90,6 +90,21 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     return 0 if s["complete"] else 2
 
 
+def _cmd_studio(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+        from .studio import create_app
+    except ImportError as exc:
+        raise RuntimeError("Install the studio dependencies with: python -m pip install -e '.[studio]'") from exc
+
+    # Never publish device controls to the local network.
+    app = create_app(args.output)
+    print(f"OGLO Studio: http://127.0.0.1:{args.port}/")
+    print(f"Captures: {args.output}")
+    uvicorn.run(app, host="127.0.0.1", port=args.port, access_log=False)
+    return 0
+
+
 def _cmd_acceptance(args: argparse.Namespace) -> int:
     from pathlib import Path
 
@@ -192,6 +207,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     r.add_argument("--seconds", type=float, default=None, help="omit to record until Ctrl-C")
     r.add_argument("--serial", default=None, help="which glove, if more than one is attached")
     r.set_defaults(func=_cmd_record)
+
+    w = sub.add_parser("studio", help="run the local camera-and-glove collection page")
+    w.add_argument("--output", default="captures/studio", help="local episode folder")
+    w.add_argument("--port", type=int, default=8765, help="loopback web port")
+    w.set_defaults(func=_cmd_studio)
 
     q = sub.add_parser("replay", help="summarise a recorded episode")
     q.add_argument("path")
