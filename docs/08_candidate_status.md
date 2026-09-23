@@ -23,8 +23,15 @@ writing. The initial readiness check incorrectly rejected transient TX retries;
 that host-side interpretation was corrected to match the firmware and existing
 recorder. Sequence loss and actual device drops remain failures.
 
-This is one unit and a short readiness check. Linux/Zed application-update recovery,
-two-hand long recording and the research fleet are not qualified by this result.
+A newly attached R-00025 also completed the migration using the installed common
+package with no device list, policy or serial argument. Its 120.012-second
+recording delivered tactile/IMU/magnetometer packets at 250.1/500.2/125.0 Hz with
+zero counted loss, preserved CONFIG/ZERO and passed three software reopen cycles
+without rewriting firmware. See the current validation report above for exact
+image hashes and evidence scope.
+
+These are short Mac tests. Linux/Zed application-update recovery, two-hand long
+recording and the research fleet are not qualified by these results.
 The earlier rc6 75-minute Linux sample-loss report remains a failed run; integrating
 a storage worker into JSONL recording does not retroactively make it pass.
 
@@ -32,6 +39,16 @@ Test each new deployment on its own host, gloves, cables, and disk. Keep the
 firmware version and [acceptance report](07_acceptance.md) with the results.
 
 ## Evaluate the package
+
+For the published common package with automatic firmware preparation, run this
+once in the Python environment used by your collection program (macOS/Linux):
+
+```bash
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev2/install.py | python - --auto-firmware
+```
+
+The download/check/install steps below are an alternative for manually evaluating
+CI artifacts; they do not enable automatic firmware preparation by themselves.
 
 ### 1. Download a build
 
