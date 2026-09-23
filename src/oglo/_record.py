@@ -17,7 +17,7 @@ from copy import deepcopy
 from dataclasses import asdict
 from numbers import Real
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 from uuid import uuid4
 
 from ._frame import Frame, ImuSample, MagSample
@@ -466,7 +466,8 @@ def _atomic_text(path: Path, text: str) -> None:
 def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
            serial: Optional[str] = None, stop_event: Optional[threading.Event] = None,
            calibration: Optional[Dict[str, Any]] = None,
-           clock_domain: str = "local_host", uncertainty_ns: int = 500_000) -> Path:
+           clock_domain: str = "local_host", uncertainty_ns: int = 500_000,
+           on_tactile: Optional[Callable[[Frame], None]] = None) -> Path:
     """Capture an episode. Returns the directory written.
 
     With no `glove`, one is opened and closed for you. `seconds=None` records until
@@ -481,6 +482,10 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
     supply that recipe with ``calibration``. RAW recordings require a valid
     recipe to create the backend CLEAN file. ``clock_domain`` labels the host;
     ``uncertainty_ns`` is the adapter timing assumption, not measured accuracy.
+
+    ``on_tactile`` observes only the newest frame in each drained batch after
+    the recorder accepts all rows. It is for lossy live previews, not a second
+    recording stream. Callback errors are ignored to protect capture.
     """
     if seconds is not None and (
         isinstance(seconds, bool)
@@ -491,6 +496,8 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
         raise ValueError("seconds must be None or a finite real number greater than zero")
     if stop_event is not None and not isinstance(stop_event, threading.Event):
         raise TypeError("stop_event must be a threading.Event or None")
+    if on_tactile is not None and not callable(on_tactile):
+        raise TypeError("on_tactile must be callable or None")
     validate_clock(clock_domain, uncertainty_ns)
     own = glove is None
     if own:
@@ -569,6 +576,13 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
                 fn = add[name]
                 for item in items:
                     fn(item)
+            if on_tactile is not None and ready["tactile"]:
+                try:
+                    # The preview observes the newest sample after all rows have
+                    # been recorded. It never reads the glove or blocks capture.
+                    on_tactile(ready["tactile"][-1])
+                except Exception:
+                    pass
             return [name for name, items in ready.items() if items]
 
         deadline = None if seconds is None else time.monotonic() + seconds
