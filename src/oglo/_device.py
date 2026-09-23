@@ -603,10 +603,13 @@ class Glove:
 
     def _refresh_info(self, *, strict: bool = False) -> bool:
         try:
+            old_info = self._info
             known_imu_period = self._info.imu_period_ms
             info, self._caps = self._t.read_config(timeout=3.0, interval=0.3, drain=0.1)
             if known_imu_period is not None and info.imu_period_ms is None:
                 info = replace(info, imu_period_ms=known_imu_period)
+            if (info.serial, info.side, info.hw_rev, info.fw_rev) == (old_info.serial, old_info.side, old_info.hw_rev, old_info.fw_rev):
+                info = replace(info, firmware_verification=old_info.firmware_verification)
             self._info = info
             return True
         except Exception as exc:

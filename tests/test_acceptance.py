@@ -371,6 +371,7 @@ def test_either_failed_hand_cancels_the_other_recording(tmp_path, failed_side):
     peer_cancelled = []
 
     def record(path, seconds, *, glove, stop_event):
+        glove.running = True
         if glove.info.side == failed_side:
             assert peer_started.wait(2.0)
             raise RuntimeError(f"{failed_side} stream stalled")
@@ -380,12 +381,140 @@ def test_either_failed_hand_cancels_the_other_recording(tmp_path, failed_side):
         peer_cancelled.append(stop_event.wait(2.0))
         return path
 
-    gloves = [SimpleNamespace(info=SimpleNamespace(side=side), stop=lambda: None)
+    gloves = [SimpleNamespace(info=SimpleNamespace(side=side), running=False)
               for side in ("left", "right")]
+    for glove in gloves:
+        glove.stop = lambda g=glove: setattr(g, "running", False)
     report = AcceptanceReport(tmp_path, AcceptanceConfig(), "test")
     _record_replay_pair(report, gloves, 4500, tmp_path / "recordings",
                         SimpleNamespace(record=record), label="soak")
     assert peer_cancelled == [True]
+    assert all(not glove.running for glove in gloves)
     assert report.failed
     assert report.checks[-1].verdict == FAIL
     assert f"{failed_side} stream stalled" in report.checks[-1].detail
+
+
+@pytest.mark.parametrize("early_side", ["left", "right"])
+def test_pair_recording_stops_each_hand_before_peer_wait_and_replay(tmp_path, early_side):
+    import threading
+    from oglo.acceptance import _record_replay_pair
+
+    early_stopped = threading.Event()
+    peer_saw_stopped = []
+    replay_states = []
+    gloves = [SimpleNamespace(
+        info=SimpleNamespace(side=side, serial=side, has_mag=True), running=False,
+    ) for side in ("left", "right")]
+    for glove in gloves:
+        def stop(g=glove):
+            was_running = g.running
+            g.running = False
+            if was_running and g.info.side == early_side:
+                early_stopped.set()
+        glove.stop = stop
+
+    def record(path, seconds, *, glove, stop_event):
+        # Public record() resumes a caller-owned glove when it returns.
+        glove.running = True
+        if glove.info.side != early_side:
+            peer_saw_stopped.append(early_stopped.wait(1.0))
+        return path
+
+    class Episode:
+        meta = {"stop_reason": "duration"}
+
+        def __init__(self, side):
+            self.info = SimpleNamespace(serial=side)
+            self.side = side
+
+        def summary(self):
+            return {"complete": True, "serial": self.side, "side": self.side,
+                    **{name: {"n": 2, "dropped": 0} for name in ("tactile", "imu", "mag")}}
+
+        def __len__(self):
+            return 2
+
+        def __iter__(self):
+            return iter([object(), object()])
+
+        tactile = imu = mag = __iter__
+
+        def arrays(self, name):
+            return {"seq": [0, 1]}
+
+    def replay(path):
+        replay_states.append([g.running for g in gloves])
+        return Episode(path.name)
+
+    sdk = SimpleNamespace(record=record, replay=replay,
+                          Frame=object, ImuSample=object, MagSample=object)
+    report = AcceptanceReport(tmp_path, AcceptanceConfig(), "test")
+    _record_replay_pair(report, gloves, 60, tmp_path / "recordings", sdk, label="record")
+    assert peer_saw_stopped == [True], "the first completed hand kept streaming while waiting"
+    assert replay_states == [[False, False], [False, False]]
+    assert not report.failed
+
+
+@pytest.mark.parametrize("wire_loss", [0, 3])
+def test_stream_analysis_stops_both_hands_and_keeps_pre_stop_evidence(
+    tmp_path, monkeypatch, wire_loss
+):
+    import threading
+    import oglo.acceptance as acceptance
+
+    barrier = threading.Barrier(2)
+    gloves = []
+    for side in ("left", "right"):
+        glove = SimpleNamespace(
+            info=SimpleNamespace(side=side, serial=side, has_mag=True, fw_rev="0.9.17"),
+            running=False,
+            rates_seen={}, dropped={},
+            status=lambda: SimpleNamespace(healthy=True, uptime_ms=100,
+                tag_dropped=0, deadline_misses=0, tag_short_writes=0),
+        )
+        def stop(g=glove):
+            g.running = False
+            g.rates_seen.clear()
+            g.dropped.clear()
+        glove.stop = stop
+        gloves.append(glove)
+
+    def collect(glove, seconds):
+        glove.running = True
+        glove.rates_seen.update(tactile=250, imu=500, mag=125)
+        glove.dropped.update(wire_tactile=wire_loss, wire_imu=0, wire_mag=0)
+        barrier.wait(timeout=3)
+        return {"tactile": [], "imu": [], "mag": []}
+
+    def analyze(*args):
+        assert all(not glove.running for glove in gloves), "analysis starves active readers"
+
+    monkeypatch.setattr(acceptance, "_collect", collect)
+    monkeypatch.setattr(acceptance, "_report_sample_contract", analyze)
+    report = AcceptanceReport(tmp_path, AcceptanceConfig(), "test")
+    acceptance._check_streams(report, gloves, 0.01, oglo)
+    rates = [c for c in report.checks if "public rates_seen" in c.name]
+    losses = [c for c in report.checks if "host/wire loss counters" in c.name]
+    assert len(rates) == len(losses) == 2
+    assert all(c.verdict == PASS and c.measurements["tactile"] == 250 for c in rates)
+    assert all(c.verdict == (FAIL if wire_loss else PASS) for c in losses)
+    assert all(c.measurements["wire_tactile"] == wire_loss for c in losses)
+
+
+def test_failed_stream_collection_stops_the_started_glove(tmp_path, monkeypatch):
+    import oglo.acceptance as acceptance
+
+    glove = SimpleNamespace(info=SimpleNamespace(side="left"), running=False)
+    glove.stop = lambda: setattr(glove, "running", False)
+    glove.status = lambda: None
+
+    def fail(glove, seconds):
+        glove.running = True
+        raise RuntimeError("reader failed")
+
+    monkeypatch.setattr(acceptance, "_collect", fail)
+    report = AcceptanceReport(tmp_path, AcceptanceConfig(), "test")
+    with pytest.raises(RuntimeError, match="reader failed"):
+        acceptance._check_streams(report, [glove], 0.01, oglo)
+    assert not glove.running

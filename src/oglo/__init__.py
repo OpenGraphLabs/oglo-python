@@ -34,7 +34,7 @@ from ._usb import (DisconnectedError, NoGloveFound, PortBusyError, UsbError,
                    find_port, list_candidates, open_serial)
 from ._usb import UsbTransport as _UsbTransport
 
-__version__ = "0.1.0rc4"
+__version__ = "0.1.0rc8.dev1"
 
 __all__ = [
     "connect",
@@ -67,7 +67,7 @@ __all__ = [
 
 
 def connect(serial: Optional[str] = None, *, transport: str = "usb",
-            port: Optional[str] = None, timeout: float = 6.0) -> Glove:
+            port: Optional[str] = None, timeout: float = 6.0, firmware_policy=None) -> Glove:
     """Open one glove by its logical CONFIG serial, not its USB chip identity.
 
     A port path is not stable across reboots and says nothing about which hand it is,
@@ -80,13 +80,21 @@ def connect(serial: Optional[str] = None, *, transport: str = "usb",
     use USB when rate or timing matters. `transport="auto"` tries USB and falls back
     to BLE only when no matching USB glove is found.
     """
+    from ._firmware_package import resolve_policy, FirmwareError
+    policy = resolve_policy(firmware_policy)
+    if policy is not None:
+        if transport not in ("usb", "auto"):
+            raise FirmwareError("managed firmware preparation requires USB")
+        from .firmware import connect_prepared
+        return connect_prepared(policy, serials=(serial,) if serial else None,
+                                port=port, count=1, timeout=timeout)[0]
     if transport == "ble":
         from ._ble import connect_ble
 
         return connect_ble(serial, address=port, scan_timeout=timeout)
     if transport == "auto":
         try:
-            return connect(serial, transport="usb", port=port, timeout=timeout)
+            return connect(serial, transport="usb", port=port, timeout=timeout, firmware_policy=False)
         except NoGloveFound:
             # Only this one. A busy port, a board that will not answer, a truncated
             # config: all mean the glove is there and something specific is wrong,
@@ -156,8 +164,9 @@ def connect(serial: Optional[str] = None, *, transport: str = "usb",
     raise NoGloveFound(f"no attached glove reports logical serial {serial!r}; saw {seen}")
 
 
-def _connect_usb_port(device: str, *, timeout: float) -> Glove:
-    t = _UsbTransport(open_serial(device))
+def _connect_usb_port(device: str, *, timeout: float, _lease=None) -> Glove:
+    port = open_serial(device) if _lease is None else open_serial(device, _lease=_lease)
+    t = _UsbTransport(port)
     try:
         info, caps = t.read_config(timeout=timeout)
     except BaseException:
@@ -166,13 +175,20 @@ def _connect_usb_port(device: str, *, timeout: float) -> Glove:
     return Glove(t, info, caps)
 
 
-def connect_pair(*, timeout: float = 10.0) -> Tuple[Glove, Glove]:
+def connect_pair(*, timeout: float = 10.0, serials=None, firmware_policy=None) -> Tuple[Glove, Glove]:
     """Open both hands and return them as `(left, right)`.
 
     Which glove is which comes from the side stored on the device, never from the
     order the ports enumerated, so swapping cables cannot mislabel a hand. The two
     devices must report opposite sides and distinct logical serials.
     """
+    from ._firmware_package import resolve_policy, FirmwareError
+    policy = resolve_policy(firmware_policy)
+    if policy is not None:
+        from .firmware import connect_prepared
+        return connect_prepared(policy, serials=serials, count=2, timeout=timeout)
+    if serials is not None:
+        raise FirmwareError("explicit pair serial selection requires a firmware policy; otherwise use connect(serial=...)")
     cands = list_candidates()
     if len(cands) < 2:
         raise UsbError(
@@ -191,7 +207,7 @@ def connect_pair(*, timeout: float = 10.0) -> Tuple[Glove, Glove]:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise UsbError(f"connect_pair timed out after {timeout:.1f}s")
-            gloves.append(connect(port=c.device, timeout=remaining))
+            gloves.append(connect(port=c.device, timeout=remaining, firmware_policy=False))
         by_side = {g.info.side: g for g in gloves}
         if set(by_side) != {"left", "right"}:
             sides = [g.info.serial + "=" + g.info.side for g in gloves]

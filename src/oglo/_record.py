@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import queue
 import shutil
 import threading
 import time
@@ -32,6 +33,71 @@ class RecordError(RuntimeError):
     pass
 
 
+def _write_chunk(path: Path, rows: tuple[str, ...]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_text(path, "".join(rows))
+
+
+class _ChunkWriter:
+    """Bound disk latency without blocking the thread that drains USB/BLE.
+
+    At most eight sealed blocks wait behind the one being written. Each block
+    owns a copy of its rows, so a live buffer can immediately be reused. If disk
+    cannot keep up even with this reserve, fail explicitly instead of blocking
+    reception, growing memory without limit, or silently dropping a block.
+    """
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue = queue.Queue(maxsize=8)
+        self._thread: Optional[threading.Thread] = None
+        self._error: Optional[BaseException] = None
+        self._closed = False
+        self._closing = False
+
+    def check(self) -> None:
+        if self._error is not None:
+            raise RecordError(f"recording storage failed: {self._error}") from self._error
+
+    def submit(self, path: Path, rows: tuple[str, ...]) -> None:
+        self.check()
+        if self._closed or self._closing:
+            raise RecordError("recording storage is already closed")
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, name="oglo-record-storage", daemon=True)
+            self._thread.start()
+        try:
+            self._queue.put_nowait((path, rows))
+        except queue.Full:
+            raise RecordError("recording storage backlog is full; stopping capture") from None
+
+    def _run(self) -> None:
+        while True:
+            job = self._queue.get()
+            try:
+                if job is None:
+                    return
+                if self._error is None:
+                    try:
+                        _write_chunk(*job)
+                    except BaseException as exc:
+                        self._error = exc
+            finally:
+                self._queue.task_done()
+                del job
+
+    def close(self, *, check: bool = True) -> None:
+        # This wait belongs after capture has stopped, never in add()/read_batch().
+        if not self._closed:
+            if self._thread is not None:
+                if not self._closing:
+                    self._queue.put(None)
+                    self._closing = True
+                self._thread.join()
+            self._closed = True
+        if check:
+            self.check()
+
+
 def next_episode_dir(root: Path) -> Path:
     """Atomically reserve ``ep_0001``, ``ep_0002``, ... without overwriting."""
     root = Path(root)
@@ -50,7 +116,7 @@ class _Buffer:
     """A fixed-size batch of JSONL rows, spilled to episode-local chunks."""
 
     def __init__(self, work_dir: Path, name: str, info: Any, *,
-                 clock_domain: str, uncertainty_ns: int, cap: int = 4096) -> None:
+                 clock_domain: str, uncertainty_ns: int, writer: _ChunkWriter, cap: int = 4096) -> None:
         if cap <= 0:
             raise ValueError("recording chunk size must be positive")
         self.n = 0
@@ -63,6 +129,7 @@ class _Buffer:
         self._chunk_count = 0
         self._work_dir = work_dir
         self._sealed = False
+        self._writer = writer
         self.missing_raw = 0
 
     @property
@@ -76,9 +143,8 @@ class _Buffer:
     def _flush(self) -> None:
         if not self._rows:
             return
-        self._work_dir.mkdir(parents=True, exist_ok=True)
         final = self._work_dir / f"chunk_{self._chunk_count:08d}.jsonl"
-        _atomic_text(final, "".join(self._rows))
+        self._writer.submit(final, tuple(self._rows))
         self._chunk_count += 1
         self._rows.clear()
 
@@ -86,6 +152,7 @@ class _Buffer:
             dropped, a, b=None, raw=None) -> None:
         if self._sealed:
             raise RecordError("cannot add samples after this recording was finalized")
+        self._writer.check()
         row = make_row(self.name, self.info, self.n, {
             "seq": seq, "t_us": t_us, "device_time_us": device_time_us,
             "host_t": host_t, "host_t_ns": host_t_ns,
@@ -131,8 +198,9 @@ class Recorder:
         self.dir = Path(path)
         self._work = self.dir / f".recording-{uuid4().hex}"
         chunks = self._work / "chunks"
+        self._writer = _ChunkWriter()
         options = {"clock_domain": clock_domain, "uncertainty_ns": uncertainty_ns,
-                   "cap": chunk_samples}
+                   "cap": chunk_samples, "writer": self._writer}
         self._t = _Buffer(chunks / "tactile", "tactile", self.info, **options)
         self._i = _Buffer(chunks / "imu", "imu", self.info, **options)
         self._m = _Buffer(chunks / "mag", "mag", self.info, **options)
@@ -213,6 +281,7 @@ class Recorder:
         meta: Optional[Dict[str, Any]] = None
         try:
             self.finish_capture()
+            self._writer.close()
             self.dir.mkdir(parents=True, exist_ok=True)
             meta = self._meta()
             meta.update(
@@ -332,6 +401,7 @@ class Recorder:
             "side": info.side,
             "hw_rev": info.hw_rev,
             "fw_rev": info.fw_rev,
+            "firmware_verification": deepcopy(info.firmware_verification),
             "channels": list(info.channels),
             "has_mag": info.has_mag,
             "transport": info.transport,
@@ -427,6 +497,7 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
         from . import connect
 
         glove = connect(serial)
+    rec = None
     recording_guard = False
     try:
         begin_recording = getattr(glove, "_begin_recording", None)
@@ -655,6 +726,8 @@ def record(path: Any, seconds: Optional[float] = None, *, glove: Any = None,
                 _discard_empty_reservation(target, rec)
             raise
     finally:
+        if rec is not None:
+            rec._writer.close(check=False)
         if recording_guard:
             glove._end_recording()
         if own:

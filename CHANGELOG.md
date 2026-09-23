@@ -3,6 +3,20 @@
 User-facing changes by version. Version numbers follow
 [Semantic Versioning](https://semver.org/) and [PEP 440](https://peps.python.org/pep-0440/).
 
+## 0.1.0rc8.dev1 - Development candidate
+
+- Opt-in offline firmware policy, signed application update, stable device locks,
+  durable recovery, bounded USB worker, identity/hash/calibration verification,
+  batch preparation and saved fleet inventory on Mac/Linux.
+- Preserve verified firmware/policy identity in JSONL recordings and replay.
+- Expire delivered-rate estimates when samples stop and promptly cancel a peer
+  recording when the two-hand example fails.
+- Integrate current backend JSONL format with bounded asynchronous chunk writes;
+  blocked storage fails explicitly and cannot publish a complete episode.
+- Mac L-00006 application update/reboot/readiness exercised; fleet and two-hand
+  long-duration qualification remain separate gates. Web updater is unchanged.
+
+
 ## [Unreleased]
 
 ### Added
@@ -25,6 +39,50 @@ User-facing changes by version. Version numbers follow
 - Candidate CI packages now include the matching wheel, source/examples, commit
   details, and checksums. Camera CI requires its tests to run without skips.
 - Updated firmware guidance to reflect the team's successful 0.9.16 tests.
+
+
+## [0.1.0rc7] - Candidate preparation
+
+- Move recording chunk writes and fsync off the glove reader into a bounded
+  storage worker. Immutable copied blocks preserve rows when live arrays are
+  reused. Backlog exhaustion fails promptly instead of blocking acquisition.
+- Wait for pending writes before publishing complete metadata; storage errors
+  leave an incomplete episode and stop the writer. Integrity limits are unchanged.
+- Preserve the rc6 Linux pair 75-minute failure: 558/542 missing samples despite
+  responsive gloves and zero capture-window USB completion errors. The rc7
+  storage correction still requires physical qualification on Linux and Mac.
+
+## [0.1.0rc6] - Candidate preparation
+
+### Fixed
+
+- Stop each acceptance recording's glove in its worker before waiting for the
+  other hand or replaying the files. The public recorder resumes caller-owned
+  gloves; leaving them active during analysis could overflow device queues and
+  make the next recording fail its health check. Stop both on recording errors
+  as well, retaining peer cancellation and all recording integrity checks.
+
+### Qualification status
+
+- This candidate fixes the acceptance runner's transition between recordings.
+  Mac/Linux two-hand long-duration qualification remains pending. rc5 is retained
+  as a separate, unpublished candidate with its failed pair report.
+
+## [0.1.0rc5] - Candidate preparation
+
+### Fixed
+
+- Stop each acceptance stream in its collecting worker before analyzing samples.
+  On the Pi, post-capture analysis could leave USB unread for about 266 ms while
+  streaming continued, producing device queue drops after an otherwise continuous
+  capture. Snapshot rates and loss counters before stopping, so actual losses
+  still fail the report even when stop clears live session counters.
+- Stop a stream when its acceptance collector raises, before leaving that worker.
+
+### Qualification status
+
+- This fixes the acceptance runner; it does not modify glove firmware or qualify
+  Mac/Linux two-hand capture. rc4 remains a separate, unpublished candidate.
 
 ## [0.1.0rc4] - Candidate preparation
 
@@ -121,7 +179,11 @@ First public release candidate.
 - Long recordings and slow storage needed testing on the target host.
 
 [Unreleased]: https://github.com/OpenGraphLabs/oglo-python/commits/main
-[0.1.0rc4]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc3...main
+[0.1.0rc6]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc5...v0.1.0rc6
+[0.1.0rc5]: https://github.com/OpenGraphLabs/oglo-python/compare/425346d3d979db742a767c19fd133f3c49efb493...main
+[0.1.0rc4]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc3...425346d3d979db742a767c19fd133f3c49efb493
 [0.1.0rc3]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc2...v0.1.0rc3
 [0.1.0rc2]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc1...v0.1.0rc2
 [0.1.0rc1]: https://github.com/OpenGraphLabs/oglo-python/releases/tag/v0.1.0rc1
+
+[0.1.0rc7]: https://github.com/OpenGraphLabs/oglo-python/compare/v0.1.0rc6...v0.1.0rc7

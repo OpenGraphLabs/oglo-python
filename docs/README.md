@@ -17,3 +17,5 @@ New to OGLO? Start with [installing and reading a glove](../README.md#install).
 | Develop or test the SDK | [Contributing](../CONTRIBUTING.md) |
 
 For decoder work, see the [recorded test packets](../spec/vectors/README.md).
+
+[Managed firmware preparation](10_managed_firmware.md) (development candidate).

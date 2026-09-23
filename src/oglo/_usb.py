@@ -7,6 +7,7 @@ open serial-like object so the read path can also run against a test double.
 from __future__ import annotations
 
 import subprocess
+import os
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -170,7 +171,8 @@ def _owner_pid(device: str) -> Optional[int]:
         return None
 
 
-def open_serial(device: str, baud: int = 115200, *, settle: float = 0.8) -> SerialLike:
+def open_serial(device: str, baud: int = 115200, *, settle: float = 0.8,
+                _lease=None) -> SerialLike:
     """Open with DTR asserted and RTS low.
 
     **DTR must be high or supported firmware says nothing at all.** TinyUSB gates CDC
@@ -182,7 +184,47 @@ def open_serial(device: str, baud: int = 115200, *, settle: float = 0.8) -> Seri
     reopen (127174 -> 131043 ms, still counting). **RTS stays low**, because the two
     together are what a bridge decodes as a reset request.
     """
+    from ._ownership import DeviceLease, identity_for_port
+
+    lease = _lease or DeviceLease(identity_for_port(device)).acquire()
+    if lease.fd is None:
+        raise UsbError("USB ownership lease has already been released")
+    try:
+        from ._firmware_journal import require_capture_ready
+        require_capture_ready(lease.identity)
+        port = _open_serial_locked(device, baud, settle=settle)
+        return _OwnedSerial(port, lease)
+    except BaseException:
+        lease.close()
+        raise
+
+
+class _OwnedSerial:
+    def __init__(self, port, lease) -> None:
+        object.__setattr__(self, "_port", port)
+        object.__setattr__(self, "_lease", lease)
+
+    def __getattr__(self, name):
+        return getattr(self._port, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._port, name, value)
+
+    def close(self) -> None:
+        try:
+            self._port.close()
+        finally:
+            self._lease.close()
+
+
+def _open_serial_locked(device: str, baud: int = 115200, *, settle: float = 0.8):
+    """Open a tty under an existing lease (also used by the isolated updater)."""
     import serial as pyserial
+
+    # Detect already-open, non-cooperating clients before changing line state.
+    pid = _owner_pid(device) if os.name == "posix" else None
+    if pid is not None:
+        raise PortBusyError(f"{device} is already held by PID {pid}; close the other program")
 
     s = pyserial.Serial()
     s.port = device
@@ -193,8 +235,14 @@ def open_serial(device: str, baud: int = 115200, *, settle: float = 0.8) -> Seri
     s.write_timeout = 0.5
     s.dtr = True
     s.rts = False
+    if os.name == "posix":
+        s.exclusive = True
     try:
         s.open()
+        if os.name == "posix":
+            import fcntl
+            import termios
+            fcntl.ioctl(s.fileno(), termios.TIOCEXCL)
     except BaseException as exc:
         try:
             s.close()

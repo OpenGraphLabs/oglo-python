@@ -280,7 +280,7 @@ def doctor(seconds: float = 3.0, *, connect: Optional[Callable] = None) -> Repor
     if connect is None:
         from . import connect as _c
 
-        connect = _c
+        connect = lambda **kwargs: _c(firmware_policy=False, **kwargs)
 
     for cand in gloves:
         g = None

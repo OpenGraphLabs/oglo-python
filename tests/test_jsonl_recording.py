@@ -79,6 +79,7 @@ def test_exact_integer_timestamps_and_device_rollover_survive_chunk_boundaries(t
                 counts=np.arange(80, dtype=np.uint16).reshape(5, 4, 4),
             ))
         # Chunks are also standard sensor JSONL, with continuous row indices.
+        recorder._writer._queue.join()  # Publication is asynchronous.
         chunks = list(recorder.dir.rglob("chunk_*.jsonl"))
         assert len(chunks) == 1
         assert json.loads(chunks[0].read_text())["capture_ns"] == base
@@ -180,6 +181,9 @@ def test_replay_does_not_accumulate_python_taxel_objects_for_the_whole_stream(tm
     counts = np.full((5, 4, 4), 600, dtype=np.uint16)  # Outside Python's small-int cache.
     try:
         for index in range(5000):
+            if index and index % (127 * 4) == 0:
+                # This is a replay-memory fixture, not a faster-than-disk capture.
+                recorder._writer._queue.join()
             recorder.add_tactile(Frame(seq=index, t_us=index * 4000,
                                        host_t=1.0 + index * 0.004, counts=counts))
         recorder.write(complete=False, error="memory fixture", stop_reason="test")

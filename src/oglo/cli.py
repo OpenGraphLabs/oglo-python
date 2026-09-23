@@ -34,7 +34,7 @@ def _cmd_info(args: argparse.Namespace) -> int:
         return 2
     json_rows = []
     for c in cands:
-        g = connect(port=c.device)
+        g = connect(port=c.device, firmware_policy=False)
         try:
             i = g.info
             if args.json:
@@ -115,6 +115,50 @@ def _cmd_acceptance(args: argparse.Namespace) -> int:
     )
     report = run_acceptance(config)
     return 2 if report.failed else 0
+
+
+def _cmd_firmware(args):
+    from .firmware import prepare, inventory, select_devices, merge_inventory
+    from ._firmware_package import resolve_policy, FirmwareError
+    import time
+    policy = resolve_policy(args.policy)
+    if args.action == "inventory":
+        if args.watch or args.serial:
+            raise ValueError("inventory does not accept --watch or --serial")
+        report = inventory(policy)
+        if args.merge:
+            from pathlib import Path
+            from ._firmware_package import read_json
+            report = merge_inventory(policy, [report, *(read_json(Path(p)) for p in args.merge)])
+        print(json.dumps(report, indent=2))
+        return 0
+    if args.merge:
+        raise ValueError("--merge is only for inventory exports")
+    def progress(event):
+        if "phase" in event or "error" in event:
+            print(json.dumps(event), file=sys.stderr, flush=True)
+    if not args.watch:
+        prepare(policy, serials=args.serial, on_event=progress)
+        print(json.dumps(inventory(policy), indent=2))
+        return 0
+    # Each physical attachment is tried once. A failed glove must be replugged
+    # before another attempt; watch never loops on an unresponsive endpoint.
+    attempted = set()
+    while True:
+        try:
+            selected = select_devices(policy, args.serial)
+        except FirmwareError:
+            selected = []
+        visible = {d["serial"] for d in selected}
+        attempted.intersection_update(visible)
+        for serial in sorted(visible - attempted):
+            attempted.add(serial)
+            try:
+                prepare(policy, serials=[serial], on_event=progress)
+            except FirmwareError as exc:
+                print(str(exc), file=sys.stderr, flush=True)
+            print(json.dumps(inventory(policy)), flush=True)
+        time.sleep(2)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -213,6 +257,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="with --zero, bypass the typed confirmation (still requires explicit --zero)",
     )
     a.set_defaults(func=_cmd_acceptance)
+
+    f = sub.add_parser("firmware", help="prepare approved offline firmware or inspect saved inventory")
+    f.add_argument("action", choices=("prepare", "inventory"))
+    f.add_argument("--policy", required=True, help="locally approved lab policy JSON")
+    f.add_argument("--serial", action="append", help="select full logical serials; repeat for a pair")
+    f.add_argument("--merge", action="append", help="merge another host inventory export; inventory action only")
+    f.add_argument("--watch", action="store_true", help="prepare newly plugged approved devices until interrupted")
+    f.set_defaults(func=_cmd_firmware)
 
     args = p.parse_args(argv)
     try:

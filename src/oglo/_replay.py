@@ -306,6 +306,7 @@ def _schema3_info(meta: Dict[str, Any]) -> Info:
         imu_period_ms=imu_period_ms,
         device_dropped=device_dropped,
         raw=dict(meta),
+        firmware_verification=_firmware_metadata(meta),
     )
 
 
@@ -585,3 +586,20 @@ class Episode:
 def replay(path: Any) -> Episode:
     """Open a recorded episode. Iterate it exactly as you would a live glove."""
     return Episode(path)
+
+
+def _firmware_metadata(meta):
+    value = meta.get("firmware_verification")
+    if value is None:
+        return None
+    required = {"running_image_sha256", "usb_serial", "policy_id", "policy_sha256",
+                "sdk_version", "verified_at", "attempt"}
+    if not isinstance(value, dict) or set(value) != required or any(not isinstance(v, str) or not v for v in value.values()):
+        raise ReplayError("invalid firmware verification metadata")
+    import re
+    for name in ("running_image_sha256", "policy_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", value[name]):
+            raise ReplayError("invalid firmware verification hash")
+    if not re.fullmatch(r"[0-9a-fA-F]{12}", value["usb_serial"]):
+        raise ReplayError("invalid firmware USB identity")
+    return dict(value)

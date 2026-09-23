@@ -1,15 +1,27 @@
 # Candidate status
 
-This checkout is `0.1.0rc4`, a build for evaluation. Find published packages on
+This is a development candidate, not a fleet deployment approval. It integrates
+upstream JSONL recording with a bounded storage worker and opt-in signed firmware
+preparation. See [managed updates](10_managed_firmware.md).
+
+This checkout is `0.1.0rc8.dev1`, a build for evaluation. Find published packages on
 [GitHub Releases](https://github.com/OpenGraphLabs/oglo-python/releases).
 See the [changelog](../CHANGELOG.md) for changes and
 [compatibility](06_compatibility.md) for supported versions.
 
 ## Firmware status
 
-The team reports successful functionality tests on firmware 0.9.16. Previously
-reported problems were resolved on those tested setups; the earlier USB incident
-is historical context.
+The Mac bench unit L-00006 was updated through the USB application protocol from
+its verified stock 0.9.16 image to the signed 0.9.17 image, with automatic reboot
+and unchanged CONFIG/ZERO preservation fields. A repeat preparation skipped
+writing. The initial readiness check incorrectly rejected transient TX retries;
+that host-side interpretation was corrected to match the firmware and existing
+recorder. Sequence loss and actual device drops remain failures.
+
+This is one unit and a short readiness check. Linux/Zed application-update recovery,
+two-hand long recording and the research fleet are not qualified by this result.
+The earlier rc6 75-minute Linux sample-loss report remains a failed run; integrating
+a storage worker into JSONL recording does not retroactively make it pass.
 
 Test each new deployment on its own host, gloves, cables, and disk. Keep the
 firmware version and [acceptance report](07_acceptance.md) with the results.
@@ -26,8 +38,8 @@ You need to sign in to GitHub. Artifacts expire after 90 days, so keep a local
 copy. Older runs may not include the package-upload step.
 
 ```text
-oglo-0.1.0rc4-py3-none-any.whl   SDK to install
-oglo-0.1.0rc4.tar.gz            matching source, docs, and examples
+oglo-0.1.0rc8.dev1-py3-none-any.whl   SDK to install
+oglo-0.1.0rc8.dev1.tar.gz            matching source, docs, and examples
 handoff.json                  source commit and CI run
 SHA256SUMS.txt                 file checksums
 ```
@@ -68,7 +80,7 @@ Activate it with `source .venv/bin/activate` on macOS/Linux, or
 `.venv\Scripts\Activate.ps1` in Windows PowerShell. Then:
 
 ```bash
-python -m pip install ./oglo-0.1.0rc4-py3-none-any.whl
+python -m pip install ./oglo-0.1.0rc8.dev1-py3-none-any.whl
 python -c "import oglo; print(oglo.__version__)"
 oglo --help
 ```
@@ -76,8 +88,8 @@ oglo --help
 ### 4. Open the matching examples
 
 ```bash
-python -m tarfile -e oglo-0.1.0rc4.tar.gz .
-cd oglo-0.1.0rc4
+python -m tarfile -e oglo-0.1.0rc8.dev1.tar.gz .
+cd oglo-0.1.0rc8.dev1
 ```
 
 Follow the included README. Run examples from this extracted folder so they match

@@ -48,6 +48,9 @@ class Info:
     #: the SDK knows about it.
     raw: Dict[str, Any] = field(default_factory=dict)
 
+    #: Exact runtime image/policy observed during managed preparation, when enabled.
+    firmware_verification: Optional[Dict[str, Any]] = None
+
     @property
     def is_left(self) -> bool:
         return self.side == "left"

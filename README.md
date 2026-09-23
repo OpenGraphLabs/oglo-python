@@ -3,6 +3,10 @@
 Read touch and motion data from OGLO gloves. Record it, replay it, or capture it
 alongside webcam or OVISION video.
 
+> This is the `0.1.0rc8.dev1` development candidate. Managed firmware and
+> JSONL recording are still under physical qualification; fleet rollout is not approved.
+> See [managed updates](docs/10_managed_firmware.md).
+
 Requires Python 3.10+, firmware 0.9.10+ with schema 6, and a USB data cable.
 
 ## Install
