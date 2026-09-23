@@ -34,7 +34,7 @@ def fast_ping(monkeypatch):
     monkeypatch.setattr(_usb, "_LINK_PING_INTERVAL_S", 0.02)
 
 
-def test_real_port_opener_bounds_keepalive_writes(monkeypatch):
+def test_real_port_opener_bounds_keepalive_writes(monkeypatch, tmp_path):
     import serial as pyserial
 
     class Port:
@@ -47,13 +47,23 @@ def test_real_port_opener_bounds_keepalive_writes(monkeypatch):
         def close(self) -> None:
             self.closed = True
 
+        def fileno(self):
+            return 123
+
     port = Port()
     monkeypatch.setattr(pyserial, "Serial", lambda: port)
-    assert _usb.open_serial("/dev/fake-oglo", settle=0) is port
+    monkeypatch.setenv("OGLO_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(_usb, "_owner_pid", lambda _: None)
+    if _usb.os.name == "posix":
+        import fcntl
+        monkeypatch.setattr(fcntl, "ioctl", lambda *args: None)
+    opened = _usb.open_serial("/dev/fake-oglo", settle=0)
     assert port.opened is True
     assert port.timeout == 0.05
     assert port.write_timeout == 0.5
     assert port.dtr is True and port.rts is False
+    opened.close()
+    assert port.closed
 
 
 @pytest.mark.parametrize("cfg", [CFG_V6, PING_CFG])

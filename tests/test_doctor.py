@@ -289,7 +289,7 @@ def test_info_json_is_one_parseable_document_with_two_gloves(monkeypatch, capsys
         def close(self):
             pass
 
-    monkeypatch.setattr(oglo, "connect", lambda *, port: G(port))
+    monkeypatch.setattr(oglo, "connect", lambda *, port, firmware_policy: G(port) if firmware_policy is False else pytest.fail("info must not enable firmware writes"))
     assert cli.main(["info", "--json"]) == 0
     parsed = json.loads(capsys.readouterr().out)
     assert isinstance(parsed, list) and len(parsed) == 2

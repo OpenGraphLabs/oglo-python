@@ -8,7 +8,7 @@ Connect to OGLO tactile gloves, read touch and motion data, and record or replay
 sessions. Each hand has 80 taxels in a `(5, 4, 4)` array, with nominal USB rates of
 250 tactile, 500 IMU, and 125 magnetometer packets/s when fitted.
 
-> This checkout is the `0.1.0rc7` evaluation candidate. The Linux two-hand
+> This checkout is the `0.1.0rc8.dev1` development candidate. The Linux two-hand
 > long-recording gate has not passed: rc6 lost samples in its 75-minute test.
 > rc7 separates chunk storage from reception and still requires physical
 > qualification. See [candidate status](docs/08_candidate_status.md).
@@ -24,7 +24,7 @@ and verify its checksums. From that directory, install in a virtual environment:
 python3 -m venv .venv
 # macOS/Linux: source .venv/bin/activate
 # Windows PowerShell: .venv\Scripts\Activate.ps1
-python -m pip install ./oglo-0.1.0rc7-py3-none-any.whl
+python -m pip install ./oglo-0.1.0rc8.dev1-py3-none-any.whl
 ```
 
 Keep `handoff.json` and `SHA256SUMS.txt` with your project to identify the exact SDK build.

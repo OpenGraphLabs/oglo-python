@@ -7,7 +7,8 @@ Finger order comes from each glove's info.channels (left is pinky-first).
 Read each hand on its own thread so the slower hand does not throttle the other.
 """
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Event
 
 import oglo
 
@@ -15,15 +16,29 @@ left, right = oglo.connect_pair()
 print(f"left  {left.info.serial}  fingers {left.info.channels}")
 print(f"right {right.info.serial}  fingers {right.info.channels}")
 
+stop = Event()
+episodes = {}
+
+
+def capture(glove):
+    try:
+        return oglo.record(f"out/{glove.info.side}", 60, glove=glove, stop_event=stop)
+    finally:
+        # record() resumes caller-owned gloves. Do not leave one transmitting
+        # while waiting for its peer or replaying the saved files.
+        glove.stop()
+
+
 try:
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {
-            g.info.side: pool.submit(oglo.record, f"out/{g.info.side}", 60, glove=g)
-            for g in (left, right)
-        }
-        # future.result() propagates a recorder failure instead of silently leaving
-        # one missing hand and continuing to replay a stale directory.
-        episodes = {side: future.result() for side, future in futures.items()}
+        try:
+            futures = {pool.submit(capture, g): g.info.side for g in (left, right)}
+            for future in as_completed(futures):
+                episodes[futures[future]] = future.result()
+        except BaseException:
+            # Set this BEFORE executor shutdown waits for the peer recorder.
+            stop.set()
+            raise
 finally:
     left.close()
     right.close()

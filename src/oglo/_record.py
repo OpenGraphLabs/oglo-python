@@ -484,6 +484,7 @@ class Recorder:
             "side": info.side,
             "hw_rev": info.hw_rev,
             "fw_rev": info.fw_rev,
+            "firmware_verification": deepcopy(info.firmware_verification),
             "channels": list(info.channels),
             "has_mag": info.has_mag,
             "transport": info.transport,

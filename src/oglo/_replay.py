@@ -303,6 +303,7 @@ def _schema2_info(meta: Dict[str, Any]) -> Info:
         imu_period_ms=imu_period_ms,
         device_dropped=device_dropped,
         raw=dict(meta),
+        firmware_verification=_firmware_metadata(meta),
     )
 
 
@@ -330,6 +331,7 @@ def _schema1_info(meta: Dict[str, Any]) -> Info:
             ),
             device_dropped=int(meta.get("device_dropped_at_connect", 0) or 0),
             raw=dict(meta),
+        firmware_verification=_firmware_metadata(meta),
         )
     except (TypeError, ValueError) as exc:
         raise ReplayError(f"invalid schema-1 metadata: {exc}") from exc
@@ -573,6 +575,7 @@ class Episode:
         if not d:
             return
         clean = self._info.stream_clean
+        device_us, host_ns, received_ns = _sample_clocks(d)
         for i in range(len(d["seq"])):
             yield Frame(
                 seq=int(d["seq"][i]),
@@ -580,11 +583,9 @@ class Episode:
                 host_t=float(d["host_t"][i]),
                 counts=d["counts"][i],
                 dropped=int(d["dropped"][i]),
-                device_time_us=int(d.get("device_time_us", d["t_us"])[i]),
-                host_t_ns=int(d.get("host_t_ns", np.rint(d["host_t"] * 1e9))[i]),
-                host_received_ns=int(
-                    d.get("host_received_ns", d.get("host_t_ns", np.rint(d["host_t"] * 1e9)))[i]
-                ),
+                device_time_us=int(device_us[i]),
+                host_t_ns=int(host_ns[i]),
+                host_received_ns=int(received_ns[i]),
                 # Carried from the recording, not chosen now. A replayed frame must
                 # answer `.residual` exactly as the live one did.
                 _stream_clean=clean,
@@ -594,6 +595,7 @@ class Episode:
         d = self._load("imu")
         if not d:
             return
+        device_us, host_ns, received_ns = _sample_clocks(d)
         for i in range(len(d["seq"])):
             yield ImuSample(
                 seq=int(d["seq"][i]),
@@ -602,11 +604,9 @@ class Episode:
                 accel=tuple(float(x) for x in d["accel"][i]),
                 gyro=tuple(float(x) for x in d["gyro"][i]),
                 dropped=int(d["dropped"][i]),
-                device_time_us=int(d.get("device_time_us", d["t_us"])[i]),
-                host_t_ns=int(d.get("host_t_ns", np.rint(d["host_t"] * 1e9))[i]),
-                host_received_ns=int(
-                    d.get("host_received_ns", d.get("host_t_ns", np.rint(d["host_t"] * 1e9)))[i]
-                ),
+                device_time_us=int(device_us[i]),
+                host_t_ns=int(host_ns[i]),
+                host_received_ns=int(received_ns[i]),
                 raw=(
                     tuple(int(x) for x in d["raw"][i])
                     if "raw" in d and bool(d["raw_valid"][i])
@@ -618,6 +618,7 @@ class Episode:
         d = self._load("mag")
         if not d:
             return
+        device_us, host_ns, received_ns = _sample_clocks(d)
         for i in range(len(d["seq"])):
             yield MagSample(
                 seq=int(d["seq"][i]),
@@ -625,11 +626,9 @@ class Episode:
                 host_t=float(d["host_t"][i]),
                 field=tuple(float(x) for x in d["field"][i]),
                 dropped=int(d["dropped"][i]),
-                device_time_us=int(d.get("device_time_us", d["t_us"])[i]),
-                host_t_ns=int(d.get("host_t_ns", np.rint(d["host_t"] * 1e9))[i]),
-                host_received_ns=int(
-                    d.get("host_received_ns", d.get("host_t_ns", np.rint(d["host_t"] * 1e9)))[i]
-                ),
+                device_time_us=int(device_us[i]),
+                host_t_ns=int(host_ns[i]),
+                host_received_ns=int(received_ns[i]),
                 raw=(
                     tuple(int(x) for x in d["raw"][i])
                     if "raw" in d and bool(d["raw_valid"][i])
@@ -680,3 +679,28 @@ class Episode:
 def replay(path: Any) -> Episode:
     """Open a recorded episode. Iterate it exactly as you would a live glove."""
     return Episode(path)
+
+
+def _sample_clocks(data: Dict[str, np.ndarray]):
+    """Resolve legacy fallbacks once per stream, never once per sample."""
+    device_us = data["device_time_us"] if "device_time_us" in data else data["t_us"]
+    host_ns = data["host_t_ns"] if "host_t_ns" in data else np.rint(data["host_t"] * 1e9)
+    received_ns = data["host_received_ns"] if "host_received_ns" in data else host_ns
+    return device_us, host_ns, received_ns
+
+
+def _firmware_metadata(meta):
+    value = meta.get("firmware_verification")
+    if value is None:
+        return None
+    required = {"running_image_sha256", "usb_serial", "policy_id", "policy_sha256",
+                "sdk_version", "verified_at", "attempt"}
+    if not isinstance(value, dict) or set(value) != required or any(not isinstance(v, str) or not v for v in value.values()):
+        raise ReplayError("invalid firmware verification metadata")
+    import re
+    for name in ("running_image_sha256", "policy_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", value[name]):
+            raise ReplayError("invalid firmware verification hash")
+    if not re.fullmatch(r"[0-9a-fA-F]{12}", value["usb_serial"]):
+        raise ReplayError("invalid firmware USB identity")
+    return dict(value)

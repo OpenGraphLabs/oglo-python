@@ -54,6 +54,9 @@ class RateMeter:
 
     @property
     def hz(self) -> float:
+        cutoff = time.monotonic() - self.window
+        while self._times and self._times[0] < cutoff:
+            self._times.popleft()
         if len(self._times) < 2:
             return 0.0
         span = self._times[-1] - self._times[0]
