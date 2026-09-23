@@ -1,0 +1,2 @@
+# Signed firmware is an exact byte contract, including manifest line endings.
+/src/oglo/firmware_bundle/* -text
