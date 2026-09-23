@@ -119,9 +119,20 @@ def _cmd_acceptance(args: argparse.Namespace) -> int:
 
 def _cmd_firmware(args):
     from .firmware import prepare, inventory, select_devices, merge_inventory
-    from ._firmware_package import resolve_policy, FirmwareError
+    from ._firmware_package import (resolve_policy, FirmwareError, configure_auto_update,
+                                    auto_update_enabled, VERSION)
     import time
-    policy = resolve_policy(args.policy)
+    if args.action in ('enable', 'disable', 'status'):
+        if args.policy or args.watch or args.serial or args.merge:
+            raise ValueError('enable/disable/status do not accept device or policy options')
+        if args.action != 'status':
+            configure_auto_update(args.action == 'enable')
+        print(json.dumps({'automatic_updates': auto_update_enabled(), 'target_firmware': VERSION,
+                          'environment': sys.prefix, 'device_registration_required': False,
+                          'legacy_policy_override': bool(__import__('os').environ.get('OGLO_FIRMWARE_POLICY'))}, indent=2))
+        return 0
+    # Explicit prepare is itself the opt-in; no device list or local JSON needed.
+    policy = resolve_policy(args.policy if args.policy else True)
     if args.action == "inventory":
         if args.watch or args.serial:
             raise ValueError("inventory does not accept --watch or --serial")
@@ -134,6 +145,8 @@ def _cmd_firmware(args):
         return 0
     if args.merge:
         raise ValueError("--merge is only for inventory exports")
+    if args.watch and args.serial and policy.compatible:
+        raise ValueError('compatibility-based --watch discovers all attachments; use --serial without --watch')
     def progress(event):
         if "phase" in event or "error" in event:
             print(json.dumps(event), file=sys.stderr, flush=True)
@@ -149,12 +162,13 @@ def _cmd_firmware(args):
             selected = select_devices(policy, args.serial)
         except FirmwareError:
             selected = []
-        visible = {d["serial"] for d in selected}
+        visible = {d["usb_serial"] for d in selected}
         attempted.intersection_update(visible)
-        for serial in sorted(visible - attempted):
-            attempted.add(serial)
+        for chip in sorted(visible - attempted):
+            attempted.add(chip)
             try:
-                prepare(policy, serials=[serial], on_event=progress)
+                serials = None if policy.compatible else [d['serial'] for d in selected if d['usb_serial'] == chip]
+                prepare(policy, serials=serials, on_event=progress, _usb_serials=[chip])
             except FirmwareError as exc:
                 print(str(exc), file=sys.stderr, flush=True)
             print(json.dumps(inventory(policy)), flush=True)
@@ -258,12 +272,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     a.set_defaults(func=_cmd_acceptance)
 
-    f = sub.add_parser("firmware", help="prepare approved offline firmware or inspect saved inventory")
-    f.add_argument("action", choices=("prepare", "inventory"))
-    f.add_argument("--policy", required=True, help="locally approved lab policy JSON")
+    f = sub.add_parser("firmware", help="automatic compatible firmware updates and saved observations")
+    f.add_argument("action", choices=("enable", "disable", "status", "prepare", "inventory"))
+    f.add_argument("--policy", help="optional legacy device policy; normally unnecessary")
     f.add_argument("--serial", action="append", help="select full logical serials; repeat for a pair")
     f.add_argument("--merge", action="append", help="merge another host inventory export; inventory action only")
-    f.add_argument("--watch", action="store_true", help="prepare newly plugged approved devices until interrupted")
+    f.add_argument("--watch", action="store_true", help="prepare attached compatible devices until interrupted")
     f.set_defaults(func=_cmd_firmware)
 
     args = p.parse_args(argv)

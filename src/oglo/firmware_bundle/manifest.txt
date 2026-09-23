@@ -1,0 +1,7 @@
+OGLO-FW-MANIFEST-V1
+part=OGLO-PCBA-D
+hw_rev=RDR02_FLEX5_REV_D_TIA
+version=0.9.17
+size=1051104
+sha256=bcfdb9944e27bc38289d44edb6b1a6d6c3838244fa805723c8dd2ee3a8c4a3ad
+key_id=oglo-fw-prod-p256-1
