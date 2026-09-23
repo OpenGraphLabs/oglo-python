@@ -1,4 +1,4 @@
-"""Strict, offline, locally approved firmware policy. No remote 'latest' lookup."""
+"""Signed, bundled compatibility rules; optional legacy device policies."""
 from __future__ import annotations
 
 import base64
@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,11 +59,15 @@ def digest(value) -> str:
 
 @dataclass(frozen=True)
 class FirmwarePolicy:
-    path: Path
+    path: Path | None
     policy_id: str
     sha256: str
     bundle: Path
     devices: tuple
+
+    @property
+    def compatible(self):
+        return self.path is None
 
     @classmethod
     def load(cls, path):
@@ -95,16 +100,61 @@ class FirmwarePolicy:
         return cls(path, data['id'], digest(data), (path.parent / data['bundle']).resolve(), tuple(normalized))
 
 
+def bundled_policy():
+    # This describes compatible products/images, never customers or glove IDs.
+    rules = {'schema': 1, 'part': PART, 'hardware': HARDWARE, 'key_id': KEY_ID,
+             'from_sha256': FROM_SHA, 'target_sha256': RUNNING_SHA, 'file_sha256': FILE_SHA}
+    return FirmwarePolicy(None, 'oglo-compatible-0917-v1', digest(rules),
+                          Path(__file__).parent / 'firmware_bundle', ())
+
+
+def settings_path():
+    from ._ownership import state_directory
+    # Enable only for this Python environment, not every application of this user.
+    environment = str(Path(sys.prefix).resolve())
+    root = state_directory() / 'environments'
+    root.mkdir(mode=0o700, exist_ok=True)
+    return root / (hashlib.sha256(environment.encode()).hexdigest() + '.json')
+
+
+def auto_update_enabled():
+    path = settings_path()
+    if not path.exists():
+        return False
+    data = read_json(path)
+    if (set(data) != {'schema', 'enabled', 'environment'} or type(data['schema']) is not int or data['schema'] != 1 or
+            type(data['enabled']) is not bool or data['environment'] != str(Path(sys.prefix).resolve())):
+        raise FirmwareError('invalid automatic firmware setting; run oglo firmware enable or disable')
+    return data['enabled']
+
+
+def configure_auto_update(enabled):
+    from ._firmware_journal import atomic_json
+    if type(enabled) is not bool:
+        raise ValueError('enabled must be a boolean')
+    if os.environ.get('OGLO_FIRMWARE_POLICY'):
+        raise FirmwareError('unset OGLO_FIRMWARE_POLICY before changing compatibility-based updates')
+    if enabled:
+        if sys.platform not in ('darwin', 'linux'):
+            raise FirmwareError('automatic firmware updates require macOS/Linux')
+        load_bundle(bundled_policy().bundle)
+    path = settings_path()
+    atomic_json(path, {'schema': 1, 'enabled': enabled, 'environment': str(Path(sys.prefix).resolve())})
+    return path
+
+
 def resolve_policy(value=None):
     if value is False:
         return None
+    if value is True:
+        return bundled_policy()
     if isinstance(value, FirmwarePolicy):
-        fresh = FirmwarePolicy.load(value.path)
+        fresh = bundled_policy() if value.compatible else FirmwarePolicy.load(value.path)
         if fresh.sha256 != value.sha256:
             raise FirmwareError('policy changed after loading')
         return fresh
     path = value or os.environ.get('OGLO_FIRMWARE_POLICY')
-    return FirmwarePolicy.load(path) if path else None
+    return FirmwarePolicy.load(path) if path else (bundled_policy() if auto_update_enabled() else None)
 
 
 @dataclass(frozen=True)

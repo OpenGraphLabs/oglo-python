@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from ._firmware_journal import atomic_json, journal_path, read_journal
 from ._firmware_package import FirmwareError, RUNNING_SHA, load_bundle, resolve_policy, read_json
-from ._firmware_protocol import basic_health, compare_preserved, snapshot, transfer
+from ._firmware_protocol import basic_health, compare_preserved, snapshot, transfer, read_identity
 from ._ownership import usb_identity
 from ._usb import _open_serial_locked, list_candidates
 
@@ -46,8 +46,7 @@ def close_port(port):
         port.close()
 
 
-def run(policy, devices, attempt):
-    bundle = load_bundle(policy.bundle)
+def recovery_state(policy, devices, *, wait=True):
     saved = {}
     pending = False
     for device in devices:
@@ -62,11 +61,49 @@ def run(policy, devices, attempt):
                 raise FirmwareError('pending attempt requires the original policy')
             pending |= entry['state'] == 'pending'
         saved[key] = entry
-    if pending:
+    if pending and wait:
         emit(phase='quiet', serial='pending devices', seconds=QUIET_SECONDS)
         # Starts afresh after acquiring all locks, even across host reboot/clock
         # jumps. No port is opened and no OUT byte is sent during this interval.
         time.sleep(QUIET_SECONDS)
+    return saved
+
+
+def run_compatible(policy, candidates, attempt, *, serials=None, count=None):
+    """Discover identities while holding every candidate lease, then select.
+
+    No allowlist is created. The migration eligibility is checked by snapshot()
+    for every selected device before the first FW BEGIN.
+    """
+    load_bundle(policy.bundle)
+    recovery_state(policy, candidates)  # Never send discovery text into binary OTA.
+    discovered = []
+    for candidate in candidates:
+        emit(phase='inspect', serial=candidate['serial'])
+        port = _open_serial_locked(find_device(candidate))
+        try:
+            discovered.append(read_identity(port, candidate['usb_serial']))
+        finally:
+            emit(phase='close', serial=candidate['serial'])
+            close_port(port)
+    if len({d['serial'].casefold() for d in discovered}) != len(discovered):
+        raise FirmwareError('multiple connected devices report the same logical serial')
+    selected = discovered
+    if serials is not None:
+        names = [s.casefold() for s in serials]
+        selected = [d for d in discovered if d['serial'].casefold() in names]
+        if len(names) != len(set(names)) or len(selected) != len(names):
+            raise FirmwareError('requested gloves are not all attached or have duplicate identities')
+    if not selected or (count is not None and len(selected) != count):
+        raise FirmwareError(f'expected {count or "at least one"} glove(s); found {len(selected)}')
+    if count == 2 and {d['side'] for d in selected} != {'left', 'right'}:
+        raise FirmwareError('selected pair must contain one left and one right hand')
+    return run(policy, selected, attempt, already_quiet=True)
+
+
+def run(policy, devices, attempt, *, already_quiet=False):
+    bundle = load_bundle(policy.bundle)
+    saved = recovery_state(policy, devices, wait=not already_quiet)
     snapshots = {}
     # All selected identities and preservation baselines must pass before ANY BEGIN.
     for device in devices:
@@ -194,6 +231,20 @@ def main(path):
     policy = resolve_policy(request['policy'])
     if policy.sha256 != request['policy_sha256']:
         raise FirmwareError('policy changed before worker start')
+    if policy.compatible:
+        import re
+        expected = request['devices']
+        if (not isinstance(expected, list) or not expected or
+                any(set(d) != {'serial', 'usb_serial'} or
+                    not re.fullmatch(r'[0-9A-F]{12}', d['usb_serial']) or
+                    d['serial'] != 'USB-' + d['usb_serial'] for d in expected) or
+                len({d['usb_serial'] for d in expected}) != len(expected) or
+                len(expected) != len(request['lease_fds'])):
+            raise FirmwareError('invalid discovered USB identities or leases')
+        result = run_compatible(policy, expected, request['attempt'],
+                                serials=request['serials'], count=request.get('count'))
+        emit(result=result)
+        return
     expected = [d for d in policy.devices if d['serial'] in request['serials']]
     if len(expected) != len(request['serials']) or len(expected) != len(request['lease_fds']):
         raise FirmwareError('worker target/lease mismatch')

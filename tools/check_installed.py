@@ -24,7 +24,8 @@ def main() -> None:
     if oglo.__version__ != expected or version("oglo") != expected:
         raise SystemExit("Installed metadata/module version differs from pyproject.toml")
     files = {}
-    for path in sorted(source.rglob("*.py")):
+    checked = [*source.rglob("*.py"), *(source / 'firmware_bundle').glob('*')]
+    for path in sorted(checked):
         relative = path.relative_to(source)
         actual = installed / relative
         if not actual.is_file() or actual.read_bytes() != path.read_bytes():

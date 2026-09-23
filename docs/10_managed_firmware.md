@@ -1,159 +1,144 @@
-# Managed firmware preparation (development candidate)
+# Automatic firmware updates
 
-`0.1.0rc8.dev1` adds opt-in, offline application updates for **macOS and Linux**.
-It is not yet approved for a 40-glove rollout. The [Mac bench validation](validation/2026-09-23-managed-firmware.md) covers
-one unit; Linux, pair and interruption/recovery qualification remain open; unit-test success is not hardware
-qualification. Windows retains normal SDK support but does not support this updater.
+The SDK uses **hardware and firmware compatibility**, not a lab-specific package
+or a list of glove numbers. The common wheel includes the signed 0.9.17 application
+and verifies its production signature and hashes before opening a device. There
+is no firmware download, browser, login, serial registration or JSON editing during
+normal use. Serial numbers identify the physical device and its saved evidence;
+they do not decide which research lab is allowed to update it.
 
-Install the reviewed wheel and its firmware extra once on the research host:
+This is a development prerelease. The prior [Mac bench validation](validation/2026-09-23-managed-firmware.md)
+covered one glove. Software CI is not physical Linux/pair/long-duration qualification.
+See the [generic updater validation](validation/2026-09-23-compatible-firmware.md)
+for the current measured scope.
+
+## Install once
+
+Use **the Python environment that runs your collection program**. The public release
+installer verifies the exact wheel checksum, installs the common SDK and firmware
+extra, then enables automatic updates in that environment:
 
 ```sh
-python -m pip install './oglo-0.1.0rc8.dev1-py3-none-any.whl[firmware]'
-export OGLO_FIRMWARE_POLICY=/absolute/path/lab-firmware.json
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev2/install.py | python - --auto-firmware
 ```
 
-With an explicitly installed lab policy, the existing `oglo.connect()` and
-`oglo.connect_pair()` prepare their selected gloves before returning them. There is
-no browser, login, confirmation prompt or firmware selection in the collection
-flow. Without a policy, firmware writes remain disabled. `oglo info` and
-`oglo doctor` bypass policy-driven updates. An unfinished update still blocks an
-ordinary connection until preparation has verified it.
+The command requires Python 3.10+, pip, HTTPS access to GitHub and the package index,
+and macOS or Linux. Activate your existing project environment first. Installing in
+an unrelated Python environment does not upgrade your collection program. Linux USB
+permissions must already allow that user to open the glove; the installer does not
+change system permissions or install as root. No glove needs to be connected during
+installation and installation itself never flashes a glove.
 
-## What the lab administrator supplies
+For an offline wheel or an existing SDK install:
 
-An offline directory containing `application.bin`, `manifest.txt`, and
-`signature.der`, and one policy file. Build the directory from already signed
-release artifacts using `tools/prepare_firmware_bundle.py --help`. This does not
-sign or fetch firmware and needs no cloud/admin credential on the research host.
-The SDK verifies ECDSA-P256/SHA-256 against its production public key, canonical
-manifest, application file hash and embedded ESP image digest.
-
-The first implementation accepts only the reviewed 0.9.16 -> 0.9.17 migration:
-
-| Identity | SHA-256 |
-| --- | --- |
-| Allowed starting runtime | `b1c53157df9fc259a64ebe8a2c0454d916d2c2ccac163f083335496234345897` |
-| Target application file | `bcfdb9944e27bc38289d44edb6b1a6d6c3838244fa805723c8dd2ee3a8c4a3ad` |
-| Target running image | `eddf0ca99dcd929e202464d2a9c311923e895bee95fd7aa0c5dd7ec013a01615` |
-
-The file hash and running-image hash are different by design. There is no `latest`
-lookup, downgrade, reinstall of the same version with a different hash, or firmware
-update over BLE. Unknown images stop preparation.
-
-Example policy below uses placeholder identities. Replace them with the verified
-full logical and USB serials of the actual inventory before enabling deployment.
-A logical serial alone is insufficient: binding the physical chip identity prevents
-searching for one glove from changing another.
-
-```json
-{
-  "schema": 1,
-  "id": "lab-0917-v1",
-  "enabled": true,
-  "bundle": "./firmware-0917",
-  "devices": [
-    {"serial": "OGLO-L-EXAMPLE", "usb_serial": "AAAAAAAAAAAA", "side": "left"},
-    {"serial": "OGLO-R-EXAMPLE", "usb_serial": "BBBBBBBBBBBB", "side": "right"}
-  ]
-}
+```sh
+python -m pip install './oglo-0.1.0rc8.dev2-py3-none-any.whl[firmware]'
+python -m oglo firmware enable
 ```
 
-For several pairs on one host, select the pair explicitly:
+`enable` validates the bundled firmware and saves a setting for the current user
+and Python environment. It does not require a device inventory or environment
+variable. A plain SDK install leaves automatic firmware writes off.
+
+```sh
+python -m oglo firmware status
+python -m oglo firmware disable
+```
+
+## Use your existing collection code
 
 ```python
-left, right = oglo.connect_pair(
-    serials=("OGLO-L-EXAMPLE", "OGLO-R-EXAMPLE"),
-    firmware_policy="/absolute/path/lab-firmware.json",
-)
+import oglo
+left, right = oglo.connect_pair()
 ```
 
-Only selected policy devices are opened. Both hands must pass preflight before
-writing either; transfer is sequential. If one fails, no usable pair is returned.
-Already verified target images are not rewritten, including images installed on
-another host. The current device is always queried again.
+Before returning the gloves, the SDK discovers their identities, locks their USB
+connections, checks both selected devices, updates them sequentially if needed,
+waits for automatic reboot and verifies the running image, preserved settings and
+calibration, and basic packet delivery. Progress appears on stderr. If either hand
+fails, no usable pair is returned. This preparation takes time even when the update
+is skipped; it is not an instantaneous connection.
 
-## Failure and preservation contract
+A new compatible glove is handled when it is first used. All 40 devices do not need
+to be attached at installation. Already updated gloves are checked without rewriting
+the image. Multiple attached pairs require explicit selection:
 
-- Identity, configuration and the complete `GET ZERO` response are saved before
-  `FW BEGIN`. The original snapshot survives an interrupted attempt. The updater
-  never clears NVS or recalibrates. Differences block capture and retain evidence.
-- Preservation covers the fields exposed by CONFIG/ZERO, including identity,
-  sample rate, stream settings, calibration lock and arrays. It does **not** claim
-  to read or preserve an unexposed IMU-period setting or all flash contents.
-- A durable `pending` marker is written before the first possible update write.
-  Following failure or process/host restart, preparation acquires the same device
-  lock and waits 65 seconds without opening/sending to pending devices. This is
-  necessary because 0.9.16 consumes text ABORT as binary and incoming bytes extend
-  its receive timeout. The wait is restarted from zero; wall-clock changes cannot
-  shorten it. It does not repair a wedged USB endpoint.
-- No automatic chunk retry or text ABORT follows ambiguous binary transmission.
-  A final RECEIVED can establish completion when only its ACK was lost. A lost
-  COMMIT response triggers quiet recovery and actual-image inspection, not another
-  COMMIT or a blind success report.
-- A subprocess owns USB I/O. Absolute phase deadlines cover open, transfer,
-  response, reboot, verification and close. Timeout/cancellation terminates the
-  process; inherited device locks remain held if an OS call cannot terminate.
-  Progress does not extend a write-phase deadline. Callbacks must return promptly.
-- Cooperative device locks use stable USB identity and remain held through reboot
-  and handoff to capture. The SDK checks existing tty owners and requests OS tty
-  exclusion. This does not establish universal protection against noncooperating
-  drivers/apps or another OS user. Darwin PTYs did not enforce TIOCEXCL in testing;
-  the native Mac USB bench device rejected an overlapping raw open with EBUSY.
-  Linux USB and other driver/client behavior still need qualification.
-- Post-update readiness checks the running hash, calibration/configuration, status
-  and three seconds of tactile/IMU/magnetometer **packet delivery**, sequence gaps,
-  head/tail gaps and counter changes. On these pinned firmware versions,
-  `tag_short_writes` counts retained-frame retries and is recorded as diagnostic
-  evidence; increases alone do not mean sample loss. Actual drops, host sequence
-  loss, reset, unhealthy status and new deadline misses still fail readiness. It is not a fresh-sensor-value rate test,
-  force calibration or long-duration stability qualification. Its provisional
-  delivery floor is 80% of configured tactile / 500 IMU / 125 magnetometer packets
-  per second, with no gap above 0.5 s or counted loss. These are readiness limits,
-  not a claim of exact 250/500/125 Hz performance.
+```python
+left, right = oglo.connect_pair(serials=("OGLO-L-00001", "OGLO-R-00001"))
+```
 
-A `needs_attention` journal is never reset automatically. Preserve it and its
-original snapshot for investigation; do not delete it just to get past the check.
-After a completed update, intentional setting changes become the baseline at the
-next normal preparation rather than being mistaken for update corruption.
+These serials select a pair for that call; they are not an update allowlist.
+For one call, `firmware_policy=True` enables the same bundled compatibility rules;
+`firmware_policy=False` disables preparation for that call, including recursive
+connections. `oglo info` and `oglo doctor` never initiate firmware updates. An
+unfinished firmware journal still blocks ordinary capture until it is resolved.
+Windows retains normal SDK support, but automatic firmware updates are not supported.
 
-Normal streaming keeps its existing prohibition on `FW` commands. Firmware
-preparation uses its own serial session; streaming keepalives cannot enter its
-binary payload.
+## Compatibility and failure handling
 
-## Batch use and evidence
+The bundled migration is limited to **RDR02_FLEX5_REV_D_TIA**, schema 6, application
+update protocol 1, the production signing key and the following exact images:
+
+| Image | SHA-256 |
+| --- | --- |
+| Allowed 0.9.16 running image | `b1c53157df9fc259a64ebe8a2c0454d916d2c2ccac163f083335496234345897` |
+| Target 0.9.17 application file | `bcfdb9944e27bc38289d44edb6b1a6d6c3838244fa805723c8dd2ee3a8c4a3ad` |
+| Target 0.9.17 running image | `eddf0ca99dcd929e202464d2a9c311923e895bee95fd7aa0c5dd7ec013a01615` |
+
+Unknown hardware, source hashes, update contracts or same-version alternative
+images are rejected before firmware writes. There is no `latest` lookup, downgrade,
+BLE update or assumption that a version string identifies the executable image.
+
+- All selected devices pass preflight before the first update starts. Logical/USB
+  identity mismatches and ambiguous pairs fail. A selected logical serial may require
+  briefly reading CONFIG from other attached OGLO candidates to identify the target;
+  no firmware is written to those other candidates.
+- CONFIG and the full GET ZERO response are backed up before BEGIN and compared
+  after reboot. No NVS erase or recalibration occurs. Preservation covers exposed
+  CONFIG/ZERO fields, not every byte of flash or unexposed settings.
+- Interrupted updates keep a durable original backup. Recovery waits 65 seconds
+  without opening the port before discovery or other commands, because 0.9.16 can
+  interpret text commands as binary update data. There are no blind chunk retries,
+  repeated COMMIT or text ABORT commands after ambiguous writes. This wait does not
+  repair a wedged USB endpoint; physical reconnection may still be necessary.
+- USB I/O runs in a subprocess with absolute deadlines. Physical device leases
+  remain held across reboot and handoff; unrelated sessions cannot borrow them.
+  OS tty exclusion is best effort against noncooperating drivers or other users.
+- Readiness checks three seconds of **packet delivery**, gaps and counters. It does
+  not measure fresh sensor-value rates, force accuracy or long-term reliability.
+  Retained-frame `tag_short_writes` retries are diagnostic, while actual dropped
+  frames, sequence loss, new deadline misses and unhealthy status fail readiness.
+- A `needs_attention` preservation failure is never automatically cleared. Keep
+  the original journal for investigation; do not delete it to bypass a failure.
+
+## Explicit preparation and saved observations
 
 ```sh
-oglo firmware prepare --policy lab-firmware.json
-oglo firmware prepare --policy lab-firmware.json --watch
-oglo firmware inventory --policy lab-firmware.json > inventory.json
+python -m oglo firmware prepare
+python -m oglo firmware prepare --watch
+python -m oglo firmware inventory
 ```
 
-One-shot mode prepares connected approved gloves. Watch mode tries each physical
-attachment once; after a failure unplug/replug that glove before retrying. It does
-not repeatedly write to an unresponsive device. Ctrl+C stops it. Single-glove
-batches are allowed; normal `connect_pair()` still requires both selected hands.
+Explicit preparation works without enabling future automatic updates. Watch mode
+handles newly attached USB devices individually and tries each attachment once.
+Replug a failed glove before retrying. Use `--serial` with one-shot preparation;
+compatibility watch discovers all attached gloves and does not accept `--serial`.
 
-Inventory includes every policy device, including units never connected. It is
-explicitly saved history, not a live-health claim. Two successes never imply that
-40 devices completed. Merge exports from hosts using the same policy with
-`oglo firmware inventory --policy lab-firmware.json --merge other-host.json`.
-Both identities and policy hashes must agree; the most recent observation wins,
-including failures. Merging history never changes the recovery journal or skips
-the next live device check.
+Inventory contains **observed devices only**, not a complete fleet manifest or live
+health result. An empty history is not success, and two successes do not imply that
+40 devices completed. Exports from compatible rules can be reconciled using
+`firmware inventory --merge other-host.json`; the newest observation wins, including
+failures. Imported history never changes trusted recovery state or bypasses the next
+live check.
 
-Default state directory is `$XDG_STATE_HOME/oglo` or `~/.local/state/oglo` on
-macOS/Linux; `OGLO_STATE_DIR` overrides it. All cooperating SDK processes for the
-same user must use the same state directory. Do not use isolated state directories
-for concurrent connections to the same gloves.
+State lives in `$OGLO_STATE_DIR`, otherwise `$XDG_STATE_HOME/oglo` or
+`~/.local/state/oglo` on Mac/Linux. Enabling is scoped to `sys.prefix`; device locks
+and journals remain shared across environments of the same user. Do not give
+concurrent applications separate state roots. Evidence includes phase logs, original
+snapshots and final results. Recordings retain actual running hash, physical identity,
+compatibility-rule hash, SDK version and verification timestamp.
 
-The directory holds device lock files, recovery journals, and per-attempt request,
-worker stderr and progress/result JSONL. Do not remove lock files while processes
-are active. Recordings made through managed preparation preserve the observed
-runtime image hash, USB identity, policy hash/ID, verification time, attempt ID and
-SDK version; replay retains that metadata.
-
-Remaining release gates: real original-0.9.16 application update/automatic reboot,
-real interruption/recovery and port conflict, Mac and research Ubuntu/Zed-host
-installation, target-pair continuous recording, then the complete 40-device ledger.
-The existing web updater and already deployed firmware are not modified by this
-SDK change.
+Legacy `--policy` / `OGLO_FIRMWARE_POLICY` device lists remain readable for existing
+controlled deployments and recovery. They are optional and are not created by the
+installer. Unset `OGLO_FIRMWARE_POLICY` before enabling the generic path; an old
+pending update may need its original policy to finish recovery first.

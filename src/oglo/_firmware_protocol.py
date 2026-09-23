@@ -54,10 +54,25 @@ class LineChannel:
         return value
 
 
-def snapshot(port, expected):
+def read_identity(port, usb_serial):
+    """Identify a locked USB device without initiating any firmware transfer."""
     io = LineChannel(port)
     # Leading newline clears an interrupted ASCII command, only after any required
     # no-OUT recovery period has completed. Never call this during binary receive.
+    io.write(b'\nSTREAM BIN OFF\nSTREAM TAXEL OFF\nSTREAM TAG OFF\n')
+    time.sleep(0.4)
+    port.reset_input_buffer()
+    cfg = io.query('GET CONFIG', '#CONFIG ')
+    info, _ = parse_config(cfg)
+    if (not re.fullmatch(r'OGLO-[LR]-[A-Za-z0-9-]+', info.serial) or
+            info.side != ('left' if info.serial.startswith('OGLO-L-') else 'right') or
+            cfg.get('device_id', '').casefold() != 'oglo-' + usb_serial.casefold()):
+        raise FirmwareError('USB and reported glove identity disagree')
+    return {'serial': info.serial, 'usb_serial': usb_serial.upper(), 'side': info.side}
+
+
+def snapshot(port, expected):
+    io = LineChannel(port)
     io.write(b'\nSTREAM BIN OFF\nSTREAM TAXEL OFF\nSTREAM TAG OFF\n')
     time.sleep(0.4)
     port.reset_input_buffer()

@@ -3,6 +3,18 @@
 User-facing changes by version. Version numbers follow
 [Semantic Versioning](https://semver.org/) and [PEP 440](https://peps.python.org/pep-0440/).
 
+## 0.1.0rc8.dev2 - Generic firmware preparation
+
+- Discover attached devices and decide updates by hardware, update contract and
+  exact running image; no lab-specific package or device registration is required.
+- Include the production-signed 0.9.17 application in the common wheel and sdist.
+- Add an exact-wheel-checksum release installer and environment-scoped
+  `firmware enable`, `disable`, and `status` commands. Normal SDK installation
+  remains read-only with respect to firmware until explicitly enabled.
+- Preserve isolated I/O deadlines, no-OUT recovery, full-pair preflight, device
+  ownership and calibration checks through generic discovery and capture handoff.
+- Inventory describes observed devices only and never implies fleet completeness.
+
 ## 0.1.0rc8.dev1 - Development candidate
 
 - Opt-in offline firmware policy, signed application update, stable device locks,

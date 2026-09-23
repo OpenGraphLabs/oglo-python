@@ -89,6 +89,9 @@ jobs:
           python -m pip install build twine
           python -m build
           python -m twine check dist/*
+          python tools/build_installer.py dist/*.whl dist/install.py
+      - name: Exercise generic installer in a clean environment
+        run: python tools/check_installer.py dist/install.py dist/*.whl
       - name: Install wheel
         run: python -m pip install dist/*.whl
       - name: Check installed CLI
@@ -119,7 +122,7 @@ jobs:
               "ci_run": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
           }
           (dist / "handoff.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-          files = sorted([*dist.glob("*.whl"), *dist.glob("*.tar.gz"), dist / "handoff.json"])
+          files = sorted([*dist.glob("*.whl"), *dist.glob("*.tar.gz"), dist / "handoff.json", dist / "install.py"])
           (dist / "SHA256SUMS.txt").write_text("".join(
               f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
               for path in files
