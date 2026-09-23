@@ -38,6 +38,35 @@ def fake_connect(cfg=CFG_V6, n=4, hz=250.0):
     return _c
 
 
+def measured_connect(monkeypatch, *, cfg=CFG_V6, hz=250):
+    """Supply known batches and elapsed time for rate-verdict unit tests.
+
+    A wall-clock fake can legitimately deliver less than its nominal rate when
+    the CI host is descheduled near the measurement deadline. That tests host
+    scheduling, not the verdict. Keep CONFIG/status over the real fake transport,
+    but advance only doctor's clock as each known one-second batch is consumed.
+    Wire decoding and physical delivery rates retain their separate tests.
+    """
+    from oglo import _doctor
+
+    now = [0.0]
+    monkeypatch.setattr(_doctor, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    def connect(*args, **kwargs):
+        glove = fake_connect(cfg=cfg)()
+
+        def read_batch():
+            now[0] += 1.0
+            return SimpleNamespace(as_dict=lambda: {
+                "tactile": range(hz), "imu": range(500), "mag": range(125),
+            })
+
+        monkeypatch.setattr(glove, "read_batch", read_batch)
+        return glove
+
+    return connect
+
+
 def find(rep: Report, needle: str):
     return [c for c in rep.checks if needle in c.name]
 
@@ -63,18 +92,30 @@ def test_a_healthy_glove_passes_every_glove_check(monkeypatch):
     """Scoped to the glove, not the environment: this machine's system python is 3.9,
     which doctor correctly fails against the declared 3.10 floor."""
     _ports(monkeypatch, [port("/dev/cu.usbmodemA")])
-    rep = doctor(seconds=1.0, connect=fake_connect())
+    rep = doctor(seconds=1.0, connect=measured_connect(monkeypatch))
     glove_checks = [c for c in rep.checks if "OGLO-" in c.name]
     assert glove_checks
     assert not [c for c in glove_checks if c.verdict == FAIL], str(rep)
 
 
-def test_the_measured_rate_is_reported_against_what_the_board_says(monkeypatch):
+@pytest.mark.parametrize(("configured", "delivered", "expected"), [
+    (250, 250, OK),
+    (400, 400, OK),
+    (400, 380, OK),
+    (400, 379, WARN),
+    (400, 340, WARN),
+    (400, 339, FAIL),
+])
+def test_the_measured_rate_is_reported_against_what_the_board_says(
+    monkeypatch, configured, delivered, expected
+):
     _ports(monkeypatch, [port("/dev/cu.usbmodemA")])
-    rep = doctor(seconds=1.5, connect=fake_connect(hz=250.0))
+    rep = doctor(seconds=1.5, connect=measured_connect(
+        monkeypatch, cfg={**CFG_V6, "rate_hz": configured}, hz=delivered,
+    ))
     tac = [c for c in rep.checks if c.name.endswith("tactile rate")][0]
-    assert tac.verdict == OK, tac.detail
-    assert "250 Hz expected" in tac.detail
+    assert tac.verdict == expected, tac.detail
+    assert f"{delivered:.1f} Hz delivered, {configured} Hz expected" in tac.detail
 
 
 def test_fake_board_buffers_samples_while_host_is_descheduled(monkeypatch):
@@ -98,7 +139,7 @@ def test_fake_board_buffers_samples_while_host_is_descheduled(monkeypatch):
 def test_a_slow_board_is_failed_with_the_percentage(monkeypatch):
     """A number needs a reader who knows the expected value. A verdict does not."""
     _ports(monkeypatch, [port("/dev/cu.usbmodemA")])
-    rep = doctor(seconds=1.5, connect=fake_connect(hz=100.0))  # board says 250, gives 100
+    rep = doctor(seconds=1.5, connect=measured_connect(monkeypatch, hz=100))
     tac = [c for c in rep.checks if c.name.endswith("tactile rate")][0]
     assert tac.verdict == FAIL
     assert "%" in tac.detail and "another program reading the port" in tac.detail
