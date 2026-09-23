@@ -16,7 +16,9 @@ def main(installer, wheel):
     with tempfile.TemporaryDirectory(prefix='oglo-installer-check-') as temp:
         root = Path(temp)
         environment = root / 'venv'
-        venv.EnvBuilder(with_pip=True).create(environment)
+        # Match `python -m venv` on POSIX. Copying a standalone macOS interpreter
+        # can invalidate its executable signature; symlinking avoids that.
+        venv.EnvBuilder(with_pip=True, symlinks=os.name != 'nt').create(environment)
         python = environment / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
         env = os.environ.copy()
         env.pop('PYTHONPATH', None)

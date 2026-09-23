@@ -49,8 +49,16 @@ sensor measurements or zero-latency claims. Raw evidence remains local in
 `acceptance-results/generic-firmware-20260923/` and the per-device journal.
 
 This recording preceded the final extra parent-side all-device-result guard and
-settings-schema validation. Those do not alter the wire protocol; the final wheel
-is checked again for installation and ordinary managed connection.
+settings-schema validation. Those do not alter the wire protocol. The final wheel
+was reinstalled, matched byte-for-byte to the source/resources, and passed an
+ordinary managed connection again with no policy file or serial selection. The
+final focused connection/firmware/documentation suite passed **106 tests**.
+
+The generated installer also passed in a fresh Mac Python environment using the
+local wheel as its download source: wheel checksum, actual pip installation, exact
+SDK replacement, bundled production-signature verification and persistent enablement.
+The same end-to-end installer check is included in the Linux CI packaging job.
+This local-source check is distinct from verification of the eventual public URL.
 
 ## Remaining physical scope
 
