@@ -101,7 +101,10 @@ another host. The current device is always queried again.
   physical USB and Linux driver behavior need separate qualification.
 - Post-update readiness checks the running hash, calibration/configuration, status
   and three seconds of tactile/IMU/magnetometer **packet delivery**, sequence gaps,
-  head/tail gaps and counter changes. It is not a fresh-sensor-value rate test,
+  head/tail gaps and counter changes. On these pinned firmware versions,
+  `tag_short_writes` counts retained-frame retries and is recorded as diagnostic
+  evidence; increases alone do not mean sample loss. Actual drops, host sequence
+  loss, reset, unhealthy status and new deadline misses still fail readiness. It is not a fresh-sensor-value rate test,
   force calibration or long-duration stability qualification. Its provisional
   delivery floor is 80% of configured tactile / 500 IMU / 125 magnetometer packets
   per second, with no gap above 0.5 s or counted loss. These are readiness limits,

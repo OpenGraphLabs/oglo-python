@@ -174,17 +174,27 @@ def basic_health(port, seconds=3.0):
     transport.drain(settle=.2)
     after = transport.read_status()
     counters = asdict(transport.dropped)
+    report = {'window_s': seconds, 'streams': seen, 'host_counters': counters,
+              'status_before': before.raw, 'status_after': after.raw,
+              'qualification': 'basic USB packet delivery only; sensor fresh-value rates and long-term stability not qualified'}
+    def fail(message):
+        error = FirmwareError(message)
+        error.observation = report
+        raise error
     if any(counters.values()) or not after.healthy or not after.mag_ok:
-        raise FirmwareError(f'post-update stream loss/status failure: {counters}')
+        fail(f'post-update stream loss/status failure: {counters}')
     for name, rate in (('tactile', info.rate_hz), ('imu', 500), ('mag', 125)):
         row = seen[name]
         if (row['count'] < rate * seconds * 0.8 or row['first_s'] is None or row['first_s'] > .5 or
                 seconds - row['last_s'] > .5 or row['max_gap_s'] > .5):
-            raise FirmwareError(f'post-update {name} packet delivery failed: {row}')
+            fail(f'post-update {name} packet delivery failed: {row}')
     for key in ('tag_dropped', 'tag_short_writes', 'deadline_misses'):
         a, b = before.raw.get(key), after.raw.get(key)
-        if type(a) is not int or type(b) is not int or b != a:
-            raise FirmwareError(f'device counter changed during readiness check: {key}: {a} -> {b}')
-    return {'window_s': seconds, 'streams': seen, 'host_counters': counters,
-            'status_before': before.raw, 'status_after': after.raw,
-            'qualification': 'basic USB packet delivery only; sensor fresh-value rates and long-term stability not qualified'}
+        # In the pinned 0.9.16/17 TX task, short_writes counts transient retries
+        # while retaining the partial frame. Actual rejected frames increment
+        # tag_dropped. Match the existing recorder's version-specific semantics.
+        if type(a) is not int or type(b) is not int or b < a or (key != 'tag_short_writes' and b != a):
+            fail(f'device counter changed during readiness check: {key}: {a} -> {b}')
+    if after.uptime_ms < before.uptime_ms:
+        fail('device reset during readiness check')
+    return report

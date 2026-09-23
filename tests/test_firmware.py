@@ -475,3 +475,25 @@ def test_partial_commit_waits_before_reinspection(policy, monkeypatch):
     quiet_index = trace.index(('sleep', 65))
     assert quiet_index > write_index
     assert not any(t[0] == 'open' for t in trace[write_index + 1:quiet_index])
+
+
+@pytest.mark.parametrize('counter', ['tag_short_writes', 'tag_dropped', 'deadline_misses'])
+def test_health_distinguishes_retained_frame_retries_from_actual_loss(counter):
+    from fake_serial import tagged_burst
+    class CounterPort(FakeSerial):
+        asks = 0
+        def _handle(self, cmd):
+            if cmd == 'GET STATUS':
+                self.asks += 1
+                if self.asks > 1:
+                    self.status[counter] += 1
+            super()._handle(cmd)
+    port = CounterPort(make_snapshot(target=True)['config'], hz=250, stream=tagged_burst(4))
+    if counter == 'tag_short_writes':
+        result = protocol.basic_health(port, seconds=.2)
+        assert result['status_after'][counter] - result['status_before'][counter] == 1
+        assert not any(result['host_counters'].values())
+    else:
+        with pytest.raises(pkg.FirmwareError, match=counter) as caught:
+            protocol.basic_health(port, seconds=.2)
+        assert caught.value.observation['status_after'][counter] == 1

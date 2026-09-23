@@ -159,7 +159,13 @@ def run(policy, devices, attempt):
                 entry.update(state='needs_attention', observed=current, updated_at=now())
                 atomic_json(journal_path(key), entry)
                 raise
-            health = basic_health(port)
+            try:
+                health = basic_health(port)
+            except FirmwareError as exc:
+                entry.update(observed=current, health=getattr(exc, 'observation', None),
+                             error=str(exc), updated_at=now())
+                atomic_json(journal_path(key), entry)
+                raise
             # Health check starts/stops streams; ensure it left persistent values intact.
             final = snapshot(port, device)
             try:
