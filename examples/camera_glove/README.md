@@ -139,3 +139,91 @@ Camera or glove failures stop peer capture and leave an error. A hung webcam dri
 can still block because OpenCV reads have no portable timeout. Encoding and disk
 writes can delay camera reads. Try a short run on the intended hardware first.
 The webcam video uses lossy MP4 encoding.
+
+## Video codec
+
+`video.mp4` comes from OpenCV's `mp4v` encoder unless `--codec` says otherwise.
+`--codec hevc_nvenc` (NVIDIA GPU), `h264_nvenc`, `libx265` or `libx264` pipe every frame
+to the system `ffmpeg` instead, and `--video-quality N` is that encoder's CRF / CQ value
+(default 23; lower means a larger file). The script checks the encoder before it opens
+any device. On a 3200x1200 stereo camera at 30 fps, `mp4v` writes about 325 MB per
+30 s, `hevc_nvenc` at 23 about 93 MB and at 28 about 50 MB. The manifest records
+`codec` and `video_quality`; the frame count check and OpenCV playback work the same
+for every codec.
+
+## 5. Collect many episodes: `collect.py`
+
+`capture.py` records one session. `collect.py` keeps the camera and the gloves open
+and records episode after episode into one dataset tree, driven by the keyboard or a
+foot switch that types the same keys. `scripts/collect.sh` runs it from the `oglo`
+conda environment with the workstation defaults (`--camera SC233`, `--out captures/`).
+`--camera` takes an OpenCV index or part of the camera's V4L2 name; the name is
+stable across reboots, the index is not:
+
+```bash
+scripts/collect.sh --pair --task "pick up a cup"          # both hands
+scripts/collect.sh --serial OGLO-R-00114 --task "cup"     # one glove, by CONFIG serial
+```
+
+| Key | Action |
+| --- | --- |
+| `g` | start an episode (the gloves stop their idle stream, read their zero table, then record). Refused while any glove has no valid sweep zero: press `z` first |
+| `h` | stop and save the episode |
+| `x` | stop and discard it (moved to `<task>/_discarded/`) |
+| `z` | run a zero sweep on every glove (`--sweep` seconds, `--countdown` before it) |
+| `c` | toggle the on-screen grids between counts above the zero (clamped at 0, like the CLEAN file; the sweep zero is an envelope, so a resting hand sits below it) and raw ADC (RAW stream only). Display only: a RAW-stream episode always saves both `tactile_<side>.raw.jsonl` and the derived CLEAN file |
+| `q` | quit; the dataset index and card are rewritten on the way out |
+
+Output layout, one folder per task and one numbered session per episode:
+
+```
+captures/
+  README.md, episodes.jsonl          rebuilt by dataset.py on every quit / upload
+  <task>/<task>_001/                 exactly what capture.py writes, unchanged
+  <task>/<task>_001/derived/         reserved for per-episode files that come back later
+  <task>/_discarded/, <task>/_failed/   never uploaded
+  gloves/<serial>/                   reserved for per-glove files that come back later
+```
+
+`dataset.py index --out captures` rebuilds the index; `scripts/hf_upload.sh`
+(`--dry-run` to list first) indexes and pushes the tree to the private Hugging Face
+dataset `ntumars-opengraph/oglo-tactile-ego` with the `hf` CLI, skipping `_*`
+folders. The logged-in token needs write access to that organization.
+
+### Checking the taxel layout
+
+The grids in the preview follow OGLO Studio's `drawGlove`: each finger is a 4x4
+with the fingertip at the top and wire row 0 on the right; a right hand runs
+thumb..pinky left to right, a left hand is mirrored. To check a glove against the
+app without the camera, `scripts/taxel_map.sh --side left` prints the same layout
+in the terminal with the SDK `(slot, row, col)` and Studio CSV `taxel_N` index of
+the peak.
+
+### How the gloves are driven between episodes
+
+A glove streams about 48 kB/s over USB and Linux buffers only 4095 bytes per tty:
+a host that stops reading for ~85 ms makes the kernel throttle the device. So the
+gloves are never left streaming unread:
+
+- **Idle** (between episodes): each glove has its own reader thread that drains the
+  stream and keeps the last frame for the preview. The window thread never reads a
+  glove.
+- **Command** (`g`, `z`, quit): the reader thread is stopped first, then the stream is
+  stopped, then commands are sent. `oglo.Glove.send()` is never called while a reader
+  thread is alive.
+- **Recording**: `capture.py` owns the gloves; `oglo.record()` reads on its own thread
+  per glove and stops the stream as soon as it returns.
+- **After the episode**: reader threads start again.
+
+### When a glove stops answering
+
+Symptoms: `no '#TZERO ' from the board within 4s`, `no #CONFIG from the board`, or an
+episode marked failed with `status_error`. Check `journalctl -k` first: a line like
+`xhci_hcd ...: WARN Set TR Deq Ptr cmd failed due to incorrect slot or ep state` at
+the same second means the host controller failed to recover the glove's endpoint,
+not the glove. That happened on every failure with the gloves on an ASMedia ASM4242
+USB4 (Type-C) controller and never on the CPU's own USB ports, so plug the gloves
+into plain USB-A ports on a different host controller from the camera.
+
+Never toggle DTR/RTS or open the port at 1200 baud to "reset" a glove: that puts the
+ESP32-S3 into its ROM download mode. Unplug it, wait ten seconds, plug it back in.

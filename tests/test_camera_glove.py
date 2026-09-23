@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import threading
 import time
 from types import SimpleNamespace
@@ -67,7 +68,8 @@ def simulated_glove(side, clean=True):
     return Glove(transport, info, caps)
 
 
-def setup_capture(tmp_path, monkeypatch, pair=False, fail_after=None, clean=True):
+def setup_capture(tmp_path, monkeypatch, pair=False, fail_after=None, clean=True,
+                  codec="mp4v", quality=23):
     camera = Camera(fail_after=fail_after)
     original = cv2.VideoCapture
     monkeypatch.setattr(capture.cv2, "VideoCapture",
@@ -77,7 +79,7 @@ def setup_capture(tmp_path, monkeypatch, pair=False, fail_after=None, clean=True
                         lambda: (simulated_glove("left", clean), simulated_glove("right", clean)))
     args = argparse.Namespace(output=tmp_path / "session", camera=0, seconds=0.5,
                               fps=30, task="synthetic contact", serial=None, pair=pair,
-                              preview=False)
+                              preview=False, codec=codec, video_quality=quality)
     return args, camera
 
 
@@ -100,6 +102,7 @@ def test_capture_decode_and_join_preserve_source_files(tmp_path, monkeypatch, pa
     assert camera.released
     manifest = json.loads((root / "manifest.json").read_text())
     assert manifest["complete"] is True
+    assert manifest["stop_reason"] == "duration"
     assert manifest["alignment_validated"] is False
     assert manifest["camera"]["fps_request_accepted"] is False
     assert manifest["camera"]["frames_decoded"] >= 2
@@ -146,6 +149,65 @@ def test_capture_decode_and_join_preserve_source_files(tmp_path, monkeypatch, pa
         alignment.align(root, output, max_delta_ms=50)
     with pytest.raises(RuntimeError, match="decoded frames"):
         capture.verify_video(root / "camera/video.mp4", len(rows) + 1)
+
+
+def test_external_stop_ends_capture_complete(tmp_path, monkeypatch):
+    args, camera = setup_capture(tmp_path, monkeypatch, pair=True)
+    args.seconds = 10  # Only a cap: the event below ends the session first.
+    stop = threading.Event()
+    threading.Timer(0.6, stop.set).start()  # Device setup eats part of this.
+    started = time.monotonic()
+    root = capture.capture(args, stop=stop)
+    assert time.monotonic() - started < 5
+    assert camera.released
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert manifest["complete"] is True and manifest["error"] is None
+    assert manifest["stop_reason"] == "cancelled"
+    assert manifest["requested_duration_s"] == 10
+    rows = (root / "camera/timestamps.jsonl").read_text().splitlines()
+    assert 2 <= len(rows) == manifest["camera"]["frames_decoded"]
+    assert len(manifest["gloves"]) == 2
+    for hand in manifest["gloves"]:
+        assert hand["summary"]["tactile"]["n"] > 0
+        assert capture.oglo.replay(root / hand["episode"]).meta["stop_reason"] == "cancelled"
+    assert alignment.align(root, root / "alignment.preview.jsonl", max_delta_ms=50) == len(rows)
+
+
+def test_ffmpeg_codec_keeps_one_decoded_frame_per_submitted_frame(tmp_path, monkeypatch):
+    if shutil.which(capture.FFMPEG) is None:
+        pytest.skip("needs the ffmpeg binary")
+    problem = capture.probe_encoder("libx264", 28)
+    if problem:
+        pytest.skip(f"ffmpeg has no working libx264: {problem}")
+    args, camera = setup_capture(tmp_path, monkeypatch, codec="libx264", quality=28)
+    root = capture.capture(args)
+    assert camera.released
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert manifest["complete"] is True
+    assert manifest["camera"]["codec"] == "libx264"
+    assert manifest["camera"]["video_quality"] == 28
+    assert manifest["camera"]["frames_decoded"] == manifest["camera"]["frames_submitted"] >= 2
+    rows = (root / "camera/timestamps.jsonl").read_text().splitlines()
+    assert len(rows) == manifest["camera"]["frames_decoded"]
+
+
+def test_missing_ffmpeg_leaves_session_incomplete(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "FFMPEG", "ffmpeg-that-does-not-exist")
+    args, camera = setup_capture(tmp_path, monkeypatch, codec="libx264")
+    with pytest.raises(RuntimeError, match="not found"):
+        capture.capture(args)
+    assert camera.released
+    manifest = json.loads((tmp_path / "session/manifest.json").read_text())
+    assert manifest["complete"] is False and "not found" in manifest["error"]
+    assert capture.probe_encoder("libx264") and "not found" in capture.probe_encoder("libx264")
+    assert capture.probe_encoder("mp4v") is None
+
+
+def test_unknown_codec_is_rejected(tmp_path, monkeypatch):
+    args, _ = setup_capture(tmp_path, monkeypatch, codec="webm")
+    with pytest.raises(RuntimeError, match="Unknown codec"):
+        capture.capture(args)
+    assert json.loads((tmp_path / "session/manifest.json").read_text())["complete"] is False
 
 
 def test_camera_failure_keeps_incomplete_manifest_and_partial_glove(tmp_path, monkeypatch):
@@ -365,3 +427,16 @@ def test_ovision_capture_uses_published_sidecars_and_common_join(tmp_path, monke
     assert native_row["device_timestamp_ns"] == common_row["device_timestamp"]
     imu = json.loads((root / "camera/cam_ego.imu.jsonl").read_text().splitlines()[0])
     assert imu["accel_unit"] == "m_s2" and imu["gyro_unit"] == "rad_s"
+
+
+def test_preopened_gloves_are_used_and_left_open(tmp_path, monkeypatch):
+    args, _ = setup_capture(tmp_path, monkeypatch)
+    monkeypatch.setattr(capture.oglo, "connect", lambda **_: pytest.fail("must not reconnect"))
+    glove = simulated_glove("left")
+    root = capture.capture(args, gloves=(glove,))
+    assert glove._started is False  # Not left streaming into a port nobody reads.
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert manifest["complete"] is True
+    assert manifest["gloves"][0]["serial"] == glove.info.serial
+    assert glove.read_batch() is not None  # Still open for the caller.
+    glove.close()

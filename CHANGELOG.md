@@ -45,12 +45,35 @@ User-facing changes by version. Version numbers follow
 - Exact sequence, loss, and timing metadata in each row's `oglo` object.
 - Strict checks for malformed rows, truncated files, and RAW/CLEAN disagreement.
 - `OGLData` types and a reference for collection files, fields, units, and shapes.
+- `examples/camera_glove/collect.py`: multi-episode collection with keyboard / foot
+  switch control, per-task numbered sessions, discard and failure folders, and
+  `dataset.py index` / `upload` for the episode index, dataset card and Hugging Face
+  upload. `scripts/collect.sh`, `scripts/doctor.sh`, `scripts/hf_upload.sh` run them
+  from the `oglo` environment.
+- `examples/05_taxel_map.py` / `scripts/taxel_map.sh`: live terminal taxel map in the
+  OGLO Studio layout, for checking where a press lands.
+- `collect.py`: `g` is refused until every glove holds a valid sweep zero, since a
+  RAW episode without one has no CLEAN file; the grids show `max(0, raw - zero)` on a
+  RAW stream, the same clamp the CLEAN file gets, since the sweep zero is an envelope
+  and a resting hand sits below it; `c` toggles the on-screen grids between that and
+  raw ADC without changing what is recorded.
+- `collect.py --camera` accepts part of the camera's V4L2 name (`SC233`) and resolves
+  it to the capture node, since `/dev/video` numbers change across reboots;
+  `scripts/collect.sh` defaults to the stereo camera by name.
+
+### Fixed
+
+- The finger grids drawn by `collect.py` were transposed and mirrored relative to
+  OGLO Studio. They now follow Studio's `drawGlove`: fingertip at the top, wire row 0
+  on the right, left hand mirrored.
 
 ### Changed
 
 - macOS OVISION recording now saves both eyes while previewing one selected eye.
 - Added user guides for Studio setup, collection scripts, delivery profiles,
   and local troubleshooting.
+- `capture.py` stops each glove's stream as soon as its recording returns instead
+  of leaving it running unread while the peer finishes and the video is checked.
 - Recording format is now schema 3; camera sessions use `oglo-camera-example.v2`.
   Earlier recording formats and the separate export step are no longer supported.
 - Simplified the quickstart, camera guides, reference pages, and contributor docs.
