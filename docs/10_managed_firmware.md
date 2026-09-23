@@ -1,8 +1,8 @@
 # Managed firmware preparation (development candidate)
 
 `0.1.0rc8.dev1` adds opt-in, offline application updates for **macOS and Linux**.
-It is not yet approved for a 40-glove rollout. Physical application-update and
-recovery qualification is recorded separately; unit-test success is not hardware
+It is not yet approved for a 40-glove rollout. The [Mac bench validation](validation/2026-09-23-managed-firmware.md) covers
+one unit; Linux, pair and interruption/recovery qualification remain open; unit-test success is not hardware
 qualification. Windows retains normal SDK support but does not support this updater.
 
 Install the reviewed wheel and its firmware extra once on the research host:
@@ -98,7 +98,8 @@ another host. The current device is always queried again.
   and handoff to capture. The SDK checks existing tty owners and requests OS tty
   exclusion. This does not establish universal protection against noncooperating
   drivers/apps or another OS user. Darwin PTYs did not enforce TIOCEXCL in testing;
-  physical USB and Linux driver behavior need separate qualification.
+  the native Mac USB bench device rejected an overlapping raw open with EBUSY.
+  Linux USB and other driver/client behavior still need qualification.
 - Post-update readiness checks the running hash, calibration/configuration, status
   and three seconds of tactile/IMU/magnetometer **packet delivery**, sequence gaps,
   head/tail gaps and counter changes. On these pinned firmware versions,
