@@ -74,10 +74,11 @@ def connect(serial: Optional[str] = None, *, transport: str = "usb",
     so `port=` exists only as an escape hatch for a board that does not enumerate the
     way discovery expects.
 
-    `transport="ble"` connects wirelessly. It delivers the same tactile rate but
-    **not the same IMU rate**: BLE carries one IMU slot per tactile sample, so ~194 Hz
-    of a 500 Hz stream arrives and the magnetometer repeats. Use USB when IMU rate or
-    timing matters. `transport="auto"` tries USB and falls back to BLE.
+    `transport="ble"` connects wirelessly. Each tactile sample carries one IMU slot
+    and an optional magnetometer slot, so these streams share a packet cadence and
+    may repeat sensor measurements. Actual throughput depends on the host and link;
+    use USB when rate or timing matters. `transport="auto"` tries USB and falls back
+    to BLE only when no matching USB glove is found.
     """
     from ._firmware_package import resolve_policy, FirmwareError
     policy = resolve_policy(firmware_policy)
@@ -93,7 +94,7 @@ def connect(serial: Optional[str] = None, *, transport: str = "usb",
         return connect_ble(serial, address=port, scan_timeout=timeout)
     if transport == "auto":
         try:
-            return connect(serial, transport="usb", port=port, timeout=timeout)
+            return connect(serial, transport="usb", port=port, timeout=timeout, firmware_policy=False)
         except NoGloveFound:
             # Only this one. A busy port, a board that will not answer, a truncated
             # config: all mean the glove is there and something specific is wrong,
@@ -206,7 +207,7 @@ def connect_pair(*, timeout: float = 10.0, serials=None, firmware_policy=None) -
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise UsbError(f"connect_pair timed out after {timeout:.1f}s")
-            gloves.append(connect(port=c.device, timeout=remaining))
+            gloves.append(connect(port=c.device, timeout=remaining, firmware_policy=False))
         by_side = {g.info.side: g for g in gloves}
         if set(by_side) != {"left", "right"}:
             sides = [g.info.serial + "=" + g.info.side for g in gloves]

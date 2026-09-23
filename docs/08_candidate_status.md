@@ -1,101 +1,105 @@
 # Candidate status
 
-`0.1.0rc7` is prepared for SDK evaluation; the latest published release is
-`0.1.0rc3`. See the [changelog](../CHANGELOG.md) for SDK changes and
-[compatibility](06_compatibility.md) for the supported contract.
+This is a development candidate, not a fleet deployment approval. It integrates
+upstream JSONL recording with a bounded storage worker and opt-in signed firmware
+preparation. See [managed updates](10_managed_firmware.md).
+
+This checkout is `0.1.0rc8.dev1`, a build for evaluation. Find published packages on
+[GitHub Releases](https://github.com/OpenGraphLabs/oglo-python/releases).
+See the [changelog](../CHANGELOG.md) for changes and
+[compatibility](06_compatibility.md) for supported versions.
 
 ## Firmware status
 
-Successful functionality checks on some setups do not qualify sustained capture
-on the current bench. Stock 0.9.16 reproduced a terminal USB failure on three
-physical gloves, including SDK-free tests. An unsigned FIFO-allocation correction
-in 0.9.17 passed matched five-minute probes and 60-second recording comparisons
-on all three; it is not yet a qualified firmware release.
+The Mac bench unit L-00006 was updated through the USB application protocol from
+its verified stock 0.9.16 image to the signed 0.9.17 image, with automatic reboot
+and unchanged CONFIG/ZERO preservation fields. A repeat preparation skipped
+writing. The initial readiness check incorrectly rejected transient TX retries;
+that host-side interpretation was corrected to match the firmware and existing
+recorder. Sequence loss and actual device drops remain failures.
 
-SDK rc6 fixed unread transmission between acceptance steps. Its subsequent Linux
-two-hand 75-minute recording nevertheless failed: left lost 558 samples and right
-542. Both episodes are marked incomplete. Both gloves remained responsive with
-unchanged firmware/boot/settings/zero, no new deadline misses, and zero
-capture-window USB bulk completion errors. Reader pauses near chunk boundaries
-are being compared with actual storage timing.
+This is one unit and a short readiness check. Linux/Zed application-update recovery,
+two-hand long recording and the research fleet are not qualified by this result.
+The earlier rc6 75-minute Linux sample-loss report remains a failed run; integrating
+a storage worker into JSONL recording does not retroactively make it pass.
 
-rc7 moves chunk writes/fsync to a bounded storage worker, preserving strict loss
-checks and incomplete-file handling. Its Mac/Linux two-hand physical qualification
-remains open. No package is approved here for NTU experimental data collection.
-
-For a new deployment, retain the firmware version and acceptance report for its
-host, gloves, and storage. The [acceptance guide](07_acceptance.md) includes a
-75-minute soak for checking device-clock rollover and long recordings.
+Test each new deployment on its own host, gloves, cables, and disk. Keep the
+firmware version and [acceptance report](07_acceptance.md) with the results.
 
 ## Evaluate the package
 
-1. Open the [CI runs](https://github.com/OpenGraphLabs/oglo-python/actions/workflows/ci.yml)
-   and select a successful run for the commit you intend to evaluate. In its
-   **Artifacts** section, download `oglo-<full-commit-sha>` and unzip it. This
-   handoff is produced by runs containing the candidate-upload workflow, after
-   the SDK, minimum-dependency, and camera tests pass. Older runs will not have it.
-   GitHub sign-in is required to download CI artifacts. They are retained for
-   90 days; keep the downloaded bundle with your project. For a public release,
-   maintainers can attach the same bundle to
-   [GitHub Releases](https://github.com/OpenGraphLabs/oglo-python/releases).
+### 1. Download a build
 
-   The bundle contains:
+Open a successful [CI run](https://github.com/OpenGraphLabs/oglo-python/actions/workflows/ci.yml)
+for the commit you want to test. Under **Artifacts**, download
+`oglo-<full-commit-sha>` and unzip it.
 
-   ```text
-   oglo-0.1.0rc7-py3-none-any.whl   installable SDK
-   oglo-0.1.0rc7.tar.gz            matching source, docs, tests, and examples
-   handoff.json                  SDK version, exact source commit, CI run URL
-   SHA256SUMS.txt                 checksums for the three files above
-   ```
+You need to sign in to GitHub. Artifacts expire after 90 days, so keep a local
+copy. Older runs may not include the package-upload step.
 
-2. From the unpacked directory, verify the checksums before installation:
+```text
+oglo-0.1.0rc8.dev1-py3-none-any.whl   SDK to install
+oglo-0.1.0rc8.dev1.tar.gz            matching source, docs, and examples
+handoff.json                  source commit and CI run
+SHA256SUMS.txt                 file checksums
+```
 
-   ```bash
-   # Linux
-   sha256sum -c SHA256SUMS.txt
-   # macOS
-   shasum -a 256 -c SHA256SUMS.txt
-   ```
+### 2. Check the files
 
-   On Windows PowerShell:
+In the unzipped directory, run the command for your system:
 
-   ```powershell
-   Get-Content SHA256SUMS.txt | ForEach-Object {
-       $expected, $file = $_ -split '  ', 2
-       if ((Get-FileHash $file -Algorithm SHA256).Hash -ne $expected) {
-           throw "Checksum mismatch: $file"
-       }
-   }
-   ```
+```bash
+# Linux
+sha256sum -c SHA256SUMS.txt
 
-   Check that `handoff.json` names the expected source commit and CI run. The SDK
-   version alone does not distinguish two candidate builds from different commits.
+# macOS
+shasum -a 256 -c SHA256SUMS.txt
+```
 
-3. Install the candidate wheel in a clean environment:
+On Windows PowerShell:
 
-   ```bash
-   python3 -m venv .venv
-   # macOS/Linux: source .venv/bin/activate
-   # Windows PowerShell: .venv\Scripts\Activate.ps1
-   python -m pip install ./oglo-0.1.0rc7-py3-none-any.whl
-   python -c "import oglo; print(oglo.__version__)"
-   oglo --help
-   ```
+```powershell
+Get-Content SHA256SUMS.txt | ForEach-Object {
+    $expected, $file = $_ -split '  ', 2
+    if ((Get-FileHash $file -Algorithm SHA256).Hash -ne $expected) {
+        throw "Checksum mismatch: $file"
+    }
+}
+```
 
-4. Extract the matching source archive to use its documentation and examples:
+All checks must pass. Check the commit in `handoff.json` too: different candidate
+builds can have the same SDK version.
 
-   ```bash
-   python -m tarfile -e oglo-0.1.0rc7.tar.gz .
-   cd oglo-0.1.0rc7
-   ```
+### 3. Install
 
-   Follow its README and [recording guide](04_recording.md). Run camera examples
-   from this extracted directory so their version matches the installed wheel.
-   Replay can be evaluated without hardware.
-5. For a new hardware deployment, run the [acceptance checks](07_acceptance.md)
-   on the intended setup. Use `--single` for one glove; test both together for
-   two-hand deployments.
+```bash
+python3 -m venv .venv
+```
 
-A candidate package, passing offline tests, or a draft release does not establish
-physical qualification. BLE throughput, hardware synchronisation, and force
-calibration are outside this USB candidate's scope.
+Activate it with `source .venv/bin/activate` on macOS/Linux, or
+`.venv\Scripts\Activate.ps1` in Windows PowerShell. Then:
+
+```bash
+python -m pip install ./oglo-0.1.0rc8.dev1-py3-none-any.whl
+python -c "import oglo; print(oglo.__version__)"
+oglo --help
+```
+
+### 4. Open the matching examples
+
+```bash
+python -m tarfile -e oglo-0.1.0rc8.dev1.tar.gz .
+cd oglo-0.1.0rc8.dev1
+```
+
+Follow the included README. Run examples from this extracted folder so they match
+the installed wheel. [Replay](04_recording.md#reading-one-back) needs no hardware.
+
+### 5. Test your setup
+
+Run the [acceptance checks](07_acceptance.md). Use `--single` for one glove, and
+test both together for a two-hand setup. Use the 75-minute test to check long
+recording and device-clock rollover on the intended disk.
+
+Passing software tests does not prove physical capture quality. BLE throughput,
+hardware synchronization, and force calibration need separate validation.

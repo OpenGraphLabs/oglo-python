@@ -118,15 +118,22 @@ def _cmd_acceptance(args: argparse.Namespace) -> int:
 
 
 def _cmd_firmware(args):
-    from .firmware import prepare, inventory, select_devices
+    from .firmware import prepare, inventory, select_devices, merge_inventory
     from ._firmware_package import resolve_policy, FirmwareError
     import time
     policy = resolve_policy(args.policy)
     if args.action == "inventory":
         if args.watch or args.serial:
             raise ValueError("inventory does not accept --watch or --serial")
-        print(json.dumps(inventory(policy), indent=2))
+        report = inventory(policy)
+        if args.merge:
+            from pathlib import Path
+            from ._firmware_package import read_json
+            report = merge_inventory(policy, [report, *(read_json(Path(p)) for p in args.merge)])
+        print(json.dumps(report, indent=2))
         return 0
+    if args.merge:
+        raise ValueError("--merge is only for inventory exports")
     def progress(event):
         if "phase" in event or "error" in event:
             print(json.dumps(event), file=sys.stderr, flush=True)
@@ -255,6 +262,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     f.add_argument("action", choices=("prepare", "inventory"))
     f.add_argument("--policy", required=True, help="locally approved lab policy JSON")
     f.add_argument("--serial", action="append", help="select full logical serials; repeat for a pair")
+    f.add_argument("--merge", action="append", help="merge another host inventory export; inventory action only")
     f.add_argument("--watch", action="store_true", help="prepare newly plugged approved devices until interrupted")
     f.set_defaults(func=_cmd_firmware)
 

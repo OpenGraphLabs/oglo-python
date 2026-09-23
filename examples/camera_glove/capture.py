@@ -140,7 +140,9 @@ class WebcamCapture:
 def record_glove(glove, output, seconds, start, stop, entry, root):
     start.wait()
     try:
-        episode = oglo.record(output, seconds=seconds, glove=glove, stop_event=stop)
+        calibration = json.loads((root / entry["calibration"]).read_text(encoding="utf-8"))
+        episode = oglo.record(output, seconds=seconds, glove=glove, stop_event=stop,
+                              calibration=calibration)
         entry["episode"] = episode.relative_to(root).as_posix()
         return episode
     except BaseException as exc:
@@ -158,7 +160,7 @@ def capture(args, camera_factory=WebcamCapture):
     camera_dir = root / "camera"
     camera_dir.mkdir()
     manifest: oglo.OGLData = {
-        "schema": "oglo-camera-example.v1", "task_description": args.task,
+        "schema": "oglo-camera-example.v2", "task_description": args.task,
         "sdk_version": oglo.__version__, "opencv_version": cv2.__version__,
         "requested_duration_s": args.seconds,
         "host_clock": "time.monotonic_ns", "same_host": True,

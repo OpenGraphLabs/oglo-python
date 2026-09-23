@@ -1,8 +1,7 @@
 """Collection field specification for the camera/glove example format.
 
-These TypedDict classes describe ordinary dictionaries, so JSON output and existing
-recordings are unchanged. They support editor/type-checker guidance, not runtime
-validation. See docs/09_data_specification.md for required completion conditions,
+These TypedDict classes describe ordinary dictionaries for JSONL sessions.
+They support editor/type-checker guidance, not runtime validation. See docs/09_data_specification.md for required completion conditions,
 units, shapes, and the separate glove episode schema.
 """
 
@@ -76,14 +75,14 @@ class _GloveData(TypedDict):
 
 
 class GloveData(_GloveData, total=False):
-    """One independently recorded hand and its unmodified SDK episode."""
+    """One independently recorded hand and its JSONL episode."""
 
     summary: dict[str, Any]  # Episode.summary() after replay verification.
     error: str
 
 
 class _OGLData(TypedDict):
-    schema: Literal["oglo-camera-example.v1"]
+    schema: Literal["oglo-camera-example.v2"]
     task_description: str
     sdk_version: str
     opencv_version: str
@@ -100,7 +99,7 @@ class _OGLData(TypedDict):
 
 
 class OGLData(_OGLData, total=False):
-    """One session's manifest.json, referring to video and independent sensor arrays.
+    """One session's manifest.json, referring to video and independent sensor streams.
 
     Capture starts with complete=False, camera={}, and gloves=[]. Finalization adds
     ended_wall_time_ns; successful checks add overlap_host_received_ns and set

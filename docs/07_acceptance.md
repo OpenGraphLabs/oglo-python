@@ -1,154 +1,63 @@
-# Test your own glove pair
+# Test your gloves
 
-`oglo acceptance` is the owner-facing test for one physical left/right USB pair.
-Unlike the developer pytest suite, it uses only the installed SDK's public API,
-guides optional physical actions, and writes a durable Markdown and JSON report.
-
-With only one glove attached, this candidate supports
-`oglo acceptance --single`. It tests that glove's identity, streams, settings,
-record/replay and reconnect paths, and explicitly skips two-hand compatibility.
-`--single` refuses ambiguous discovery if multiple gloves are attached. It can
-be combined with `--mutations` and `--soak 75m`.
-
-## Safe default
-
-Connect exactly two gloves and run:
+For a left/right USB pair:
 
 ```bash
 oglo acceptance
 ```
 
-The default run does **not** change zero, threshold, RAW/CLEAN mode, or stream rates.
-It checks:
-
-- one left and one right glove with distinct logical serials
-- firmware 0.9.10 or newer, CONFIG schema 6, USB transport, dimensions, and finger order
-- sensor health and existing zero state
-- public tactile, IMU, magnetometer, `stop()`, `start()`, and `read_batch()` paths
-- simultaneous two-hand rate, timestamps, sequence gaps, malformed data, and overflow
-- a short simultaneous recording and replay
-- logical-serial reconnect after both original connections close
-
-## Reports
-
-Every run creates a new directory instead of overwriting evidence:
-
-```text
-acceptance-results/
-  run-20260809-170000/
-    acceptance-report.md
-    acceptance-report.json
-    recordings/
-      left/ep_0001/
-      right/ep_0001/
-```
-
-Each check is `PASS`, `WARN`, `FAIL`, or `SKIP` and includes the measured rates and
-counters where useful. After each hand finishes its stream measurement, its worker snapshots rates and
-loss counters, then stops acquisition before the samples are analyzed. This keeps
-report generation from filling an unread device queue, and retains any measured
-losses even though `stop()` clears live session counters. Collector failures also
-stop that hand before the worker exits.
-
-A failed run exits with status 2. Optional checks that were not
-requested are `SKIP` and do not turn a healthy read-only run into a failure.
-
-Use a different result root with `--output PATH`. Skip the short recording with
-`--no-record`, or change its duration with `--record 10s`.
-
-## Press every finger and move the IMU
+For exactly one connected glove:
 
 ```bash
-oglo acceptance --interactive
+oglo acceptance --single
 ```
 
-The runner asks for each finger on each hand. It captures a released baseline, then
-measures the press and verifies that the requested name is the strongest responding
-4x4 region according to that device's `info.channels`. It also compares a still wrist
-with a deliberate rotation.
+The default checks identity, health, streams, short recording/replay, and
+reconnection. It preserves calibration, mode, threshold, and rates.
 
-This proves dynamic response and labeling, not force calibration. Press one sensing
-area at a time; bending the whole hand can legitimately compress several fingers and
-make the selected finger lose the "strongest" check. The default minimum response is
-25 ADC counts and can be changed with `--taxel-delta`.
+## Additional checks
 
-The magnetometer motion result only checks that values change. It does not validate
-the magnetometer axes or prove a trustworthy heading.
+| Option | Action |
+| --- | --- |
+| `--interactive` | Follow prompts to press each finger and rotate the wrist |
+| `--mutations` | Test setting changes, then attempt to restore them |
+| `--zero` | Perform a new calibration; replaces the stored baseline |
+| `--record 10s` | Set the short recording duration |
+| `--no-record` | Skip the short recording |
+| `--output PATH` | Choose the results folder |
 
-## Reversible setting checks
+For finger checks, press one region at a time. The default minimum response is
+25 counts; change it with `--taxel-delta`.
 
-```bash
-oglo acceptance --mutations
-```
+If settings cannot be restored after `--mutations`, inspect the glove before
+collecting more data.
 
-This explicitly enables state-changing checks:
-
-- switch to RAW and prove `Frame.residual` refuses raw data
-- switch to CLEAN with a temporary threshold and verify the clean result
-- change tactile rate and, when the measured starting IMU cadence is the known 500
-  packets/s value, change IMU rate
-- restore the observed tactile rate, RAW/CLEAN mode, threshold, and known IMU default
-- read back the restored state
-
-Restoration is attempted in `finally` even when an intermediate check fails. A
-restoration failure is a `FAIL` and is printed prominently; do not continue collecting
-customer data until the settings have been inspected manually.
-
-## Replace the stored zero
-
-```bash
-oglo acceptance --zero
-```
-
-This is deliberately separate because it overwrites the only stored calibration.
-For each glove the runner prints the serial and requires typing `ZERO <serial>`. Wear
-that glove, touch nothing, and repeatedly open and close the hand during the sweep.
-
-The SDK validates the completion recipe, all 80 baseline/noise entries, `GET ZERO`,
-and CONFIG `zero_valid`. Supported firmware cannot prove that flash survived a power
-cycle, so the report leaves that gate as `SKIP`. Unplug/replug the glove and run the
-safe default again to provide separate read-back evidence.
-
-`--zero --yes` bypasses the typed phrase and is intended only for a deliberately
-controlled station. `--yes` by itself does nothing.
+`--zero` asks you to type `ZERO <serial>`. Wear the glove, touch nothing, and open
+and close your hand during the sweep. `--zero --yes` skips confirmation and is
+intended for controlled stations. See [calibration](03_calibration.md).
 
 ## Long two-hand soak
 
-The device `t_us` counter wraps after roughly 71 minutes 35 seconds. Qualify that
-boundary and the actual destination disk with:
+Test long recording on the actual destination disk:
 
 ```bash
 oglo acceptance --soak 75m --output /path/on/the/target/disk
 ```
 
-The short checks run first, then both hands record concurrently for 75 minutes. The
-episodes are replayed and must be complete, correctly identified, non-empty in every
-fitted modality, and free of recorded sequence gaps.
+The duration crosses the device clock's roughly 72-minute rollover. Short checks
+must pass first. Add `--single` for one glove.
 
-A successful soak is evidence for the machine, cables, hubs, gloves, duration, and
-storage named in that report. It is not a permanent guarantee for every host.
+Ctrl-C stops and saves the recordings. A cancelled run is not a passed long test.
+If either hand fails, the other recorder is asked to stop too.
 
-Failed short checks prevent the long soak from starting. Use Ctrl-C to cancel an
-active run: its recording workers are asked to stop and seal their data before
-the glove connections close. Cancelled captures do not count as a passed soak.
-If either hand's recorder fails, the other recorder is asked to stop before the
-failure is reported, without waiting for the remaining soak duration.
+## Reports
 
-USB short-write counters are recorded as backpressure observations. They do not
-alone mean lost data on firmware 0.9.16, which retries pending data. Sequence gaps,
-malformed packets, host queue overflow, device drops and missed deadlines still
-fail their respective checks.
+Results go into a new `acceptance-results/run-<date-time>/` folder. Open
+`acceptance-report.md`; keep `acceptance-report.json` with your data.
 
-## Deliberate scope
+Checks are `PASS`, `WARN`, `FAIL`, or `SKIP`. Failed runs exit with code 2.
+Optional checks are skipped unless requested.
 
-This command is USB-only. BLE remains experimental and must be qualified separately.
-It does not claim:
-
-- hardware synchronisation between the two gloves
-- Newton/force calibration
-- fused orientation or validated magnetometer axes
-- payload integrity beyond what supported firmware exposes
-- power-cycle zero persistence unless that physical cycle was separately performed
-
-Run the default acceptance check before an important capture and attach its JSON
-report to the dataset or deployment record.
+A pass applies to the tested setup. It does not prove force accuracy or hardware
+synchronization. Calibration persistence is reported as `SKIP`; check it by
+comparing the recipe before and after unplugging and reconnecting the glove.

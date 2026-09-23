@@ -11,6 +11,7 @@ import oglo._record as module
 from oglo._frame import Frame, ImuSample, MagSample
 from oglo._device import SampleBatch
 from oglo._record import Recorder, RecordError
+from oglo import replay
 from test_record_replay import glove
 
 
@@ -21,15 +22,15 @@ def add(rec, seq):
 
 def block_chunks(monkeypatch):
     entered, release = threading.Event(), threading.Event()
-    original = module.np.savez
+    original = module._write_chunk
 
-    def write(file, **columns):
+    def write(path, rows):
         entered.set()
         if not release.wait(10):
             raise TimeoutError("test did not release the disk")
-        return original(file, **columns)
+        return original(path, rows)
 
-    monkeypatch.setattr(module.np, "savez", write)
+    monkeypatch.setattr(module, "_write_chunk", write)
     return entered, release
 
 
@@ -52,9 +53,9 @@ def test_blocked_disk_does_not_block_sample_ingestion_and_owns_copied_rows(tmp_p
             finally:
                 release.set()
         rec.write(complete=False, error="fixture", stop_reason="test")
-        with np.load(rec.dir / "tactile.npz", allow_pickle=False) as z:
-            assert z['seq'].tolist() == list(range(7))
-            assert z['counts'][:, 0, 0, 0].tolist() == list(range(7))
+        z = replay(rec.dir).arrays("tactile")
+        assert z['seq'].tolist() == list(range(7))
+        assert z['counts'][:, 0, 0, 0].tolist() == list(range(7))
         if hasattr(rec, "_writer"):
             assert not rec._writer._thread.is_alive()
     finally:
@@ -83,8 +84,8 @@ def test_backlog_is_bounded_fails_promptly_and_preserves_accepted_rows(tmp_path,
         meta = json.loads((rec.dir / "meta.json").read_text())
         assert meta['complete'] is False
         assert meta['counts']['tactile'] == 10
-        with np.load(rec.dir / "tactile.npz", allow_pickle=False) as z:
-            assert z['seq'].tolist() == list(range(10))
+        z = replay(rec.dir).arrays("tactile")
+        assert z['seq'].tolist() == list(range(10))
     finally:
         release.set()
         rec._writer.close(check=False)
@@ -114,7 +115,7 @@ def test_worker_io_failure_cannot_publish_a_complete_episode(tmp_path, monkeypat
         meta = json.loads((rec.dir / "meta.json").read_text())
         assert meta['complete'] is False and meta['stop_reason'] == 'write_error'
         assert 'simulated disk full' in meta['error']
-        assert not list(rec.dir.glob('*.npz'))
+        assert not list(rec.dir.glob('*.jsonl'))
         assert not rec._writer._thread.is_alive()
     finally:
         rec._writer.close(check=False)
@@ -138,8 +139,8 @@ def test_publication_waits_for_pending_chunks(tmp_path, monkeypatch):
                 release.set()
             finishing.result(timeout=5)
         assert json.loads((rec.dir / "meta.json").read_text())['complete'] is True
-        with np.load(rec.dir / "tactile.npz", allow_pickle=False) as z:
-            assert z['seq'].tolist() == [0, 1]
+        rows = [json.loads(line) for line in (rec.dir / "tactile_left.jsonl").read_text().splitlines()]
+        assert [r["oglo"]["seq"] for r in rows] == [0, 1]
     finally:
         release.set()
         rec._writer.close(check=False)
@@ -153,7 +154,7 @@ def test_record_keeps_polling_while_chunks_are_blocked(tmp_path, monkeypatch):
     info, status = baseline.info, baseline.status()
     baseline.close()
     original_recorder = module.Recorder
-    monkeypatch.setattr(module, 'Recorder', lambda g, path: original_recorder(g, path, chunk_samples=2))
+    monkeypatch.setattr(module, 'Recorder', lambda g, path, **kw: original_recorder(g, path, chunk_samples=2, **kw))
 
     class Device:
         dropped = {}
@@ -177,8 +178,8 @@ def test_record_keeps_polling_while_chunks_are_blocked(tmp_path, monkeypatch):
                           host_t=ns/1e9, host_t_ns=ns, host_received_ns=ns)
             return SampleBatch(
                 tactile=(Frame(**common, counts=np.zeros((5,4,4),dtype=np.uint16)),),
-                imu=(ImuSample(**common, accel=(0,0,1), gyro=(0,0,0)),),
-                mag=(MagSample(**common, field=(0,0,1)),),
+                imu=(ImuSample(**common, accel=(0,0,1), gyro=(0,0,0), raw=(0,0,4096,0,0,0)),),
+                mag=(MagSample(**common, field=(0,0,1), raw=(0,0,1)),),
             )
 
     device = Device()

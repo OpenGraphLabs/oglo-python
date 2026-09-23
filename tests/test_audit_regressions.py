@@ -15,12 +15,13 @@ from oglo._ownership import DeviceLease
 
 
 @pytest.mark.parametrize('name', ['tactile', 'imu', 'mag'])
-@pytest.mark.parametrize('legacy', [False, True])
-def test_replay_clock_work_is_linear(monkeypatch, name, legacy):
+def test_replay_clock_work_is_linear(monkeypatch, name):
+    legacy = False
     n = 256
     d = dict(seq=np.arange(n), t_us=np.arange(n), host_t=np.arange(n) / 1000,
              dropped=np.zeros(n), counts=np.zeros((n, 5, 4, 4)),
-             accel=np.zeros((n, 3)), gyro=np.zeros((n, 3)), field=np.zeros((n, 3)))
+             accel=np.zeros((n, 3)), gyro=np.zeros((n, 3)), field=np.zeros((n, 3)),
+             raw=np.zeros((n, 6)), raw_valid=np.zeros(n, dtype=bool))
     if not legacy:
         d.update(device_time_us=np.arange(n) + 2**32,
                  host_t_ns=np.arange(n) + 100, host_received_ns=np.arange(n) + 200)

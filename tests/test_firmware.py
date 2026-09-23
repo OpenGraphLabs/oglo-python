@@ -497,3 +497,46 @@ def test_health_distinguishes_retained_frame_retries_from_actual_loss(counter):
         with pytest.raises(pkg.FirmwareError, match=counter) as caught:
             protocol.basic_health(port, seconds=.2)
         assert caught.value.observation['status_after'][counter] == 1
+
+
+def test_merge_inventory_uses_latest_failure_without_changing_local_recovery(policy):
+    from oglo.firmware import merge_inventory
+    def report(device, state, date):
+        result = inventory(policy)
+        row = next(d for d in result['devices'] if d['serial'] == device['serial'])
+        row.update(state=state, observed_at=date, verified_at=date if state == 'verified' else None,
+                   running_image_sha256=pkg.RUNNING_SHA if state == 'verified' else None)
+        return result
+    left = report(DEVICE, 'verified', '2026-09-23T00:00:00+00:00')
+    right = report(RIGHT, 'verified', '2026-09-23T01:00:00+00:00')
+    assert merge_inventory(policy, [left, right])['all_verified_in_saved_history']
+    failed = report(RIGHT, 'pending', '2026-09-23T02:00:00+00:00')
+    assert not merge_inventory(policy, [failed, left, right])['all_verified_in_saved_history']
+    assert read_journal(worker.identity(RIGHT)) is None
+    wrong = copy.deepcopy(right); wrong['devices'][1]['usb_serial'] = 'CCCCCCCCCCCC'
+    with pytest.raises(pkg.FirmwareError, match='identity mismatch'):
+        merge_inventory(policy, [wrong])
+    wrong = copy.deepcopy(right); wrong['policy_sha256'] = 'a' * 64
+    with pytest.raises(pkg.FirmwareError, match='policy'):
+        merge_inventory(policy, [wrong])
+
+
+@pytest.mark.parametrize('pair', [False, True])
+def test_explicit_no_update_is_preserved_across_internal_connections(policy, monkeypatch, pair):
+    import oglo
+    import oglo.firmware as fw
+    monkeypatch.setenv('OGLO_FIRMWARE_POLICY', str(policy.path))
+    monkeypatch.setattr(fw, 'connect_prepared', lambda *a, **kw: pytest.fail('read-only override was lost'))
+    candidates = [SimpleNamespace(device='/dev/left', serial_number=DEVICE['usb_serial']),
+                  SimpleNamespace(device='/dev/right', serial_number=RIGHT['usb_serial'])]
+    monkeypatch.setattr(oglo, 'find_port', lambda: candidates[0])
+    monkeypatch.setattr(oglo, 'list_candidates', lambda: candidates)
+    def opened(port, *, timeout):
+        d = DEVICE if port == '/dev/left' else RIGHT
+        return SimpleNamespace(info=SimpleNamespace(side=d['side'], serial=d['serial']), close=lambda: None)
+    monkeypatch.setattr(oglo, '_connect_usb_port', opened)
+    if pair:
+        left, right = oglo.connect_pair(firmware_policy=False)
+        assert left.info.side == 'left' and right.info.side == 'right'
+    else:
+        assert oglo.connect(transport='auto', firmware_policy=False).info.serial == DEVICE['serial']

@@ -211,7 +211,58 @@ def inventory(policy):
         entry = read_journal(identity(device))
         same_policy = entry and entry.get('policy_sha256') == policy.sha256
         rows.append({**device, 'state': entry['state'] if same_policy else 'not_verified_for_policy',
-                     'verified_at': entry.get('updated_at') if same_policy else None,
+                     'observed_at': entry.get('updated_at') if same_policy else None,
+                     'verified_at': entry.get('updated_at') if same_policy and entry['state'] == 'verified' else None,
                      'running_image_sha256': entry.get('after', {}).get('fwinfo', {}).get('running_image_sha256') if same_policy else None})
-    return {'policy_id': policy.policy_id, 'policy_sha256': policy.sha256, 'devices': rows,
+    return {'schema': 1, 'policy_id': policy.policy_id, 'policy_sha256': policy.sha256, 'devices': rows,
             'all_verified_in_saved_history': all(r['state'] == 'verified' for r in rows)}
+
+
+def merge_inventory(policy, reports):
+    """Reconcile exported history without importing it into trusted recovery state."""
+    from datetime import datetime
+    from ._firmware_package import RUNNING_SHA
+    policy = resolve_policy(policy)
+    if policy is None:
+        raise FirmwareError('an explicit firmware policy is required')
+    merged = {d['serial']: {**d, 'state': 'not_verified_for_policy', 'observed_at': None,
+                          'verified_at': None, 'running_image_sha256': None} for d in policy.devices}
+    times = {}
+    for report in reports:
+        if (not isinstance(report, dict) or report.get('schema') != 1 or
+                report.get('policy_sha256') != policy.sha256 or report.get('policy_id') != policy.policy_id or
+                not isinstance(report.get('devices'), list)):
+            raise FirmwareError('inventory export belongs to a different or invalid policy')
+        seen = set()
+        for row in report['devices']:
+            if not isinstance(row, dict):
+                raise FirmwareError('invalid inventory row')
+            name = row.get('serial')
+            if name not in merged or name in seen:
+                raise FirmwareError('unknown or duplicate inventory identity')
+            seen.add(name)
+            if any(row.get(k) != merged[name][k] for k in ('usb_serial', 'side')):
+                raise FirmwareError('inventory physical/logical identity mismatch')
+            state = row.get('state')
+            if state not in ('verified', 'pending', 'needs_attention', 'not_verified_for_policy'):
+                raise FirmwareError('invalid inventory state')
+            if state == 'not_verified_for_policy':
+                continue
+            try:
+                instant = datetime.fromisoformat(row['observed_at'].replace('Z', '+00:00'))
+                if instant.tzinfo is None:
+                    raise ValueError('timezone is missing')
+            except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                raise FirmwareError('inventory observation needs an explicit timezone') from exc
+            if state == 'verified' and (row.get('running_image_sha256') != RUNNING_SHA or row.get('verified_at') != row.get('observed_at')):
+                raise FirmwareError('verified export lacks the approved runtime hash and time')
+            # A newer failure supersedes an older success. Tied conflicting
+            # observations fail closed rather than arbitrarily choosing a host.
+            if name in times and instant == times[name] and row != merged[name]:
+                raise FirmwareError('conflicting inventory observations at the same time')
+            if name not in times or instant > times[name]:
+                times[name] = instant
+                merged[name] = dict(row)
+    rows = list(merged.values())
+    return {'schema': 1, 'policy_id': policy.policy_id, 'policy_sha256': policy.sha256,
+            'devices': rows, 'all_verified_in_saved_history': all(r['state'] == 'verified' for r in rows)}

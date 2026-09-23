@@ -1,200 +1,153 @@
 # Data reference
 
-For what to collect and how the camera/glove session is structured, see the
-[`OGLData` collection specification](09_data_specification.md).
+OGLO provides touch, acceleration, rotation, and magnetic measurements. For saved
+file layouts, see the [data specification](09_data_specification.md).
 
 ## The three streams
 
-Over USB each tagged stream has its own rate, sequence number and timestamp. BLE
-schema 6 instead carries tactile, IMU and optional mag in one outer packet sequence;
-the SDK restores the signed IMU capture-time offset but cannot invent independent
-sensor sequence numbers that are not on the wire.
-
-| Stream | Rate over USB | Yields |
+| Python method | Data | Default USB delivery |
 | --- | --- | --- |
-| `g.tactile()` | 250 Hz | `Frame` |
-| `g.imu()` | about 500 packets/s | `ImuSample` |
-| `g.mag()` | 125 Hz | `MagSample` |
+| `glove.tactile()` | Touch values in a `Frame` | About 250 packets/s |
+| `glove.imu()` | Acceleration and rotation in an `ImuSample` | About 500 packets/s |
+| `glove.mag()` | Magnetic field in a `MagSample` | About 125 packets/s, when available |
 
-Different packet rates are normal, not a quirk. Every sensor has its own physics,
-and forcing a common rate either fabricates data for the slow one or discards it from
-the fast one.
+Each USB stream has its own sequence numbers and device timestamps. Keep the
+streams separate: their sample counts normally differ.
 
-The IMU packet cadence is not the physical sensor ODR. Firmware configures the
-accelerometer/gyroscope at 200 Hz but polls/emits its latest value on a nominal 2 ms
-schedule, so adjacent 500-packet/s records may contain the same physical measurement.
-
-The supported contract is firmware 0.9.10 or newer with schema 6. The current
-committed golden firmware is 0.9.16, while deployed schema-6 gloves at or above 0.9.10
-remain supported. `0.1.0rc4` rejects older firmware in live connections, vector capture,
-and replay instead of selecting a best-effort decoder.
-
-## Identity and side
-
-`g.info.serial` is the logical glove serial reported by CONFIG. It is distinct from
-the USB chip/descriptor serial and from a BLE address or advertisement name.
-`oglo.connect(serial=...)` matches this logical value and verifies it after opening a
-specific `port=` or BLE address.
-
-`g.info.side` chooses left versus right. `connect_pair()` requires one left glove,
-one right glove, and distinct logical serials.
-
-`g.info.has_mag` means firmware successfully initialised the magnetometer at boot.
-Supported firmware cannot distinguish an intentionally absent part from one that failed
-boot detection, and it has no runtime read-failure/freshness counter. Therefore a
-clean status snapshot is not proof that every magnetometer value is fresh; applications
-that require heading-quality data need a firmware freshness flag and a physical field
-sanity test.
+The IMU sensor itself measures at 200 Hz. Firmware sends its latest value about
+500 times per second, so adjacent packets can contain the same measurement.
 
 ### Over BLE
 
-BLE carries one IMU and one magnetometer reading per tactile sample, so those two
-arrive at the tactile rate rather than their own, and the magnetometer repeats.
+BLE packets combine tactile, IMU, and optional magnetic data under one packet
+sequence. IMU and magnetic values arrive at the tactile rate; values may repeat.
+The SDK preserves the IMU capture-time offset carried by the packet.
 
-**BLE throughput is not something to assume from the packet format.** Notifications
-can arrive below their nominal cadence because of the host and radio link. Measure
-the actual setup with `oglo doctor`; use USB for a capture whose rate or timing
-matters.
+Actual delivery depends on the host and radio link. Use USB when rate or timing
+matters, and measure delivery with `oglo doctor`.
+
+## Identity and side
+
+| Field | Meaning |
+| --- | --- |
+| `glove.info.serial` | Configured glove serial; use this with `connect(serial=...)` |
+| `glove.info.side` | `left` or `right` |
+| `glove.info.channels` | Finger names in the order sent by this glove |
+| `glove.info.has_mag` | Magnetometer was detected at boot |
+
+The configured serial differs from a USB descriptor serial or BLE address.
+`connect_pair()` requires one left glove, one right glove, and distinct serials.
+
+`has_mag` cannot distinguish an absent magnetometer from one that failed boot
+setup. Firmware also lacks a counter for stale magnetic readings. A healthy
+status alone does not prove that every magnetic value is fresh.
 
 ## `Frame`
 
 | Field | Meaning |
 | --- | --- |
-| `counts` | `(5, 4, 4)` uint16, **raw 12-bit ADC, not force** |
-| `residual` | counts above the zero baseline, float32 |
-| `seq` | per-stream sample number; a gap is loss |
-| `t_us` | raw device u32 microseconds; wraps about every 71.6 minutes |
-| `device_time_us` | the same clock unwrapped to a continuous 64-bit timeline |
-| `host_t` / `host_t_ns` | host monotonic time at the USB-read/BLE-notify boundary, in seconds/nanoseconds |
-| `host_received_ns` | the same observed receive boundary, kept explicitly in recordings |
-| `dropped` | samples missing since the previous frame |
+| `counts` | `(5, 4, 4)` uint16 touch values: RAW ADC or firmware CLEAN, depending on mode |
+| `residual` | CLEAN values as float32; raises in RAW mode |
+| `seq` | Sequence number; gaps indicate missing samples |
+| `t_us` | Raw 32-bit device time in microseconds; wraps about every 71.6 minutes |
+| `device_time_us` | Device time extended across rollover |
+| `host_t` / `host_t_ns` | Host arrival time in seconds / integer nanoseconds |
+| `host_received_ns` | The same arrival time, named explicitly in recordings |
+| `dropped` | Missing samples since the previous accepted sequence |
 
-`counts` is indexed `[finger][row][col]`. **Finger order comes from
-`g.info.channels`, per hand.** The left hand is reversed:
+Values are **ADC counts, not force in newtons**. No force conversion is available.
+RAW values can be around 550 even with nothing pressed. See
+[calibration](03_calibration.md) for interpreting RAW and CLEAN data.
 
+### Finger order
+
+`counts[finger][row][column]` follows `glove.info.channels`. Typical orders are:
+
+```text
+right: thumb, index, middle, ring, pinky
+left:  pinky, ring, middle, index, thumb
 ```
-right  ['thumb', 'index', 'middle', 'ring', 'pinky']
-left   ['pinky', 'ring', 'middle', 'index', 'thumb']
-```
 
-A hardcoded list mislabels every left-hand dataset, and the numbers look perfectly
-fine while it happens.
+Read the reported order rather than hardcoding it.
 
 ### One physical layout for both hands: `oriented_counts`
 
 ```python
 from oglo import oriented_counts
-phys = oriented_counts(frame.counts, g.info.channels, g.info.side)   # or frame.oriented(g.info)
+
+physical = oriented_counts(frame.counts, glove.info.channels, glove.info.side)
+# Equivalent: physical = frame.oriented(glove.info)
 ```
 
-`phys` is `(5, 4, 4)` in the canonical order thumb, index, middle, ring, pinky for
-either hand, with `col 0` at the fingertip of every finger. `frame.counts` is left
-exactly as the device sent it.
+The result is `(5, 4, 4)`, ordered thumb to pinky, with column 0 at every fingertip.
+It leaves the original `frame.counts` unchanged.
 
-The second thing it fixes is not obvious from the wire: the left thumb's flex
-(THUMB_L) is the one sensor SKU whose COL electrodes run the other way along the
-finger, so on a left glove that finger's fingertip is `col 3` while every other
-fingertip is `col 0`. This was read out of the Rev-T KiCad sources and measured
-on OGLO-L-00028 on 2026-09-05. Training on raw `counts` without this flip teaches a
-model that the left thumb points backwards.
-
-The `row` axis passes through as scanned. Which end of it faces the thumb has not
-been measured on either hand, so the SDK does not claim to know.
-
-**An untouched taxel reads around 550, not 0.** Use `residual`, or turn on a clean
-stream. See [calibration](03_calibration.md).
-
-There is no newtons conversion. Nobody has run the calibration that would produce
-one, and inventing a factor would be worse than not having it.
+The function flips the left thumb's columns. Rows remain as scanned because
+their physical direction is unverified.
 
 ## `ImuSample` and `MagSample`
 
-| Field | Unit | Full scale |
-| --- | --- | --- |
-| `accel` | g | +/-8 g, 4096 LSB/g |
-| `gyro` | deg/s | +/-2000 deg/s, 16.4 LSB/(deg/s) |
-| `field` | gauss | +/-4 gauss, 6842 LSB/gauss |
-
-Datasheet-confirmed against the ranges the firmware actually programs: ICM-42688-P
-DS-000347 Rev 1.2, LIS3MDL DocID024204 Rev 4. `MagSample.magnitude` should read
-around 0.5 G outdoors, which is a cheap check that nothing is scaled wrong.
+| Field | Unit | Full scale | Raw scale |
+| --- | --- | --- | --- |
+| `accel` | g | ±8 g | 4096 integer counts/g |
+| `gyro` | degrees/second | ±2000 degrees/second | 16.4 integer counts per degree/second |
+| `field` | gauss | ±4 gauss | 6842 integer counts/gauss |
 
 ### Sensor axes
 
-`accel` and `gyro` are in the IMU's own frame. To get them into a frame you can point
-at, use `accel_frame` and `gyro_frame`:
+`accel` and `gyro` use the IMU sensor's axes. Use `accel_frame` and `gyro_frame`
+for the measured board axes:
 
-```
-+Z   out of the face the XIAO module is on
-+X   toward the USB-C connector
-+Y   +Z cross +X
-```
+```text
++X: toward the USB-C connector
++Z: out of the face carrying the XIAO module
++Y: +Z cross +X
 
-The rotation is **measured, not derived**: six gravity poses on two boards
-(`OGLO-R-TEST04` and `OGLO-L-TEST01`) gave identical matrices.
-
-```
-frame X = +sensor y     frame Y = +sensor x     frame Z = -sensor z
+board X = sensor y
+board Y = sensor x
+board Z = -sensor z
 ```
 
-Reproduce it with `python3 tools/measure_axes.py`.
-
-**The magnetometer axes are not known.** The same procedure gave different answers on
-the two boards, and `|B|` swung between 0.70 and 1.34 G across poses when Earth's field
-is a constant ~0.5 G, so the readings were contaminated by something local. Treat
-`field` as being in the sensor's own unknown frame.
-
-**There is no fused orientation.** `frame.orientation` raises. Roll and pitch would be
-available from the accelerometer, but heading needs the magnetometer, and its axes are
-exactly the part that is not measured. A quaternion built on a guessed axis looks
-plausible and is wrong, which is the worst way to be wrong.
+Magnetometer axes are unverified. `field` stays in the sensor's own axes.
+The SDK provides no fused orientation; `frame.orientation` raises an error.
 
 ## Loss and sequence anomalies are never merged
 
-| Where | Meaning |
+| Counter | What happened |
 | --- | --- |
-| `frame.dropped` | end-to-end sequence gap; device queue and transport loss can both contribute |
-| `g.dropped["overflow_*"]` | **we** discarded it, because nobody was reading that stream |
-| `g.dropped["duplicate_*"]`, `g.dropped["backward_*"]` | anomalies, never miscounted as billions of drops |
-| `g.dropped["transport_malformed_usb"]` | a USB `TAG` magic was followed by an impossible type/length header |
-| `g.dropped["transport_malformed_ble"]` | a BLE notification could not satisfy the schema-6 packet contract |
-| `g.status().tag_dropped` | device queue-drop snapshot |
+| `frame.dropped` | A sequence gap; loss may be in the device queue or transport |
+| `glove.dropped["overflow_*"]` | The SDK's queue filled because the application did not read it fast enough |
+| `glove.dropped["duplicate_*"]` | A repeated sequence number |
+| `glove.dropped["backward_*"]` | A sequence number moved backwards |
+| `glove.dropped["transport_malformed_usb"]` | Invalid USB packet type or length |
+| `glove.dropped["transport_malformed_ble"]` | Invalid BLE packet |
+| `glove.status().tag_dropped` | Device queue-drop counter |
 
-They need different fixes, so they are reported separately. Overflow in particular is
-not a fault: iterate `tactile()` and ignore `imu()` and the IMU queue fills and drops,
-by design, rather than growing without limit.
+An ignored stream can fill its queue. For example, reading only tactile samples
+may produce IMU overflow counts. This prevents the unused queue growing forever.
 
-`g.info.device_dropped` is only a connect/config snapshot and may be zero on firmware
-that exposes the counter only through status. `oglo.record()` stores start/end status
-and a capture-window delta.
+`glove.info.device_dropped` is a connection-time snapshot. Recording stores start
+and end status plus their differences; use those to assess a capture.
 
 ## Timestamps
 
-`t_us` is the raw 32-bit device counter. Use `device_time_us` to order samples and
-measure spacing within one glove across rollover; both are **meaningless across two
-gloves**. The unwrapped value deliberately starts with one spare 32-bit epoch so an
-older IMU packet arriving just after a tactile rollover can still be represented
-without a negative integer. Its absolute number is therefore arbitrary; use ordering
-and differences, not its origin.
+Use **device time within one glove** and **host arrival time across streams on one
+computer**.
 
-`host_t`, `host_t_ns` and `host_received_ns` mark the observed transport receive
-boundary. The SDK does not move samples backwards from that boundary using device
-time, because buffered reads can make such estimates run backwards. Every sample
-decoded from one USB read or BLE notification can therefore share the same host
-timestamp. Use the integer nanosecond fields when float precision matters.
+- `device_time_us` handles `t_us` rollover. Compare differences, not its arbitrary
+  starting value.
+- Samples from one USB read or BLE notification can share a host timestamp.
+- Host time marks receipt, not the exact instant the sensor measured the value.
+  USB/BLE buffering and host scheduling add delay.
+- Separate devices have separate clocks. Separate computers also have separate
+  monotonic clocks. Do not subtract these clocks to infer synchronization.
 
-Host timestamps relate arrival events on one computer, but they are not a
-hardware-sync proof or exact sensor-capture times: USB/BLE buffering and host
-scheduling still contribute unknown delay.
-
-Recordings store both, plus a wall-clock anchor, because each answers a question the
-others cannot.
+Use integer nanosecond fields to avoid losing precision. Recordings also keep
+wall-clock times for identifying when a session happened.
 
 ## Integrity limit of supported firmware
 
-The supported tagged USB frame has a magic and length but no checksum/CRC. Firmware
-0.9.11 and newer bound TinyUSB writes so a stopped host cannot hold the TX path
-forever, but
-that deadline is not payload integrity. The SDK cannot mathematically prove that
-every plausible payload bit is intact. A future protocol
-needs framed CRC protection for that guarantee.
+USB packets lack a payload checksum. The SDK detects malformed packets and
+sequence problems, but cannot detect every changed payload bit.
+
+See [compatibility](06_compatibility.md) for supported versions and test coverage.

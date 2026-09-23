@@ -134,8 +134,11 @@ batches are allowed; normal `connect_pair()` still requires both selected hands.
 
 Inventory includes every policy device, including units never connected. It is
 explicitly saved history, not a live-health claim. Two successes never imply that
-40 devices completed. Cross-host inventory merge is not implemented in this
-candidate; retain each host's export and reconcile by both identities.
+40 devices completed. Merge exports from hosts using the same policy with
+`oglo firmware inventory --policy lab-firmware.json --merge other-host.json`.
+Both identities and policy hashes must agree; the most recent observation wins,
+including failures. Merging history never changes the recovery journal or skips
+the next live device check.
 
 Default state directory is `$XDG_STATE_HOME/oglo` or `~/.local/state/oglo` on
 macOS/Linux; `OGLO_STATE_DIR` overrides it. All cooperating SDK processes for the

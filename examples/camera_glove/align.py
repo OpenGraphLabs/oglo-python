@@ -37,8 +37,8 @@ def align(session, output, max_delta_ms):
     manifest: oglo.OGLData = json.loads(
         (session / "manifest.json").read_text(encoding="utf-8")
     )
-    if manifest["schema"] != "oglo-camera-example.v1" or not manifest["complete"]:
-        raise ValueError("Expected a complete oglo-camera-example.v1 session")
+    if manifest["schema"] != "oglo-camera-example.v2" or not manifest["complete"]:
+        raise ValueError("Expected a complete oglo-camera-example.v2 session")
     if manifest["host_clock"] != "time.monotonic_ns" or manifest["same_host"] is not True:
         raise ValueError("This preview requires the same host monotonic clock for all streams")
     camera = manifest["camera"]

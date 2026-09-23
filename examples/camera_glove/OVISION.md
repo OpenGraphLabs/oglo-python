@@ -1,171 +1,159 @@
-# Case 2: OVISION v1 + OGLO
+# OVISION v1 + OGLO
 
-Use this example for **OVISION v1 (OVISION-EGO-V1)**: the SC233HGS stereo module
-with a USB 2.0 connection and 3840×1080 side-by-side video at 30 FPS. This example
-selects its H.264 stream with YCTC metadata. Connect **OVISION and the
-OGLO glove(s) to the same Linux computer** (a Linux PC or Raspberry Pi). OVISION
-does not connect through a glove. This case uses SyncField's native OVISION
-adapter; [case 1](README.md) uses an ordinary USB webcam through OpenCV.
+Record OVISION stereo video and glove data on **the same Linux computer**.
+This guide is for OVISION-EGO-V1, the SC233HGS USB stereo module. It uses the
+native SyncField adapter to keep video, exposure timing, motion data, and calibration.
 
-| | USB webcam | OVISION v1 |
-| --- | --- | --- |
-| Capture entry point | `capture.py` | `ovision.py` |
-| Camera connection | OpenCV camera index | Linux V4L2 device path |
-| Camera recording | RGB video, encoded to MP4 | Original H.264 stereo, muxed without re-encoding |
-| Timing | Host read-return timestamp | Host H.264 packet-arrival timestamp plus native exposure times |
-| Additional data | No native camera IMU/calibration capture | Stereo metadata, camera IMU/magnetometer, per-device calibration |
-| Glove data | Original SDK episodes | Original SDK episodes |
-| Offline join | `align.py`, using host arrival time | Same `align.py`; native device times remain available for later refinement |
+For an ordinary webcam, use the [webcam guide](README.md).
 
 ## 1. Install and select OVISION
 
-This case requires **Linux and Python 3.12+**. From the OGLO repository root:
+Use **Linux and Python 3.12+** in a virtual environment. From the repository root:
 
 ```bash
-python3 -m pip install -e .
-python3 -m pip install -r examples/camera_glove/requirements-ovision.txt
+python -m pip install -e .
+python -m pip install -r examples/camera_glove/requirements-ovision.txt
 oglo doctor
 v4l2-ctl --list-devices
 v4l2-ctl --device /dev/video0 --list-formats-ext
 ```
 
-`v4l2-ctl` is provided by `v4l-utils` on Debian/Ubuntu/Raspberry Pi OS. Locate the
-OVISION video node and confirm that it offers 3840×1080 H.264 at 30 FPS. Replace
-`/dev/video0` in the commands with that node. Prefer a stable `/dev/v4l/by-id/…`
-path when available. Multiple `/dev/video*` entries may belong to one device;
-select its video capture node, not a metadata-only node. The OS account needs
-access to the video and glove serial devices.
+If you installed a candidate wheel, use its matching examples and skip
+`pip install -e .`.
 
-Use a suitable USB data cable/port and close any other camera or recording app.
-Resolve doctor errors first. The native adapter requires valid per-unit flash
-calibration, INTERNAL stereo FSYNC mode, and readable YCTC exposure/IMU metadata;
-it refuses to start if these are unavailable. This example does not change the
-FSYNC mode or flash calibration. Mac/Windows webcam access alone does not provide
-the Linux UVC extension-unit path used here.
+`v4l2-ctl` comes from `v4l-utils` on Debian, Ubuntu, and Raspberry Pi OS.
+Find the OVISION **video capture node** that offers **3840×1080 H.264 at 30 FPS**.
+Replace `/dev/video0` with that path. Prefer `/dev/v4l/by-id/…` when available.
+A metadata-only node is not the video source.
 
-The dependency is pinned to `syncfield[ovision]==0.8.14`, whose adapter API and
-sidecar fields this example uses. During setup it applies and verifies its image
-profile: 10,000 µs exposure, 1× gain, and 15,360 kbps bitrate. The read-back profile
-is saved with camera calibration. OGLO calibration/mode/rates remain unchanged.
+Close other recording apps. Your OS account needs access to the camera and glove
+serial devices. Resolve `doctor` errors first.
+
+The camera must have valid calibration in flash, INTERNAL stereo FSYNC mode,
+and readable YCTC exposure/IMU metadata. The adapter checks these before starting;
+it does not change FSYNC mode or flash calibration. This capture path requires
+Linux even if the camera appears as a webcam on macOS or Windows.
+
+The example pins `syncfield[ovision]==0.8.14`. Setup applies and verifies:
+
+| Camera setting | Value |
+| --- | --- |
+| Exposure | 10,000 µs |
+| Gain | 1× |
+| Bitrate | 15,360 kbps |
+
+The verified profile is saved with camera calibration. Glove settings stay unchanged.
 
 ## 2. Record the complete session
 
 ```bash
-python3 examples/camera_glove/ovision.py \
+python examples/camera_glove/ovision.py \
   --video-device /dev/video0 --seconds 30 --pair --preview \
   --output captures/ovision_001 \
   --task "Pick up a cup and put it down"
 ```
 
-Omit `--pair` for one glove; add `--serial YOUR_GLOVE_SERIAL` to select that glove.
-`--camera-serial YOUR_CAMERA_USB_SERIAL` optionally records a camera inventory
-label; **the device path selects the camera**, and that label is not independently
-verified. Actual per-unit calibration is always read from the selected device.
+- Omit `--pair` for one glove. Use `--serial YOUR_GLOVE_SERIAL` to select it.
+- Use a new `--output` folder for every attempt.
+- `--camera-serial` adds an inventory label only. The device path selects the
+  camera; the label is not independently checked.
 
-The preview is a low-rate left-eye view; it does not represent the recording
-frame rate. Keep hands and contact surfaces visible. Make visible fingertip taps
-near the beginning and end to help assess camera-to-glove timing later. Let the
-run and final file checks finish. `q` or Ctrl-C leaves an incomplete session.
+The preview is a slow left-eye view, not a measure of recording rate. Keep hands
+and contact surfaces visible, and make visible fingertip taps near the start and
+end for timing checks. Let final file checks finish. `q` or Ctrl-C leaves an
+incomplete session.
 
 ## 3. Files to send
 
-Send the entire new session directory, optionally zipped:
+Send the whole session folder, optionally zipped:
 
 ```text
 captures/ovision_001/
   manifest.json
   camera/
-    cam_ego.mp4                 original 3840×1080 side-by-side H.264
-    cam_ego.stereo.jsonl        native frame and exposure metadata
-    cam_ego.imu.jsonl           camera-board acceleration and angular velocity
-    cam_ego.accel.jsonl         separate camera acceleration samples
-    cam_ego.gyro.jsonl          separate camera gyroscope samples
-    cam_ego.mag.jsonl           camera magnetometer samples
-    cam_ego.calibration.json    per-unit geometry, identity, capture profile
-    cam_ego.calibration.yaml    original Kalibr calibration text
-    cam_ego.calibration.bin     original calibration blob
-    sync_point.json            camera recording's host/wall-clock anchor
-    finalization.json          native adapter's result and health report
-    timestamps.jsonl           common-format references for the join example
+    cam_ego.mp4
+    cam_ego.stereo.jsonl
+    cam_ego.imu.jsonl
+    cam_ego.accel.jsonl
+    cam_ego.gyro.jsonl
+    cam_ego.mag.jsonl
+    cam_ego.calibration.json
+    cam_ego.calibration.yaml
+    cam_ego.calibration.bin
+    sync_point.json
+    finalization.json
+    timestamps.jsonl
   gloves/left/
     calibration.json
-    ep_0001/{meta.json, tactile.npz, imu.npz, mag.npz}
-  gloves/right/                present with --pair; same glove layout
+    ep_0001/              sensor JSONL and metadata
+  gloves/right/           same layout when using --pair
 ```
 
-Each recorded video frame contains left and right views in that order, each
-1920×1080. Keep the packed video intact; do not crop/split/re-encode it for handoff.
-Preserve every native sidecar and its field names, values, units and ordering.
-The JSON calibration includes `streams.left/right` intrinsics/distortion,
-`stereo.T_right_left`, and camera/IMU geometry. Do not substitute another unit's
-calibration. Glove finger order and raw/clean interpretation still come from
-each episode's `meta.json`.
+| Camera files | Contents |
+| --- | --- |
+| `cam_ego.mp4` | Original H.264; left then right view, each 1920×1080 |
+| `cam_ego.stereo.jsonl` | Frame numbers and per-eye exposure timing |
+| `cam_ego.imu/accel/gyro/mag.jsonl` | Camera motion and magnetic samples |
+| `cam_ego.calibration.*` | This camera's geometry, identity, and capture profile |
+| `sync_point.json`, `finalization.json` | Clock anchor and capture report |
+| `timestamps.jsonl` | Common camera timing format used by `align.py` |
 
-The shared session schema remains `oglo-camera-example.v1`, with
-`camera.kind: "ovision"` and paths to the native artifacts. This is an example
-handoff bundle, not a full SyncField-orchestrator episode. An existing production
-importer must use its own session contract; the native camera files are retained
-so an adapter can consume them without reconstructing missing sensor data.
+Keep the packed video and every accompanying file, including empty magnetic
+files. Use only the calibration saved from that camera.
+
+Glove files follow the [same layout as the webcam example](README.md#3-keep-the-complete-output-folder).
+Their JSONL rows match `og-skill` sensor fields. The overall session remains the
+SDK's `oglo-camera-example.v2` format; a full production upload needs its own
+session descriptors and checks.
 
 ## 4. Fields that link OVISION and OGLO
 
-| Native OVISION field | Common example field | How OGLO uses it |
+| OVISION field | Common camera field | Meaning |
 | --- | --- | --- |
-| `cam_ego.stereo.jsonl.frame_number` | `timestamps.jsonl.frame_index` | Zero-based index into the packed video; both eyes belong to that frame |
-| `cam_ego.stereo.jsonl.capture_ns` | `timestamps.jsonl.host_received_ns` | Compare against each glove NPZ's `host_received_ns` on the same Linux host |
-| `device_timestamp_ns` / `left_exposure_start_ns` | `device_timestamp`, unit `ns`, meaning `left_exposure_start` | Camera-local exposure time; preserve for clock fitting, not direct subtraction from a glove clock |
-| `right_exposure_start_ns`, `stereo_skew_us`, per-eye exposure durations | Retained in native stereo JSONL | Inspect left/right timing and exposure intervals |
-| `user_data_seq`, per-eye GPIO trigger indices | Retained in native stereo JSONL | Native metadata/trigger evidence; not OGLO sample indices |
+| `frame_number` | `frame_index` | Index of the packed video frame |
+| `capture_ns` | `host_received_ns` | Host arrival time of the H.264 packet |
+| `device_timestamp_ns` / `left_exposure_start_ns` | `device_timestamp` | Left exposure time on the camera's clock |
 
-For example, a native frame could contain (excerpt):
+Compare camera `host_received_ns` with glove JSONL `capture_ns`. Do not compare camera and glove device clocks directly.
 
-```json
-{"frame_number": 12, "capture_ns": 125000000000, "device_timestamp_ns": 9000000000, "left_exposure_start_ns": 9000000000, "right_exposure_start_ns": 9000020000, "stereo_skew_us": 20}
-```
+For example, `capture_ns: 125000000000` is a host time. An exposure timestamp of
+`9000000000` is a different clock. Only the host time can be directly compared
+with glove arrival times on that computer.
 
-The added `timestamps.jsonl` row uses `frame_index: 12`,
-`host_received_ns: 125000000000` and `device_timestamp: 9000000000`.
-Only **125000000000** is directly comparable with OGLO's host receive timestamps.
-The native stereo row is kept unchanged. In the pinned adapter, its
-`clock_source: "device_monotonic"` label refers to the available device clock;
-`capture_ns` itself is still stamped with host `time.monotonic_ns()` at packet
-arrival. Do not reinterpret it as exposure time based on that label.
+In the pinned adapter, `clock_source: "device_monotonic"` describes the available
+device clock. Its `capture_ns` field still holds host arrival time; the label does
+not turn that field into exposure time.
 
-Run the same offline preview:
+Run an offline arrival-time preview:
 
 ```bash
-python3 examples/camera_glove/align.py captures/ovision_001 --max-delta-ms 50
+python examples/camera_glove/align.py captures/ovision_001 --max-delta-ms 50
 ```
 
-The output references the nearest tactile, glove IMU and glove magnetometer row
-for each video frame, independently for each hand. It reports signed time deltas
-and leaves unmatched samples `null`. See the [join walkthrough](README.md#4-which-fields-combine-camera-and-oglo-data)
-for reading those references. The 50 ms tolerance is illustrative, not a measured
-synchronization bound.
+See the [join walkthrough](README.md#run-the-offline-join-preview) to read matches.
+The 50 ms tolerance is a search setting, not a synchronization guarantee.
 
-**The camera's IMU and a glove's IMU are different sensors in different frames.**
-Preserve both. OVISION's combined IMU sidecar stores acceleration in m/s² and gyro
-in rad/s; its separate acceleration sidecar uses g. OGLO stores acceleration in g
-and gyro in deg/s. Native camera IMU `capture_ns` values are estimated from frame
-arrival plus device-time offsets; they are not independently measured USB arrival
-times for each IMU sample. Preserve their `device_timestamp_ns` and unit fields.
+### Camera and glove motion units differ
 
-OVISION internally synchronizes its stereo pair; that does not hardware-sync it
-with OGLO. H.264 encoding and USB buffering can add camera arrival delay. Do not
-apply a fixed latency correction from another setup or compare camera and glove
-device clocks directly. The OGLO team can use native exposure times, shared-host
-arrivals, and visible contact events to refine alignment. `alignment_validated`
-stays false even when file checks pass.
+| Data | Acceleration | Gyroscope |
+| --- | --- | --- |
+| OVISION combined IMU JSONL | m/s² | rad/s |
+| OVISION separate acceleration JSONL | g | — |
+| OGLO replay `accel` / `gyro` | g | degrees/s |
+| OGLO JSONL | Raw integer sensor counts | Raw integer sensor counts |
+
+The camera and gloves have separate sensors and axes. Camera IMU `capture_ns`
+values are estimated from frame arrival and device-time offsets, not independently
+measured USB arrivals for each IMU sample. Keep device timestamps and unit fields.
 
 ## Checks and limitations
 
-The example waits for valid native stereo/IMU metadata, finalizes the adapter,
-checks required camera artifacts, verifies frame metadata count and ordering,
-decodes the MP4 to check frame count, replays the OGLO files, and checks host-time
-overlap. Failures keep `manifest.complete: false` and an error. Keep those folders
-for diagnosis. Native drivers can still stall; file checks cannot prove image
-quality, exposure alignment, or zero undetected sensor loss.
+The example checks required files, stereo metadata order/counts, decoded video
+frame count, glove replay, and overlapping host time ranges. Failures leave
+`complete: false` and an error in `manifest.json`.
 
-Adapter reference: [SyncField OVISION source](https://github.com/OpenGraphLabs/syncfield-python/blob/535fb85c5f19fc7f6dc51e01f07ef38e2deb6549/src/syncfield/adapters/ovision_camera.py).
-The example's adapter calls were checked against the published
-[SyncField 0.8.14 package](https://pypi.org/project/syncfield/0.8.14/).
+OVISION synchronizes its two eyes internally, not the camera with the gloves.
+H.264 encoding and USB buffering add delay. Keep native exposure times and visible
+contact events for later alignment. File checks do not prove image quality,
+exposure alignment, or zero sensor loss; `alignment_validated` stays `false`.
+Native drivers can also stall. Try a short run before long collection.

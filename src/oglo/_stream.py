@@ -137,11 +137,6 @@ class DeviceTimeUnwrapper:
             self._latest = candidate
         return candidate
 
-    def shift_epoch(self) -> None:
-        """Move the current epoch forward once when a signed companion proves wrap."""
-        if self._latest is not None:
-            self._latest += self._MASK + 1
-
 
 @dataclass(frozen=True)
 class _Prepared:
@@ -213,30 +208,6 @@ class Demux:
         for packet in packets:
             prepared.extend(self._prepare(packet, fallback_received_ns))
 
-        # On the first poll around micros() rollover, packets from independently
-        # scheduled sensor producers can arrive in either order. If a post-wrap
-        # tactile sample (raw=100) is seen before an older IMU sample
-        # (raw=0xfffffa88), the latter initially unwraps to -1400. That is a valid
-        # relative time, but not a valid public uint64 timestamp. The negative value
-        # proves that the whole first batch belongs to the next epoch.
-        if prepared:
-            minimum = min(sample.device_us for sample in prepared)
-            if minimum < 0:
-                epochs = (-minimum + (1 << 32) - 1) // (1 << 32)
-                for _ in range(epochs):
-                    self._clock.shift_epoch()
-                shift = epochs << 32
-                prepared = [
-                    _Prepared(
-                        sample.kind,
-                        sample.packet,
-                        sample.raw_us,
-                        sample.device_us + shift,
-                        sample.received_ns,
-                    )
-                    for sample in prepared
-                ]
-
         for sample in prepared:
             # This is an observed I/O boundary, not a guessed sensor time. Re-anchoring
             # each USB read to device time can make host time run backward when a
@@ -260,14 +231,9 @@ class Demux:
             tactile_us = self._clock.unwrap(tactile_raw)
             imu_dt = int(p.imu_dt_us or 0)
             imu_raw = (tactile_raw + imu_dt) & 0xFFFFFFFF
-            # The signed offset is relative to this tactile sample. On the first
-            # notify just after rollover it is the only evidence that tactile belongs
-            # to epoch 1, not epoch 0; rebase both before exposing a negative u64.
+            # The signed offset is relative to this tactile sample. The clock's
+            # initial safety epoch keeps even pre-rollover companions positive.
             imu_us = tactile_us + imu_dt
-            if imu_us < 0:
-                self._clock.shift_epoch()
-                tactile_us += 1 << 32
-                imu_us += 1 << 32
             out = [
                 _Prepared("tactile", p, tactile_raw, tactile_us, received_ns),
                 _Prepared("imu", p, imu_raw, imu_us, received_ns),

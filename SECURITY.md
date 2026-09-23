@@ -4,22 +4,20 @@
 
 | Version | Security updates |
 | --- | --- |
-| 0.1.x with firmware 0.9.10+/schema 6 | Yes |
-| development snapshots and older versions | No |
+| SDK 0.1.x with firmware 0.9.10+ and schema 6 | Yes |
+| Development snapshots and older versions | No |
 
-Firmware older than 0.9.10 is outside the supported live, replay, and vector-capture
-contract.
+Live use, replay, and test-packet capture require firmware 0.9.10 or newer.
 
-## Reporting a vulnerability
+## Report a vulnerability privately
 
-Use GitHub's private vulnerability reporting for the sole canonical repository:
+Use [GitHub private vulnerability reporting](https://github.com/OpenGraphLabs/oglo-python/security/advisories/new).
 
-<https://github.com/OpenGraphLabs/oglo-python/security/advisories/new>
+Include the SDK version, firmware version, USB/BLE transport, host OS, steps to
+reproduce, and likely impact.
 
-Do not include exploit details, credentials, customer data, device recordings, or
-unredacted serial numbers in a public issue. Include the affected SDK version,
-firmware version, transport, host OS, reproduction steps, and expected impact in the
-private report.
+Keep exploit details, credentials, customer data, recordings, and real device
+serials out of public issues.
 
-Maintainers will acknowledge a report as soon as practical, investigate it privately,
-and coordinate disclosure after a fix or mitigation is available.
+Maintainers will acknowledge reports as soon as practical, investigate privately,
+and coordinate disclosure after a fix or mitigation is ready.

@@ -1,6 +1,7 @@
 """Replay recorded samples through the same stream interface as a live Glove.
 
-Counts retain the calibration in meta.json; replay never re-zeros or re-thresholds.
+Counts retain their recorded mode and threshold; replay never re-zeros or
+re-thresholds. The recorded zero recipe is saved beside the sensor JSONL when available.
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ import numpy as np
 from ._config import MIN_FIRMWARE, Info, _fw_at_least
 from ._frame import Frame, ImuSample, MagSample
 from ._wire import classify_seq
+from ._jsonl import (stream_filename, read_arrays, json_rows, row_sample,
+                     baseline_for, calibration_document, COMMON_DTYPES)
 
 
 class ReplayError(RuntimeError):
@@ -48,7 +51,7 @@ _STATUS_BOOL_NAMES = {"imu_ok", "mag_ok", "sensor_ok", "mag_required"}
 
 def _required(meta: Dict[str, Any], name: str) -> Any:
     if name not in meta:
-        raise ReplayError(f"schema-2 meta.json is missing required field {name!r}")
+        raise ReplayError(f"schema-3 meta.json is missing required field {name!r}")
     return meta[name]
 
 
@@ -128,7 +131,7 @@ def _complete_status(
     name: str, value: Optional[Dict[str, Any]], *, has_mag: bool
 ) -> Dict[str, Any]:
     if not value:
-        raise ReplayError(f"complete schema-2 episode requires non-empty {name}")
+        raise ReplayError(f"complete schema-3 episode requires non-empty {name}")
     missing = (_STATUS_INT_NAMES | _STATUS_BOOL_NAMES | {"raw"}) - set(value)
     if missing:
         raise ReplayError(f"meta.json {name} is missing status fields: {sorted(missing)}")
@@ -142,15 +145,15 @@ def _complete_status(
     if type(value["raw"]) is not dict:
         raise ReplayError(f"meta.json {name}.raw must be an object")
     if not value["imu_ok"] or not value["sensor_ok"] or value["error_flags"] != 0:
-        raise ReplayError(f"complete schema-2 episode has unhealthy {name}")
+        raise ReplayError(f"complete schema-3 episode has unhealthy {name}")
     if has_mag and not value["mag_ok"]:
-        raise ReplayError(f"complete schema-2 episode has mag_ok=false in {name}")
+        raise ReplayError(f"complete schema-3 episode has mag_ok=false in {name}")
     if value["mag_required"] is not has_mag:
         raise ReplayError(f"meta.json {name}.mag_required disagrees with has_mag")
     return value
 
 
-def _schema2_integrity(
+def _schema3_integrity(
     meta: Dict[str, Any], *, complete: bool, has_mag: bool, counts: Dict[str, int]
 ) -> None:
     started_wall = _finite_number_or_none(meta, "started_wall")
@@ -186,16 +189,16 @@ def _schema2_integrity(
         return
 
     if None in (started_wall, started_mono, ended_wall, ended_mono):
-        raise ReplayError("complete schema-2 episode requires finite start and end clocks")
+        raise ReplayError("complete schema-3 episode requires finite start and end clocks")
     if error is not None:
-        raise ReplayError("complete schema-2 episode must have error=null")
+        raise ReplayError("complete schema-3 episode must have error=null")
     if counts["tactile"] == 0 or counts["imu"] == 0 or (has_mag and counts["mag"] == 0):
-        raise ReplayError("complete schema-2 episode is missing a required fitted stream")
+        raise ReplayError("complete schema-3 episode is missing a required fitted stream")
 
     start = _complete_status("status_start", status_start, has_mag=has_mag)
     end = _complete_status("status_end", status_end, has_mag=has_mag)
     if end["uptime_ms"] < start["uptime_ms"]:
-        raise ReplayError("complete schema-2 episode records a device reset")
+        raise ReplayError("complete schema-3 episode records a device reset")
 
     for name, values in (
         ("dropped_start", dropped_start),
@@ -204,34 +207,34 @@ def _schema2_integrity(
     ):
         missing = _HOST_LOSS_NAMES - set(values)
         if missing:
-            raise ReplayError(f"complete schema-2 episode {name} lacks counters: {sorted(missing)}")
+            raise ReplayError(f"complete schema-3 episode {name} lacks counters: {sorted(missing)}")
     if set(dropped_start) != set(dropped_end) or set(dropped_start) != set(dropped):
-        raise ReplayError("complete schema-2 episode host-loss counter sets disagree")
+        raise ReplayError("complete schema-3 episode host-loss counter sets disagree")
     for name in dropped_start:
         before, after, delta = dropped_start[name], dropped_end[name], dropped[name]
         if after < before or delta != after - before:
             raise ReplayError(
-                f"complete schema-2 episode has inconsistent host-loss counter {name}"
+                f"complete schema-3 episode has inconsistent host-loss counter {name}"
             )
         if delta != 0:
-            raise ReplayError(f"complete schema-2 episode records host loss in {name}")
+            raise ReplayError(f"complete schema-3 episode records host loss in {name}")
 
     if set(device_deltas) != _DEVICE_COUNTER_NAMES:
         raise ReplayError(
-            "complete schema-2 episode device_counters_during_capture must contain "
+            "complete schema-3 episode device_counters_during_capture must contain "
             "exactly tag_dropped, tag_short_writes, and deadline_misses"
         )
     for name in _DEVICE_COUNTER_NAMES:
         before, after, delta = start[name], end[name], device_deltas[name]
         if after < before or delta != after - before:
-            raise ReplayError(f"complete schema-2 episode has inconsistent device counter {name}")
+            raise ReplayError(f"complete schema-3 episode has inconsistent device counter {name}")
         retry_counter = name == "tag_short_writes" and _fw_at_least(meta["fw_rev"], (0, 9, 16))
         if delta != 0 and not retry_counter:
-            raise ReplayError(f"complete schema-2 episode records device loss in {name}")
+            raise ReplayError(f"complete schema-3 episode records device loss in {name}")
 
 
-def _schema2_info(meta: Dict[str, Any]) -> Info:
-    """Validate the writer-owned schema-2 identity/config contract without coercion."""
+def _schema3_info(meta: Dict[str, Any]) -> Info:
+    """Validate the writer-owned schema-3 identity/config contract without coercion."""
     complete = _json_bool(meta, "complete")
     _json_string(meta, "sdk_version")
     serial = _json_string(meta, "serial")
@@ -286,7 +289,7 @@ def _schema2_info(meta: Dict[str, Any]) -> Info:
         if type(value) is not int or value < 0:
             raise ReplayError(f"meta count for {name} must be a non-negative integer JSON value")
 
-    _schema2_integrity(meta, complete=complete, has_mag=has_mag, counts=counts)
+    _schema3_integrity(meta, complete=complete, has_mag=has_mag, counts=counts)
 
     return Info(
         serial=serial,
@@ -307,36 +310,6 @@ def _schema2_info(meta: Dict[str, Any]) -> Info:
     )
 
 
-def _schema1_info(meta: Dict[str, Any]) -> Info:
-    """Preserve the pre-schema-2 permissive defaults, but normalize bad casts."""
-    if meta.get("side", "right") not in ("left", "right"):
-        raise ReplayError("meta.json side must be 'left' or 'right'")
-    try:
-        return Info(
-            serial=meta.get("serial", ""),
-            side=meta.get("side", "right"),
-            hw_rev=meta.get("hw_rev", ""),
-            fw_rev=meta.get("fw_rev", ""),
-            rate_hz=int(meta.get("rate_hz", 0) or 0),
-            channels=list(meta.get("channels", [])),
-            has_mag=bool(meta.get("has_mag", False)),
-            transport="replay",
-            zero_valid=bool(meta.get("zero_valid", False)),
-            stream_clean=bool(meta.get("stream_clean", False)),
-            stream_thr=int(meta.get("stream_thr", 0) or 0),
-            imu_period_ms=(
-                int(meta["imu_period_ms"])
-                if meta.get("imu_period_ms") is not None
-                else None
-            ),
-            device_dropped=int(meta.get("device_dropped_at_connect", 0) or 0),
-            raw=dict(meta),
-        firmware_verification=_firmware_metadata(meta),
-        )
-    except (TypeError, ValueError) as exc:
-        raise ReplayError(f"invalid schema-1 metadata: {exc}") from exc
-
-
 class Episode:
     """A recorded episode, iterated like a live glove."""
 
@@ -355,22 +328,45 @@ class Episode:
         if not isinstance(parsed, dict):
             raise ReplayError("meta.json must contain one JSON object")
         self.meta: Dict[str, Any] = parsed
-        schema_value = self.meta.get("schema", 1)
+        schema_value = _required(self.meta, "schema")
         if isinstance(schema_value, bool) or not isinstance(schema_value, int):
             raise ReplayError("meta.json schema must be an integer")
         self.schema = schema_value
-        if self.schema not in (1, 2):
-            raise ReplayError(f"episode schema {self.schema} is not supported")
-        if self.schema == 2:
-            self._info = _schema2_info(self.meta)
-        else:
-            if "complete" in self.meta and type(self.meta["complete"]) is not bool:
-                raise ReplayError("meta.json complete must be boolean")
-            self._info = _schema1_info(self.meta)
+        if self.schema != 3:
+            raise ReplayError(f"episode schema {self.schema} is not supported; expected JSONL schema 3")
+        self._info = _schema3_info(self.meta)
+        self._clock_domain = _json_string(self.meta, "clock_domain")
+        self._uncertainty_ns = _json_int(self.meta, "uncertainty_ns", 0, 2**64 - 1)
+        self._baseline = None
+        calibration = _required(self.meta, "calibration")
+        if calibration is not None:
+            expected = f"tactile_{self.info.side}.calibration.json"
+            if calibration != expected:
+                raise ReplayError(f"calibration must be {expected!r} or null")
+            path = self.dir / calibration
+            if path.exists() or self.meta["complete"]:
+                try:
+                    document = json.loads(path.read_text(encoding="utf-8"))
+                    self._baseline = baseline_for(self.info, document["zero"])
+                    expected_document = calibration_document(self.info, document["zero"], self._baseline)
+                    for key in ("schema", "stream_id", "side", "sample", "transform"):
+                        if document[key] != expected_document[key]:
+                            raise ValueError(f"calibration {key} disagrees with episode metadata")
+                    for key in ("serial", "hw_rev", "fw_rev"):
+                        if document["device"][key] != getattr(self.info, key):
+                            raise ValueError(f"calibration {key} disagrees with episode metadata")
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    raise ReplayError(f"could not read calibration: {exc}") from exc
+        clean_file = _required(self.meta, "clean_file")
+        if clean_file is not None and clean_file != f"tactile_{self.info.side}.jsonl":
+            raise ReplayError("clean_file must name this hand's CLEAN tactile file or be null")
+        if self.meta["complete"] and (clean_file is None or
+                (not self.info.stream_clean and self._baseline is None)):
+            raise ReplayError("complete episode requires CLEAN tactile and its RAW calibration recipe")
 
     @property
     def info(self) -> Info:
-        """Identity and the calibration that was in force when this was captured."""
+        """Identity, calibration state, and stream settings at capture time."""
         return self._info
 
     def __repr__(self) -> str:
@@ -392,141 +388,90 @@ class Episode:
         except (AttributeError, TypeError, ValueError) as exc:
             raise ReplayError(f"invalid meta.json tactile count: {exc}") from exc
 
-    def _load(self, name: str) -> Optional[Dict[str, np.ndarray]]:
-        p = self.dir / f"{name}.npz"
-        if not p.exists():
-            expected = self.meta.get("counts", {})
-            expected_n = expected.get(name) if isinstance(expected, dict) else None
-            if self.schema >= 2 or (isinstance(expected_n, int) and expected_n > 0):
-                raise ReplayError(
-                    f"{p.name} is missing from a schema-{self.schema} episode "
-                    f"(meta count={expected_n!r})"
-                )
-            return None
+    def _load(self, name: str) -> Dict[str, np.ndarray]:
         try:
-            with np.load(p, allow_pickle=False) as z:
-                out = {k: z[k] for k in z.files}
-        except Exception as exc:
-            raise ReplayError(f"could not read {p}: {exc}") from exc
-        self._validate_arrays(name, out)
-        return out
+            path = self.dir / stream_filename(name, self.info)
+        except ValueError as exc:
+            raise ReplayError(str(exc)) from exc
+        if not path.is_file():
+            raise ReplayError(f"{path.name} is missing (meta count={self.meta['counts'].get(name)!r})")
+        try:
+            data = read_arrays(path, name, self.info, clock_domain=self._clock_domain,
+                               uncertainty_ns=self._uncertainty_ns)
+        except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
+            raise ReplayError(f"could not read {path}: {exc}") from exc
+        self._validate_arrays(name, data)
+        if name == "tactile" and not self.info.stream_clean and self.meta["clean_file"] is not None:
+            self._validate_clean(data)
+        return data
+
+    def _validate_clean(self, original: Dict[str, np.ndarray]) -> None:
+        if self._baseline is None:
+            raise ReplayError("derived CLEAN tactile requires a valid calibration recipe")
+        path = self.dir / self.meta["clean_file"]
+        count = 0
+        try:
+            baseline = np.asarray(list(self._baseline.values()), dtype=np.int64).reshape(5, 4, 4)
+            for index, row in enumerate(json_rows(path)):
+                if index >= len(original["seq"]):
+                    raise ValueError("CLEAN tactile has more rows than RAW")
+                sample = row_sample(row, "tactile", self.info, index,
+                                    self._clock_domain, self._uncertainty_ns)
+                if any(sample[key] != original[key][index] for key in COMMON_DTYPES):
+                    raise ValueError("CLEAN tactile timing/sequence metadata differs from RAW")
+                expected = np.maximum(0, original["counts"][index].astype(np.int64) - baseline)
+                expected[expected < self.info.stream_thr] = 0
+                if not np.array_equal(np.asarray(sample["counts"]).reshape(5, 4, 4), expected):
+                    raise ValueError("CLEAN tactile values disagree with RAW and calibration")
+                count += 1
+            if count != len(original["seq"]):
+                raise ValueError("CLEAN and RAW tactile row counts disagree")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise ReplayError(f"could not validate {path.name}: {exc}") from exc
 
     def _validate_arrays(self, name: str, data: Dict[str, np.ndarray]) -> None:
-        payload = {
-            "tactile": ("counts",),
-            "imu": ("accel", "gyro"),
-            "mag": ("field",),
-        }[name]
-        required = {"seq", "t_us", "host_t", "dropped", *payload}
-        if self.schema >= 2:
-            required |= {"device_time_us", "host_t_ns", "host_received_ns"}
-        missing = required - set(data)
-        if missing:
-            raise ReplayError(f"{name}.npz is missing columns: {sorted(missing)}")
-
-        if data["seq"].ndim != 1:
-            raise ReplayError(f"{name}.npz seq must be a one-dimensional column")
-        n = len(data["seq"])
-        try:
-            bad_lengths = {key: len(value) for key, value in data.items() if len(value) != n}
-        except TypeError as exc:
-            raise ReplayError(f"{name}.npz contains a scalar where a sample column is required") from exc
-        if bad_lengths:
-            raise ReplayError(f"{name}.npz columns have inconsistent lengths: {bad_lengths}, seq={n}")
-        for column in required:
-            if data[column].ndim != 1 and column not in payload:
-                raise ReplayError(f"{name}.npz {column} must have shape (N,)")
-        counts_meta = self.meta.get("counts", {})
-        if not isinstance(counts_meta, dict):
-            raise ReplayError("meta.json counts must be an object")
-        expected_n = counts_meta.get(name)
-        if expected_n is not None and (
-            isinstance(expected_n, bool) or not isinstance(expected_n, int) or expected_n < 0
-        ):
-            raise ReplayError(f"meta count for {name} must be a non-negative integer")
-        if expected_n is not None and expected_n != n:
-            raise ReplayError(f"meta says {expected_n} {name} samples but file contains {n}")
-
-        self._validate_integer_column(name, data, "seq", 0xFFFFFFFF)
-        self._validate_integer_column(name, data, "t_us", 0xFFFFFFFF)
-        self._validate_integer_column(name, data, "dropped", 0xFFFFFFFF)
-        self._validate_float_column(name, data, "host_t")
-        if self.schema >= 2:
-            self._validate_integer_column(name, data, "device_time_us", np.iinfo(np.uint64).max)
-            self._validate_integer_column(name, data, "host_t_ns", np.iinfo(np.uint64).max)
-            self._validate_integer_column(name, data, "host_received_ns", np.iinfo(np.uint64).max)
-            self._validate_timeline(name, data)
-
-        if name == "tactile":
-            counts = data["counts"]
-            if counts.shape != (n, 5, 4, 4):
-                raise ReplayError(f"tactile counts shape is {counts.shape}, expected {(n, 5, 4, 4)}")
-            if counts.size and (
-                not np.issubdtype(counts.dtype, np.integer)
-                or int(counts.min()) < 0
-                or int(counts.max()) > 4095
-            ):
-                raise ReplayError("tactile counts are not valid 12-bit integers")
-        elif name == "imu":
-            if data["accel"].shape != (n, 3) or data["gyro"].shape != (n, 3):
-                raise ReplayError("IMU accel and gyro must both have shape (N, 3)")
-            self._validate_finite_payload(name, data, "accel")
-            self._validate_finite_payload(name, data, "gyro")
-        elif data["field"].shape != (n, 3):
-            raise ReplayError("mag field must have shape (N, 3)")
-        else:
-            self._validate_finite_payload(name, data, "field")
-
-        if name in ("imu", "mag"):
-            has_raw = "raw" in data
-            has_valid = "raw_valid" in data
-            if has_raw != has_valid:
-                raise ReplayError(f"{name}.npz must contain raw and raw_valid together")
-            if has_raw:
-                width = 6 if name == "imu" else 3
-                raw = data["raw"]
-                valid = data["raw_valid"]
-                if raw.shape != (n, width):
-                    raise ReplayError(f"{name}.npz raw must have shape {(n, width)}")
-                if not np.issubdtype(raw.dtype, np.integer):
-                    raise ReplayError(f"{name}.npz raw must use an integer dtype")
-                if raw.size and (int(raw.min()) < -32768 or int(raw.max()) > 32767):
-                    raise ReplayError(f"{name}.npz raw is outside signed int16 range")
-                if valid.shape != (n,) or valid.dtype != np.dtype(bool):
-                    raise ReplayError(f"{name}.npz raw_valid must be a boolean (N,) column")
+        # JSON rows were type/range/shape checked before building these arrays.
+        expected = self.meta["counts"][name]
+        count = len(data["seq"])
+        if count != expected:
+            raise ReplayError(f"meta says {expected} {name} samples but file contains {count}")
+        self._validate_timeline(name, data)
+        if name in ("imu", "mag") and self.meta["complete"] and not data["raw_valid"].all():
+            raise ReplayError(f"complete {name} stream requires raw integer samples")
 
     def _validate_timeline(self, name: str, data: Dict[str, np.ndarray]) -> None:
-        """Cross-check redundant schema-2 clocks, sequences and loss columns."""
+        """Cross-check recorded clocks, sequence transitions, and loss."""
+        label = stream_filename(name, self.info)
         n = len(data["seq"])
         if not n:
             return
         device = data["device_time_us"]
         host_ns = data["host_t_ns"]
         received_ns = data["host_received_ns"]
-        complete = self.schema == 2 and self.meta["complete"] is True
+        complete = self.meta["complete"]
         if complete and np.any(device[1:] < device[:-1]):
-            raise ReplayError(f"{name}.npz device_time_us must be nondecreasing")
+            raise ReplayError(f"{label} device_time_us must be nondecreasing")
         if np.any(host_ns[1:] < host_ns[:-1]):
-            raise ReplayError(f"{name}.npz host_t_ns must be nondecreasing")
+            raise ReplayError(f"{label} host_t_ns must be nondecreasing")
         if np.any(received_ns[1:] < received_ns[:-1]):
-            raise ReplayError(f"{name}.npz host_received_ns must be nondecreasing")
+            raise ReplayError(f"{label} host_received_ns must be nondecreasing")
         if not np.array_equal(host_ns, received_ns):
             raise ReplayError(
-                f"{name}.npz host_t_ns must equal its recorded host_received_ns boundary"
+                f"{label} host_t_ns must equal its recorded host_received_ns boundary"
             )
         if not np.array_equal(
             np.bitwise_and(device, np.uint64(0xFFFFFFFF)).astype(np.uint32),
             data["t_us"].astype(np.uint32),
         ):
-            raise ReplayError(f"{name}.npz t_us disagrees with device_time_us modulo 2^32")
+            raise ReplayError(f"{label} t_us disagrees with device_time_us modulo 2^32")
         if not np.allclose(
             data["host_t"], host_ns.astype(np.float64) / 1_000_000_000.0,
             rtol=0.0, atol=1e-9,
         ):
-            raise ReplayError(f"{name}.npz host_t disagrees with host_t_ns")
+            raise ReplayError(f"{label} host_t disagrees with host_t_ns")
 
         if complete and np.any(data["dropped"] != 0):
-            raise ReplayError(f"complete schema-2 {name}.npz contains dropped samples")
+            raise ReplayError(f"complete schema-3 {label} contains dropped samples")
         seq = data["seq"]
         dropped = data["dropped"]
         last_accepted = int(seq[0])
@@ -534,48 +479,19 @@ class Episode:
             transition = classify_seq(last_accepted, int(seq[index]))
             if int(dropped[index]) != transition.missing:
                 raise ReplayError(
-                    f"{name}.npz row {index} sequence transition requires "
+                    f"{label} row {index} sequence transition requires "
                     f"dropped={transition.missing}, got {int(dropped[index])}"
                 )
             if transition.kind in ("forward", "wrap"):
                 last_accepted = int(seq[index])
             if complete and transition.kind in ("duplicate", "backward"):
                 raise ReplayError(
-                    f"complete schema-2 {name}.npz contains a {transition.kind} sequence"
+                    f"complete schema-3 {label} contains a {transition.kind} sequence"
                 )
-
-    @staticmethod
-    def _validate_integer_column(
-        stream: str, data: Dict[str, np.ndarray], column: str, maximum: int
-    ) -> None:
-        values = data[column]
-        if not np.issubdtype(values.dtype, np.integer):
-            raise ReplayError(f"{stream}.npz {column} must use an integer dtype")
-        if values.size and (int(values.min()) < 0 or int(values.max()) > maximum):
-            raise ReplayError(f"{stream}.npz {column} is outside 0..{maximum}")
-
-    @staticmethod
-    def _validate_float_column(stream: str, data: Dict[str, np.ndarray], column: str) -> None:
-        values = data[column]
-        if not np.issubdtype(values.dtype, np.floating):
-            raise ReplayError(f"{stream}.npz {column} must use a floating-point dtype")
-        if values.size and not np.isfinite(values).all():
-            raise ReplayError(f"{stream}.npz {column} contains NaN or infinity")
-
-    @staticmethod
-    def _validate_finite_payload(stream: str, data: Dict[str, np.ndarray], column: str) -> None:
-        values = data[column]
-        if not np.issubdtype(values.dtype, np.number):
-            raise ReplayError(f"{stream}.npz {column} must be numeric")
-        if values.size and not np.isfinite(values).all():
-            raise ReplayError(f"{stream}.npz {column} contains NaN or infinity")
 
     def tactile(self) -> Iterator[Frame]:
         d = self._load("tactile")
-        if not d:
-            return
         clean = self._info.stream_clean
-        device_us, host_ns, received_ns = _sample_clocks(d)
         for i in range(len(d["seq"])):
             yield Frame(
                 seq=int(d["seq"][i]),
@@ -583,9 +499,9 @@ class Episode:
                 host_t=float(d["host_t"][i]),
                 counts=d["counts"][i],
                 dropped=int(d["dropped"][i]),
-                device_time_us=int(device_us[i]),
-                host_t_ns=int(host_ns[i]),
-                host_received_ns=int(received_ns[i]),
+                device_time_us=int(d["device_time_us"][i]),
+                host_t_ns=int(d["host_t_ns"][i]),
+                host_received_ns=int(d["host_received_ns"][i]),
                 # Carried from the recording, not chosen now. A replayed frame must
                 # answer `.residual` exactly as the live one did.
                 _stream_clean=clean,
@@ -593,9 +509,6 @@ class Episode:
 
     def imu(self) -> Iterator[ImuSample]:
         d = self._load("imu")
-        if not d:
-            return
-        device_us, host_ns, received_ns = _sample_clocks(d)
         for i in range(len(d["seq"])):
             yield ImuSample(
                 seq=int(d["seq"][i]),
@@ -604,21 +517,18 @@ class Episode:
                 accel=tuple(float(x) for x in d["accel"][i]),
                 gyro=tuple(float(x) for x in d["gyro"][i]),
                 dropped=int(d["dropped"][i]),
-                device_time_us=int(device_us[i]),
-                host_t_ns=int(host_ns[i]),
-                host_received_ns=int(received_ns[i]),
+                device_time_us=int(d["device_time_us"][i]),
+                host_t_ns=int(d["host_t_ns"][i]),
+                host_received_ns=int(d["host_received_ns"][i]),
                 raw=(
                     tuple(int(x) for x in d["raw"][i])
-                    if "raw" in d and bool(d["raw_valid"][i])
+                    if bool(d["raw_valid"][i])
                     else None
                 ),
             )
 
     def mag(self) -> Iterator[MagSample]:
         d = self._load("mag")
-        if not d:
-            return
-        device_us, host_ns, received_ns = _sample_clocks(d)
         for i in range(len(d["seq"])):
             yield MagSample(
                 seq=int(d["seq"][i]),
@@ -626,12 +536,12 @@ class Episode:
                 host_t=float(d["host_t"][i]),
                 field=tuple(float(x) for x in d["field"][i]),
                 dropped=int(d["dropped"][i]),
-                device_time_us=int(device_us[i]),
-                host_t_ns=int(host_ns[i]),
-                host_received_ns=int(received_ns[i]),
+                device_time_us=int(d["device_time_us"][i]),
+                host_t_ns=int(d["host_t_ns"][i]),
+                host_received_ns=int(d["host_received_ns"][i]),
                 raw=(
                     tuple(int(x) for x in d["raw"][i])
-                    if "raw" in d and bool(d["raw_valid"][i])
+                    if bool(d["raw_valid"][i])
                     else None
                 ),
             )
@@ -639,11 +549,8 @@ class Episode:
     # -- whole arrays, for anyone who would rather not iterate -------------------
 
     def arrays(self, stream: str = "tactile") -> Dict[str, np.ndarray]:
-        """The raw arrays for one stream. Nothing is copied or converted."""
-        d = self._load(stream)
-        if d is None:
-            raise ReplayError(f"{self.dir} has no {stream}.npz")
-        return d
+        """Read and validate a JSONL stream as NumPy arrays."""
+        return self._load(stream)
 
     def summary(self) -> Dict[str, Any]:
         """Counts, duration and delivered rate per stream, computed from the data.
@@ -662,7 +569,7 @@ class Episode:
         }
         for name in ("tactile", "imu", "mag"):
             d = self._load(name)
-            if not d or len(d["seq"]) == 0:
+            if len(d["seq"]) == 0:
                 out[name] = {"n": 0}
                 continue
             host = d["host_t"]
@@ -679,14 +586,6 @@ class Episode:
 def replay(path: Any) -> Episode:
     """Open a recorded episode. Iterate it exactly as you would a live glove."""
     return Episode(path)
-
-
-def _sample_clocks(data: Dict[str, np.ndarray]):
-    """Resolve legacy fallbacks once per stream, never once per sample."""
-    device_us = data["device_time_us"] if "device_time_us" in data else data["t_us"]
-    host_ns = data["host_t_ns"] if "host_t_ns" in data else np.rint(data["host_t"] * 1e9)
-    received_ns = data["host_received_ns"] if "host_received_ns" in data else host_ns
-    return device_us, host_ns, received_ns
 
 
 def _firmware_metadata(meta):
