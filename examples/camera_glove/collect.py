@@ -19,7 +19,6 @@ Overlay text is ASCII because OpenCV's Hershey fonts have no CJK.
 """
 
 import argparse
-import fcntl
 import importlib.util
 import json
 from pathlib import Path
@@ -151,14 +150,14 @@ def finger_grids(values, thr=0, side="right", scale=HEAT_SCALE):
                 x, y = x0 + col * CELL, row * CELL
                 cv2.rectangle(image, (x + 1, y + 1), (x + CELL - 2, y + CELL - 2), colour, -1)
                 text = str(shown)
-                scale = 0.3
-                (tw, th), _ = cv2.getTextSize(text, FONT, scale, 1)
+                font_scale = 0.3
+                (tw, th), _ = cv2.getTextSize(text, FONT, font_scale, 1)
                 if tw > CELL - 3:  # 4 digits or a minus sign: shrink to fit the cell.
-                    scale *= (CELL - 3) / tw
-                    (tw, th), _ = cv2.getTextSize(text, FONT, scale, 1)
+                    font_scale *= (CELL - 3) / tw
+                    (tw, th), _ = cv2.getTextSize(text, FONT, font_scale, 1)
                 ink = (255, 255, 255) if level < 0.55 else (20, 20, 20)
-                cv2.putText(image, text, (x + (CELL - tw) // 2, y + (CELL + th) // 2), FONT, scale,
-                            ink, 1, cv2.LINE_AA)
+                cv2.putText(image, text, (x + (CELL - tw) // 2, y + (CELL + th) // 2), FONT,
+                            font_scale, ink, 1, cv2.LINE_AA)
     return image
 
 
@@ -347,6 +346,13 @@ class TactilePeek:
             return
         self._halt.set()
         self._thread.join(timeout=5.0)
+        if self._thread.is_alive():
+            # A read that never returns means the port is dead. Keep the thread
+            # recorded so start_reader() cannot add a second reader on top of it,
+            # and refuse to let the caller send commands beside it.
+            raise oglo.DeviceError(
+                f"{self._glove.info.side} glove: the reader thread did not stop within 5 s; "
+                "the port is not answering (unplug the glove, wait 10 s, plug it back in)")
         self._thread = None
 
     def check(self):
@@ -378,6 +384,8 @@ def is_capture_node(index):
 
     Every UVC camera enumerates two nodes; OpenCV can only open the capture one.
     """
+    import fcntl  # Linux only; a numeric --camera never gets here.
+
     buf = bytearray(104)  # struct v4l2_capability; device_caps at byte 88
     try:
         with open(f"/dev/video{index}", "rb", buffering=0) as node:
@@ -436,6 +444,8 @@ def gloves_sharing_camera_bus(camera_index, candidates):
 
 def task_slug(task):
     slug = re.sub(r"[^a-z0-9]+", "_", task.lower()).strip("_")[:40]
+    if slug in dataset.RESERVED:  # gloves/ is the per-glove folder; its episodes would never index.
+        slug += "_task"
     return slug or "session"
 
 
@@ -536,10 +546,16 @@ class Collector:
         for glove in self.gloves:
             glove.stop_reader()
             glove.stop()
+            # z may switch the glove RAW <-> CLEAN before the stream restarts; a frame
+            # of the old kind read as the new one raises (residual on a RAW frame).
+            glove.latest = None
 
     def close_gloves(self):
         for glove in self.gloves:  # Each glove is read until its own close, as in stop_streams().
-            glove.stop_reader()
+            try:
+                glove.stop_reader()
+            except Exception as exc:  # A stuck reader: closing the port is what ends it.
+                print(f"{exc}", file=sys.stderr, flush=True)
             try:
                 glove.close()
             except Exception:
@@ -858,7 +874,11 @@ class Collector:
             try:
                 self.postprocess(session)
             except Exception as exc:
-                self.fail(session, exc, stage="align")
+                try:
+                    self.fail(session, exc, stage="align")
+                except Exception as move_exc:  # The worker must live on, or quit hangs in join().
+                    print(f"{session.name} align FAILED: {exc}; could not move it aside: {move_exc}",
+                          file=sys.stderr, flush=True)
             finally:
                 self._jobs.task_done()
 
@@ -867,13 +887,15 @@ class Collector:
     def run(self):
         self._worker = threading.Thread(target=self._drain_jobs, name="postprocess", daemon=True)
         self._worker.start()
-        self.open_devices()
         try:
+            self.open_devices()  # Inside the try: a camera failure must still close open gloves.
+            # Only an episode can take the next number; between them the folder scan
+            # (three stat() calls per existing episode) would otherwise run every frame.
+            next_session = next_session_dir(self.args.out, self.args.task)
             while True:
                 image = self.read_frame()
                 self.poll_gloves()
-                key = self.display.show(self.draw_idle(
-                    image, next_session_dir(self.args.out, self.args.task)))
+                key = self.display.show(self.draw_idle(image, next_session))
                 if key == KEY_QUIT:
                     break
                 if key == KEY_VIEW:
@@ -886,6 +908,7 @@ class Collector:
                         continue
                     if not self.record_episode():
                         break  # q while the gloves were unreachable.
+                    next_session = next_session_dir(self.args.out, self.args.task)
                 else:
                     continue
                 self.display.flush()  # A held pedal auto-repeats; never chain two phases.

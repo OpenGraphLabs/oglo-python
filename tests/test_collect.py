@@ -21,31 +21,15 @@ TASK = "Synthetic contact"
 SLUG = "synthetic_contact"
 
 
-class SessionFake(FakeSerial):
-    """FakeSerial whose sequence numbers restart with every stream session.
-
-    collect.py keeps one glove open across calibration and every episode, so the
-    stream is switched on several times. The base fake replays its first burst on
-    each STREAM TAG ON while its refills keep counting, which a correct reader must
-    report as wire loss; a real board does not do that (measured 2026-09-23).
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._seq_after_initial = self._next_tactile_seq
-
-    def _handle(self, cmd):
-        if cmd.upper() == "STREAM TAG ON":
-            self._next_tactile_seq = self._seq_after_initial
-        super()._handle(cmd)
-
-
 def simulated_glove(side, clean=True, **config_overrides):
+    """collect.py keeps one glove open across calibration and every episode, so the
+    stream is switched on several times; FakeSerial keeps counting across sessions
+    like a real board (measured 2026-09-23)."""
     config = {**CFG_V6, "side": side, "serial": f"OGLO-{side}-COLLECT-TEST", "stream_clean": clean,
               **config_overrides}
     if side == "right":
         config["channels"] = list(reversed(config["channels"]))
-    transport = UsbTransport(SessionFake(config, stream=tagged_burst(60), hz=250))
+    transport = UsbTransport(FakeSerial(config, stream=tagged_burst(60), hz=250))
     info, caps = transport.read_config(interval=0.01, drain=0)
     return Glove(transport, info, caps)
 
@@ -226,6 +210,7 @@ def test_sessions_are_numbered_per_task_and_never_reused(tmp_path):
     assert collect.next_session_dir(out, "Pick up a cup!") == task / "pick_up_a_cup_004"
     assert collect.next_session_dir(out, "Other task") == out / "other_task" / "other_task_001"
     assert collect.task_slug("!!!") == "session"
+    assert collect.task_slug("Gloves") == "gloves_task"  # gloves/ is reserved for per-glove files
 
 
 def failing_capture(error):
@@ -425,6 +410,12 @@ def test_devices_stay_open_across_episodes_and_grids_are_drawn(tmp_path, monkeyp
     cell = lambda finger: image[collect.CELL // 2, finger * (4 * collect.CELL + collect.GRID_GAP) + 3 * collect.CELL + 2]
     assert cell(0).sum() > 500 and np.array_equal(cell(1), cell(3))
     assert cell(2)[0] > cell(2)[2]  # BGR: blue dominates.
+    # The heat scale is per count, not per cell: a light touch after a hot cell stays dim.
+    values = np.zeros((5, 4, 4))
+    values[0, 0, 0], values[0, 1, 0] = 1400, 5
+    image = collect.finger_grids(values)
+    hot, light = image[3, 3 * collect.CELL + 3], image[3, 2 * collect.CELL + 3]  # cell corners, no text
+    assert int(hot.sum()) > int(light.sum()) + 300
     assert [r["session"] for r in index_rows(tmp_path / "captures")] == [f"{SLUG}_001", f"{SLUG}_002"]
 
 
@@ -589,6 +580,30 @@ def test_c_toggles_the_raw_view_without_touching_the_recording(tmp_path, monkeyp
     control = collect.RecordingControl(on_view=lambda: toggled.append(True))
     control.press(ord("c"))
     assert toggled == [True] and control.outcome is None and not control.stop.is_set()
+
+
+def test_z_switching_a_raw_glove_to_clean_never_reads_the_old_frame(tmp_path, monkeypatch):
+    """--clean on a glove that streams RAW: z flips the mode on the device. The frame
+    the reader saw before the sweep is RAW; read back as a residual it raises
+    CleanStreamError and ends the session. On hardware the window draws its next
+    frame (~33 ms) before the restarted reader's first read returns (~50 ms), so a
+    stopped stream must keep no newest frame. ``_calibrate`` (readers left stopped)
+    is that ordering made deterministic."""
+    patch_devices(monkeypatch, pair=False, clean=False)
+    collector = collect.Collector(make_args(tmp_path, pair=False, clean=70),
+                                  display=ScriptedDisplay(""))
+    collector.open_devices()
+    try:
+        glove = collector.gloves[0]
+        deadline = time.monotonic() + 2.0
+        while glove.latest is None and time.monotonic() < deadline:  # The idle reader is at work.
+            time.sleep(0.01)
+        assert glove.latest is not None and not glove.info.stream_clean
+        collector._calibrate()
+        assert glove.info.stream_clean and collector.status == "calibrated left"
+        assert collector.grid_values(glove) is None  # Nothing to show until a CLEAN frame arrives.
+    finally:
+        collector.close_devices()
 
 
 def test_camera_is_resolved_by_v4l2_name_to_its_capture_node(tmp_path):

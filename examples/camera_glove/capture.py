@@ -83,9 +83,11 @@ class FfmpegWriter:
         try:
             self._process = subprocess.Popen(command, stdin=subprocess.PIPE,
                                              stdout=subprocess.DEVNULL, stderr=self._log)
-        except FileNotFoundError:
+        except OSError as exc:  # Not found, not executable, fork failure: no process, no log.
             self._log.close()
-            raise RuntimeError(f"{FFMPEG} not found; install ffmpeg or use --codec mp4v")
+            if isinstance(exc, FileNotFoundError):
+                raise RuntimeError(f"{FFMPEG} not found; install ffmpeg or use --codec mp4v")
+            raise
 
     def isOpened(self):
         return self._process.poll() is None

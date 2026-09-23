@@ -41,6 +41,7 @@ class CameraData(TypedDict, total=False):
     video: str  # Session-relative path.
     timestamps: str  # Session-relative path.
     codec: str
+    video_quality: Optional[int]  # CRF / CQ of an ffmpeg codec; None for mp4v.
     requested_fps: float
     host_timestamp_meaning: str
     width: int  # Encoded image pixels; packed width for stereo.
@@ -112,3 +113,4 @@ class OGLData(_OGLData, total=False):
 
     ended_wall_time_ns: int
     overlap_host_received_ns: list[int]  # Exactly [start_ns, end_ns], start < end.
+    stop_reason: Optional[str]  # "duration", or "cancelled" by the caller's stop event.
