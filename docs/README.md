@@ -1,5 +1,8 @@
 # Documentation
 
+[Local collection page](10_studio.md) — calibrate, record camera and gloves with a USB button, review takes, and export source episodes.
+[Studio adapter guide](11_studio_adapters.md) — connect other USB switches and cameras through the local controller.
+
 New to OGLO? Start with [installing and reading a glove](../README.md#install).
 
 | Task | Guide |
