@@ -20,8 +20,11 @@ Recording itself is ``capture.py``; this file adds the state machine around it a
 hands it a stop event. On an OVISION-EGO-V1 with SyncField 0.8.14 installed the camera
 goes through the SDK's native OVISION worker via ``ovision.py`` (original H.264, camera
 IMU, exposure timing, calibration), kept live for the whole session and reopened when
-the camera dies or is replugged; any other camera goes through OpenCV and ``--codec``.
-``--camera-backend`` forces either. An episode is published (indexed, uploaded) only
+the camera dies or is replugged. A RealSense D455 (``--camera`` naming it, pyrealsense2
+installed, Linux) goes the same way through the SDK's RealSense worker via
+``realsense.py`` (color through ``--codec``, accelerometer, gyroscope, factory
+calibration, all on the camera clock). Any other camera goes through OpenCV and
+``--codec``. ``--camera-backend`` forces one. An episode is published (indexed, uploaded) only
 once ``dataset.publishable`` accepts it: complete manifest, files present, alignment
 with one row per frame.
 Overlay text is ASCII because OpenCV's Hershey fonts have no CJK.
@@ -62,11 +65,14 @@ align = load_sibling("align")
 dataset = load_sibling("dataset")
 sys.modules.setdefault("capture", capture)  # ovision.py does ``from capture import``: share one copy.
 ovision = load_sibling("ovision")  # Imports SyncField only inside the functions that need it.
+realsense = load_sibling("realsense")  # Imports pyrealsense2 only when a camera is opened.
 
 WINDOW = "OGLO collect  (g record, h save, x discard, z calibrate, q quit)"
-BACKENDS = ("auto", "opencv", "ovision")
+BACKENDS = ("auto", "opencv", "ovision", "realsense")
 OVISION_IDLE_PERIOD = 0.05  # seconds per idle window refresh when the OVISION worker feeds it
 OVISION_STALL_SECONDS = 5.0  # idle: no new keyframe for this long means the camera stopped
+REALSENSE_IDLE_PERIOD = 0.03  # seconds per idle window refresh from the RealSense worker
+REALSENSE_STALL_SECONDS = 5.0  # idle: no color frame for this long means the camera stopped
 STALE_FRAMES = 4  # V4L2 ring depth OpenCV keeps: frames buffered while the camera went unread
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 HEAT_SCALE = 1400.0  # counts above baseline that saturate a cell (OGLO Studio "Taxel" view scale)
@@ -399,16 +405,84 @@ class OvisionIdleSource:
         self.worker.close()
 
 
-def choose_backend(requested, camera_index):
+class RealSenseIdleSource:
+    """``read()`` for the idle window from the live RealSense worker (the
+    ``cv2.VideoCapture`` read contract, like :class:`OvisionIdleSource`).
+
+    The worker keeps the newest color frame; the window is paced here. A worker error
+    or no color frame for REALSENSE_STALL_SECONDS reads as a failed camera (``reason``
+    says which) and the Collector reopens it.
+    """
+
+    def __init__(self, worker, period=None, stall_seconds=None):
+        self.worker = worker
+        self.period = REALSENSE_IDLE_PERIOD if period is None else period
+        self.stall_seconds = REALSENSE_STALL_SECONDS if stall_seconds is None else stall_seconds
+        self.reason = None
+
+    def read(self):
+        time.sleep(self.period)
+        if self.worker.error:
+            self.reason = self.worker.error
+            return False, None
+        last = self.worker.last_frame_ns
+        if last is None or time.monotonic_ns() - last > self.stall_seconds * 1e9:
+            self.reason = f"no color frame from the RealSense for {self.stall_seconds:g} s"
+            return False, None
+        return True, self.worker.latest_frame
+
+    def release(self):
+        self.worker.close()
+
+
+def camera_card(index, sysfs=None):
+    """The V4L2 card name of /dev/video<index>, or None (no such node, or not Linux)."""
+    try:
+        return ((sysfs or V4L2_SYSFS) / f"video{index}" / "name").read_text().strip()
+    except OSError:
+        return None
+
+
+def locate_realsense(camera_index, camera_spec):
+    """``(index, spec, note)`` for the RealSense backend: the /dev/video node that
+    ``--camera`` names when it is the RealSense, otherwise the RealSense's own lowest
+    capture node, so the glove/camera USB-controller check looks at the right device.
+    ``note`` says what changed or why the check cannot find the camera; None if nothing.
+    """
+    card = camera_card(camera_index)
+    if card and "realsense" in card.lower():
+        return camera_index, camera_spec, None
+    match, _ = find_camera("RealSense", V4L2_SYSFS, is_capture_node)
+    if match is not None:
+        return match[0], "RealSense", (f"--camera {camera_spec} is not the RealSense; using "
+                                       f"/dev/video{match[0]} ({match[1]}) for the USB-controller check")
+    return camera_index, camera_spec, ("no /dev/video node is named RealSense; the glove USB-controller "
+                                       f"check looks at --camera {camera_spec} instead")
+
+
+def choose_backend(requested, camera_index, card=None):
     """``--camera-backend`` resolved to ``(backend, reason)``.
 
-    ``auto`` takes the native OVISION backend when SyncField 0.8.14 is installed and the
-    camera answers the adapter's calibration read, otherwise OpenCV with ``reason`` saying
-    why, so that episodes without camera IMU never happen silently. Explicit ``ovision``
-    raises instead of falling back.
+    ``auto`` takes the RealSense backend when the camera's V4L2 name says RealSense and
+    ``realsense.problem()`` finds nothing wrong, the native OVISION backend when SyncField
+    0.8.14 is installed and the camera answers the adapter's calibration read, otherwise
+    OpenCV with ``reason`` saying why, so that episodes without camera IMU never happen
+    silently. A RealSense is never probed as an OVISION. Explicit ``ovision`` or
+    ``realsense`` raises instead of falling back.
     """
     if requested == "opencv":
         return "opencv", None
+    if requested == "realsense":
+        reason = realsense.problem()
+        if reason is not None:
+            raise RuntimeError(f"--camera-backend realsense: {reason}")
+        return "realsense", None
+    card = camera_card(camera_index) if card is None else card
+    if requested == "auto" and card and "realsense" in card.lower():
+        reason = realsense.problem()
+        if reason is None:
+            return "realsense", None
+        return "opencv", f"a RealSense recorded without its IMU: {reason}"
     reason = ovision.problem(Path(f"/dev/video{camera_index}"))
     if reason is None:
         return "ovision", None
@@ -660,8 +734,8 @@ class Collector:
         self.args = args
         self.display = display or WindowDisplay()
         self.gloves = ()
-        self.camera = None    # cv2.VideoCapture, or OvisionIdleSource over ``worker``
-        self.worker = None    # the SDK's native OVISION worker when the backend is ovision
+        self.camera = None    # cv2.VideoCapture, or an idle source over ``worker``
+        self.worker = None    # the SDK's OVISION or RealSense worker for those backends
         self.camera_spec = str(getattr(args, "camera_spec", args.camera))  # --camera as typed
         self.camera_info = {}  # OpenCV: fps_request_accepted and backend, asked once at open
         self.camera_note = ""  # one idle line: which backend records, and why
@@ -700,9 +774,11 @@ class Collector:
             pair = True
         self.args.pair = pair  # record_episode hands the same decision to capture.py.
         self.open_gloves()
-        if self.args.camera_backend == "ovision":
+        if self.args.camera_backend in ("ovision", "realsense"):
             self.open_camera()
-            self.camera_note = "camera: native OVISION backend, camera IMU recorded"
+            self.camera_note = ("camera: RealSense backend, camera IMU recorded"
+                                if self.args.camera_backend == "realsense"
+                                else "camera: native OVISION backend, camera IMU recorded")
             return
         self.camera = cv2.VideoCapture(self.args.camera)
         if not self.camera.isOpened():
@@ -720,9 +796,25 @@ class Collector:
         return Path(f"/dev/video{self.args.camera}")
 
     def open_camera(self):
-        """One live OVISION worker for the whole session: idle preview and every episode."""
+        """One live SDK worker for the whole session: idle preview and every episode."""
+        if self.args.camera_backend == "realsense":
+            self.worker = realsense.open_worker(self.args.fps, self.args.codec, self.args.video_quality)
+            self.camera = RealSenseIdleSource(self.worker)
+            return
         self.worker = ovision.open_worker(self.video_device, self.args.out, self.args.camera)
         self.camera = OvisionIdleSource(self.worker)
+
+    def camera_live(self):
+        """The worker has no error and, for OVISION, its capture thread still runs."""
+        if self.worker.error is not None:
+            return False
+        return self.args.camera_backend == "realsense" or self.worker.stream.capture_ready()
+
+    def camera_problem(self):
+        """Why the backend's camera cannot be opened right now, or None."""
+        if self.args.camera_backend == "realsense":
+            return realsense.problem()
+        return ovision.problem(self.video_device)
 
     def close_camera(self):
         if self.camera is not None:
@@ -779,19 +871,19 @@ class Collector:
         self.close_camera()
 
     def recover_camera(self):
-        """After a failed episode: an OVISION worker whose capture died is replaced.
+        """After a failed episode: an SDK worker whose capture died is replaced.
 
         The worker keeps its error, as Studio's does, so a fresh one is opened; a glove
         failure leaves it healthy and nothing happens here. The OpenCV camera needs
         nothing either; its failure resurfaces on the next idle read. Returns False
         when the operator quit while the camera was away.
         """
-        if self.worker is None or (self.worker.error is None and self.worker.stream.capture_ready()):
+        if self.worker is None or self.camera_live():
             return True
         return self.reconnect_camera(self.worker.error or "capture stopped during the episode")
 
     def reconnect_camera(self, reason):
-        """The OVISION camera stopped: release it and wait for one that answers again.
+        """The OVISION or RealSense camera stopped: release it and wait for one that answers again.
 
         ``--camera`` given as a name is resolved again on every attempt, since a
         replugged camera can come back as another /dev/video number. The gloves keep
@@ -811,7 +903,7 @@ class Collector:
                         if match is None:
                             raise RuntimeError(f"no camera named {self.camera_spec!r} is attached")
                         self.args.camera = match[0]
-                    problem = ovision.problem(self.video_device)
+                    problem = self.camera_problem()
                     if problem:
                         raise RuntimeError(problem)
                     self.open_camera()
@@ -1087,7 +1179,11 @@ class Collector:
         control = RecordingControl(on_view=self.toggle_view)
         overlay = RecordingOverlay(self.display, control, session.name, self.args.task,
                                    self.args.seconds, self.glove_grids)
-        if self.worker is not None:
+        if self.args.camera_backend == "realsense":
+            def camera_factory(args, output):
+                return realsense.RealSenseCapture(args, output, worker=self.worker, tick=overlay.show,
+                                                  progress=overlay.progress)
+        elif self.worker is not None:
             def camera_factory(args, output):
                 return ovision.OvisionCapture(args, output, worker=self.worker, tick=overlay.show,
                                               progress=overlay.progress)
@@ -1343,15 +1439,17 @@ def build_parser():
     parser.add_argument("--camera-backend", choices=BACKENDS, default="auto",
                         help="ovision = the native OVISION-EGO-V1 backend (ovision.py): original "
                              "H.264, camera IMU, exposure timing and calibration per episode; "
-                             "opencv = any webcam through OpenCV, no camera IMU. auto (default) "
-                             "takes ovision when SyncField 0.8.14 is installed and the camera "
-                             "answers as an OVISION, and says so when it falls back")
+                             "realsense = a RealSense D455 through pyrealsense2 (realsense.py): color, "
+                             "camera IMU and calibration on the camera clock; opencv = any webcam "
+                             "through OpenCV, no camera IMU. auto (default) takes realsense when "
+                             "--camera names a RealSense, ovision when SyncField 0.8.14 is installed "
+                             "and the camera answers as an OVISION, and says so when it falls back")
     parser.add_argument("--seconds", type=capture.positive_number, default=600,
                         help="maximum episode length; h or x stop earlier (default: 600)")
     parser.add_argument("--fps", type=capture.positive_number, default=30,
                         help="requested camera FPS and MP4 playback FPS (default: 30)")
     parser.add_argument("--codec", choices=capture.CODECS, default="mp4v",
-                        help="video encoder for the OpenCV backend: mp4v = OpenCV's writer, "
+                        help="video encoder for the OpenCV and RealSense backends: mp4v = OpenCV's writer, "
                              "hevc_nvenc = H.265 on an NVIDIA GPU via ffmpeg, libx265 = H.265 on the "
                              "CPU (default: mp4v; scripts/workstation.env sets the workstation's choice)")
     parser.add_argument("--video-quality", type=int, default=23, metavar="N",
@@ -1396,11 +1494,18 @@ def main(argv=None):
     except RuntimeError as exc:
         print(f"{exc}", file=sys.stderr, flush=True)
         return 2
+    if args.camera_backend == "realsense":
+        args.camera, args.camera_spec, note = locate_realsense(args.camera, args.camera_spec)
+        if note:
+            print(f"camera: {note}", flush=True)
     if args.camera_backend == "ovision":
         print("camera backend: native OVISION (H.264 passthrough at 3840x1080, 30 fps, camera IMU); "
               "--codec, --video-quality and --fps do not apply", flush=True)
     else:
-        if args.backend_reason:
+        if args.camera_backend == "realsense":
+            print(f"camera backend: RealSense (color 1280x720 at {args.fps:g} fps through {args.codec}, "
+                  "accelerometer + gyroscope on the camera clock)", flush=True)
+        elif args.backend_reason:
             print(f"camera backend: OpenCV, camera IMU is not recorded: {args.backend_reason}", flush=True)
         problem = capture.probe_encoder(args.codec, args.video_quality)
         if problem:
