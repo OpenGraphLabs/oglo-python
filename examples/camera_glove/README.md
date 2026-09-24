@@ -4,6 +4,7 @@ Record a webcam and one or two gloves on **the same computer**. You get video,
 frame timestamps, glove recordings in JSONL.
 
 Using an OVISION stereo camera? Follow the [OVISION guide](OVISION.md) instead.
+Using a RealSense D455 on Ubuntu? Follow the [RealSense guide](REALSENSE.md).
 
 A webcam gives RGB video. This example does not collect depth or camera calibration.
 Use a camera-specific SDK if your project needs those.
@@ -249,14 +250,31 @@ Files deleted locally stay on the Hub until removed there.
   noticed within five seconds too; in both cases the camera is reopened, waiting for a
   replug if needed (`--camera` given as a name is resolved again, since the device can
   come back as another `/dev/video` number), while the gloves keep their idle readers.
+- **realsense**, the SDK's native RealSense worker (`oglo.studio_realsense`, what
+  OGLO Studio records with) through `realsense.py`, for an Intel RealSense D455 on
+  Ubuntu. One worker stays live for the whole session and every episode gets the
+  same files as a single `realsense.py` run: color video (`camera/video.mp4`), the
+  camera's own accelerometer and gyroscope (`camera/realsense.accel.jsonl`,
+  `camera/realsense.gyro.jsonl`), the unit's calibration
+  (`camera/realsense.calibration.json`), and the common `timestamps.jsonl`, as
+  [REALSENSE.md](REALSENSE.md) describes them. Needs Linux and
+  `pip install -r examples/camera_glove/requirements-realsense.txt`
+  (`pyrealsense2==2.58.4.10922`). The worker's watchdog ends an episode whose
+  camera delivers no color frame for five seconds; recovery reopens the camera by serial
+  and waits for a replug if needed, while the gloves keep their idle readers. Only
+  one RealSense per computer is supported.
 - **opencv**: any webcam through OpenCV, encoded with `--codec`; no camera IMU. The
   idle window says so, with the reason `auto` fell back.
 
-`auto` takes `ovision` when SyncField 0.8.14 is installed and the camera answers the
-adapter's calibration read, and prints why when it falls back to OpenCV, so an
-episode without camera IMU never happens silently. `episodes.jsonl` records
-`camera_kind` and `camera_imu` per episode, and the dataset card describes the camera
-actually used.
+`auto` first looks at the V4L2 card name of `--camera`: when it contains
+`RealSense`, it takes `realsense` if the device passes its own check, else `opencv`
+with that reason, and never probes a RealSense as an OVISION. Any other camera goes
+to `ovision` when SyncField 0.8.14 is installed and the camera answers the adapter's
+calibration read, otherwise to `opencv`. It prints
+why whenever it falls back, so an episode without camera IMU never happens
+silently. An explicit `--camera-backend realsense` raises instead of falling back.
+`episodes.jsonl` records `camera_kind` and `camera_imu` per episode, and the
+dataset card describes the camera actually used.
 
 ### Checking the taxel layout
 
