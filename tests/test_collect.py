@@ -1077,7 +1077,8 @@ def test_camera_backend_is_chosen_from_syncfield_and_the_camera(monkeypatch):
         collect.choose_backend("ovision", 3)
     monkeypatch.setattr(collect.ovision, "problem", lambda device: None)
     assert collect.choose_backend("auto", 0) == ("ovision", None)
-    # ovision.problem: the SyncField pin is checked before the camera is touched.
+    # Exercise the Linux-only version checks independently of the CI host OS.
+    monkeypatch.setattr(collect.ovision.sys, "platform", "linux")
     monkeypatch.setattr(collect.ovision, "version", lambda name: "0.9.0")
     assert "targets 0.8.14" in real_problem(Path("/dev/video0"))
 
