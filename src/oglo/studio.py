@@ -101,10 +101,23 @@ def _review_eye_crop(manifest: dict) -> tuple[int, int, int] | None:
     return width // 2, height, 0 if eye == "left" else width // 2
 
 
+def _realsense_choices() -> list[dict]:
+    """List RealSense cameras with accel+gyro, without opening a stream."""
+    try:
+        from oglo.studio_realsense import list_devices
+        devices = list_devices()
+    except Exception:
+        return []
+    return [{"index": index, "mode": "realsense", "name": device["serial"],
+             "label": f"{device['name']} · color + camera IMU · serial {device['serial']}"}
+            for index, device in enumerate(devices) if device.get("has_imu")]
+
+
 def _camera_choices() -> list[dict]:
     """List camera modes without opening a device that may already be recording."""
     cameras = []
     if sys.platform.startswith("linux"):
+        cameras.extend(_realsense_choices())
         for node in sorted(Path("/sys/class/video4linux").glob("video*"),
                            key=lambda path: int(path.name[5:]) if path.name[5:].isdigit() else 99):
             if node.name[5:].isdigit():
@@ -468,7 +481,7 @@ class Collection:
                                 "threshold": g.info.stream_thr,
                                 "stream_clean": g.info.stream_clean} for g in self.gloves],
                     "camera": {"index": self.camera.index, "mode": self.camera.mode,
-                               "name": self.camera.name, "eye": self.camera.eye,
+                               "name": self.camera.name, "eye": getattr(self.camera, "eye", None),
                                "size": self.camera.size,
                                "error": self.camera.error,
                                "native_device_timestamps": self.camera.native_device_timestamps,
@@ -590,14 +603,20 @@ class Collection:
             if self.state not in {"disconnected", "ready", "error"}:
                 raise ValueError("stop and finish the active episode before reconnecting")
             if camera_mode not in {"default", "ovision_left", "ovision_right",
-                                   "ovision_native_left", "ovision_native_right"}:
+                                   "ovision_native_left", "ovision_native_right", "realsense"}:
                 raise ValueError("invalid camera mode")
             if camera_mode != "default":
                 selected = next((choice for choice in _camera_choices()
                                  if choice.get("mode") == camera_mode
                                  and choice.get("name") == camera_name), None)
+                if (selected is None and camera_mode == "realsense" and self.camera is not None
+                        and getattr(self.camera, "mode", None) == "realsense"
+                        and self.camera.name == camera_name):
+                    # A streaming RealSense may be hidden from a second device listing
+                    # (librealsense's libusb backend claims it); it is the camera in use.
+                    selected = {"index": self.camera.index}
                 if selected is None:
-                    raise ValueError("selected OVISION eye is no longer available")
+                    raise ValueError("selected camera is no longer available")
                 camera_index = selected["index"]  # Display only; capture uses the name.
             if (left_port is None) != (right_port is None):
                 raise ValueError("select both glove ports")
@@ -630,6 +649,10 @@ class Collection:
                     from oglo.studio_ovision import NativeOvisionCameraWorker
                     self.camera = NativeOvisionCameraWorker(
                         camera_index, mode=camera_mode, name=camera_name, root=self.root)
+                elif camera_mode == "realsense":
+                    from oglo.studio_realsense import RealSenseCameraWorker
+                    self.camera = RealSenseCameraWorker(
+                        camera_index, mode=camera_mode, name=camera_name)
                 elif camera_mode == "default":
                     self.camera = self.camera_factory(camera_index)
                 else:
@@ -1043,7 +1066,7 @@ class Collection:
                     raise RuntimeError("camera host timestamps went backwards")
                 if last is not None:
                     max_camera_gap = max(max_camera_gap, stamp - last)
-                if (camera.get("kind") == "ovision_native_stereo" or
+                if (camera.get("kind") in {"ovision_native_stereo", "realsense"} or
                     manifest["capture_profile"] in {"annotation_handoff", "og_center_postprocessing"}) and (
                     type(row.get("device_timestamp")) is not int or
                     not row.get("device_timestamp_unit") or
@@ -1062,6 +1085,8 @@ class Collection:
             raise RuntimeError("OVISION eye frames exceeded 60 FPS; capture timing is invalid")
         if camera.get("kind") == "ovision_native_stereo":
             self._validate_native_ovision(folder, camera, frames)
+        elif camera.get("kind") == "realsense":
+            self._validate_realsense(folder, camera)
         starts, ends = [first], [last]
         stream_metrics = {"camera": {"frames": frames, "max_gap_ns": max_camera_gap}}
         for entry in manifest["gloves"]:
@@ -1098,6 +1123,31 @@ class Collection:
         manifest["overlap_host_received_ns"] = overlap
         manifest["validation"] = {"schema": "oglo-studio-validation.v1", "profile": manifest["capture_profile"],
                                   "coverage_fraction": round(coverage, 5), "streams": stream_metrics}
+
+    @staticmethod
+    def _validate_realsense(folder: Path, camera: dict) -> None:
+        def named_file(key: str) -> Path:
+            relative = camera.get(key)
+            if type(relative) is not str:
+                raise RuntimeError(f"RealSense metadata is missing its {key} file")
+            path = folder / relative
+            if not path.is_file():
+                raise RuntimeError(f"RealSense {key} file is missing: {relative}")
+            return path
+
+        for key in ("accel", "gyro"):
+            count = 0
+            with named_file(key).open(encoding="utf-8") as source:
+                for line in source:
+                    row = json.loads(line)
+                    if type(row.get("device_timestamp_us")) is not int:
+                        raise RuntimeError(f"RealSense {key} sample lacks an integer device_timestamp_us")
+                    count += 1
+            if count < 2:
+                raise RuntimeError(f"RealSense {key} file has fewer than two samples")
+        calibration = json.loads(named_file("calibration").read_text(encoding="utf-8"))
+        if not calibration.get("device", {}).get("serial"):
+            raise RuntimeError("RealSense calibration is missing device.serial")
 
     @staticmethod
     def _validate_native_ovision(folder: Path, camera: dict, frames: int) -> None:

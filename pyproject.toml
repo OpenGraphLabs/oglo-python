@@ -40,6 +40,7 @@ collection = ["opencv-python>=4.10,<5", "imageio-ffmpeg>=0.6,<1"]
 studio = ["fastapi>=0.110", "uvicorn>=0.30", "opencv-python>=4.10,<5",
           "imageio-ffmpeg>=0.6,<1"]
 studio-ovision = ["syncfield[ovision]==0.8.14"]
+studio-realsense = ["pyrealsense2==2.58.4.10922"]
 
 [project.scripts]
 oglo = "oglo.cli:main"
