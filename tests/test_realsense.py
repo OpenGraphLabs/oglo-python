@@ -386,3 +386,45 @@ def test_a_writer_stuck_after_stop_marks_the_worker_failed(tmp_path, monkeypatch
         release.set()
         worker.close()
 
+
+# Every pyrealsense2 name the worker and examples use, checked against the real wheel
+# where it is installed (the Linux camera CI job): the fake cannot drift from it.
+REAL_NAMES = (
+    "stream.color", "stream.accel", "stream.gyro", "format.bgr8", "format.motion_xyz32f",
+    *(f"camera_info.{name}" for name in ("name", "serial_number", "firmware_version",
+                                         "recommended_firmware_version", "physical_port",
+                                         "usb_type_descriptor", "product_line")),
+    "option.global_time_enabled", "option.enable_motion_correction",
+    "timestamp_domain.hardware_clock", "timestamp_domain.system_time",
+    "frame_metadata_value.sensor_timestamp", "frame_metadata_value.frame_timestamp",
+    "context.query_devices", "device.query_sensors", "device.get_info", "device.supports",
+    "sensor.get_stream_profiles", "sensor.supports", "sensor.set_option", "sensor.get_option",
+    "stream_profile.stream_type", "stream_profile.format", "stream_profile.fps",
+    "stream_profile.as_video_stream_profile", "stream_profile.as_motion_stream_profile",
+    "stream_profile.get_extrinsics_to", "video_stream_profile.width", "video_stream_profile.height",
+    "video_stream_profile.get_intrinsics", "motion_stream_profile.get_motion_intrinsics",
+    "config.enable_device", "config.enable_stream", "config.resolve", "pipeline.start", "pipeline.stop",
+    "pipeline_wrapper", "pipeline_profile.get_device", "pipeline_profile.get_stream",
+    "frame.is_frameset", "frame.as_frameset", "frame.get_profile", "frame.get_frame_number",
+    "frame.get_data", "frame.get_timestamp", "frame.get_frame_timestamp_domain",
+    "frame.supports_frame_metadata", "frame.get_frame_metadata", "frame.as_motion_frame",
+    "motion_frame.get_motion_data", "intrinsics.fx", "intrinsics.fy", "intrinsics.ppx", "intrinsics.ppy",
+    "intrinsics.model", "intrinsics.coeffs", "motion_device_intrinsic.data",
+    "motion_device_intrinsic.noise_variances", "motion_device_intrinsic.bias_variances",
+    "extrinsics.rotation", "extrinsics.translation", "vector.x", "vector.y", "vector.z",
+)
+
+
+def _has(module, dotted):
+    value = module
+    for part in dotted.split("."):
+        if not hasattr(value, part):
+            return False
+        value = getattr(value, part)
+    return True
+
+
+def test_the_real_pyrealsense2_has_every_name_the_worker_uses():
+    real = pytest.importorskip("pyrealsense2")  # Installed in the Linux camera CI job.
+    missing = [name for name in REAL_NAMES if not _has(real, name)]
+    assert not missing, f"pyrealsense2 {getattr(real, '__version__', '?')} lacks: {missing}"
