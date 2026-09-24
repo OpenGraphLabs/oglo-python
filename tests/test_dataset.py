@@ -61,6 +61,44 @@ def test_index_lists_saved_episodes_only(tmp_path, monkeypatch):
     assert "`OGLO-R-TEST02`" in (out / "README.md").read_text()
 
 
+@pytest.mark.parametrize("clean", [True, False])
+def test_missing_glove_files_are_held_from_index_and_upload(tmp_path, monkeypatch, clean):
+    patch_devices(monkeypatch, clean=clean)
+    display = ScriptedDisplay(["g"] + [None] * 15 + ["h"])
+    episodes = collect.Collector(make_args(tmp_path, seconds=5), display=display).run()
+    assert [episode["outcome"] for episode in episodes] == ["saved"]
+
+    out = tmp_path / "captures"
+    session = out / SLUG / f"{SLUG}_001"
+    manifest = json.loads((session / "manifest.json").read_text())
+    entry = manifest["gloves"][0]
+    side = entry["side"]
+    glove = session / entry["episode"]
+    required = [
+        session / entry["calibration"],
+        glove / "meta.json",
+        glove / f"tactile_{side}.jsonl",
+        glove / f"tactile_{side}.calibration.json",
+        glove / f"wrist_imu_{side}.jsonl",
+        glove / f"wrist_mag_{side}.jsonl",
+    ]
+    if not clean:
+        required.append(glove / f"tactile_{side}.raw.jsonl")
+    for path in required:
+        content = path.read_bytes()
+        path.unlink()
+        assert dataset.publishable(session) is not None, path
+        rows, held = dataset.scan(out)
+        assert rows == [] and len(held) == 1, path
+        path.write_bytes(content)
+    assert dataset.publishable(session) is None
+
+    tactile = glove / f"tactile_{side}.jsonl"
+    tactile.unlink()
+    monkeypatch.setattr(dataset.subprocess, "run", lambda *a, **k: pytest.fail("must not upload"))
+    assert dataset.upload(out, "me/test", dry_run=True) == 1
+
+
 def write_episode(session, manifest, frames, aligned_rows="frames"):
     """A publishable-looking episode: manifest, every camera file it names, an alignment
     with one row per frame (``aligned_rows`` overrides that count; ``None`` writes none)."""
