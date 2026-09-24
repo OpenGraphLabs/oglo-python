@@ -45,7 +45,7 @@ class _RecordingClock:
         self.now_ns += round(seconds * 1_000_000_000)
 
 
-def recorded(tmp_path, cfg=CFG_V6, seconds=0.6, n=60):
+def recorded(tmp_path, cfg=CFG_V6, seconds=0.6, n=60, on_tactile=None):
     import fake_serial
     from oglo import _device, _record, _stream, _usb
 
@@ -60,12 +60,26 @@ def recorded(tmp_path, cfg=CFG_V6, seconds=0.6, n=60):
             patch.setattr(module, "time", clock)
         g = glove(cfg, n, hz=250)
         try:
-            return record(tmp_path, seconds=seconds, glove=g)
+            return record(tmp_path, seconds=seconds, glove=g, on_tactile=on_tactile)
         finally:
             g.close()
 
 
 # --- writing --------------------------------------------------------------------
+
+
+def test_live_tactile_observer_cannot_break_recording(tmp_path):
+    seen = []
+
+    def broken_preview(frame):
+        seen.append(frame.seq)
+        raise RuntimeError("preview failed")
+
+    episode = recorded(tmp_path, on_tactile=broken_preview)
+    assert seen
+    assert replay(episode).meta["complete"]
+    with pytest.raises(TypeError, match="on_tactile must be callable"):
+        record(tmp_path, seconds=0.1, on_tactile=object())
 
 
 @pytest.mark.parametrize("seconds", ["oops", True, float("nan"), -1, 0, float("inf")])

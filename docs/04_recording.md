@@ -70,6 +70,12 @@ are independent. Pass `clock_domain="your-host"` to `record()` to name the host.
 
 ## Stop or handle a failed recording
 
+For a live UI, pass `on_tactile=callback` to `oglo.record()`. The callback sees
+the latest tactile frame in each drained batch after recording has accepted the
+batch. It is a lossy preview feed; the saved JSONL contains every accepted row.
+The callback must return quickly and must never read the glove separately.
+Callback errors do not stop the recording.
+
 Pass a `threading.Event()` as `stop_event` and call its `set()` method from another
 thread to stop cleanly. An early stop can be complete but have
 `stop_reason: "cancelled"`; check both fields when duration matters.

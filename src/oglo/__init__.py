@@ -63,7 +63,18 @@ __all__ = [
     "DisconnectedError",
     "RecordError",
     "ReplayError",
+    "Collection",
+    "CameraSelection",
 ]
+
+
+def __getattr__(name: str):
+    """Keep camera/web extras out of ordinary glove SDK imports."""
+    if name in {"Collection", "CameraSelection"}:
+        from .collection import CameraSelection, Collection
+
+        return {"Collection": Collection, "CameraSelection": CameraSelection}[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def connect(serial: Optional[str] = None, *, transport: str = "usb",
