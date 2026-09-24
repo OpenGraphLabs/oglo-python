@@ -37,8 +37,9 @@ User-facing changes by version. Version numbers follow
   checked source ZIP export.
 - `oglo.collection.Collection` for the same workflow from Python without the
   web server, with separate `collection` and `studio` install extras.
-- Native Linux OVISION stereo, camera IMU, exposure timing, and calibration
-  capture for the OG Center sensor-source profile.
+- Experimental native Linux OVISION stereo, camera IMU, exposure timing, and
+  calibration capture for the OG Center sensor-source profile; physical Linux
+  hardware validation remains pending.
 - JSONL-only recording and replay using the `og-skill` sensor format and filenames.
 - Automatic calibration read-back, RAW preservation, and CLEAN derivation.
 - Exact sequence, loss, and timing metadata in each row's `oglo` object.

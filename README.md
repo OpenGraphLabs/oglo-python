@@ -86,7 +86,7 @@ Mac OVISION capture keeps both eyes but only host timing, so it remains a
 **source archive**. For OG Center stereo+tactile post processing, run Studio on
 Linux, choose a **native OVISION** camera option, and select **OG Center sensor source**.
 That path saves native exposure timing, camera IMU, and calibration alongside
-both gloves. It still requires task-content review and a separate OG Center
+both gloves, but physical Linux capture is still unverified. It requires task-content review and a separate OG Center
 import. See the [Studio guide](docs/10_studio.md) for pedal setup, data checks,
 and delivery limits. Scripts can use the same workflow through the
 [collection SDK](docs/12_collection_sdk.md) without starting the web page.

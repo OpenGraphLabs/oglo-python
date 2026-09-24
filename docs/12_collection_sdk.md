@@ -66,7 +66,7 @@ Use `wait(episode_id, timeout=...)` if finalization may take more than its 60-se
 | --- | --- |
 | `source_archive` | A portable recording with video, host timing, and both gloves. |
 | `annotation_handoff` | A recording with real native camera frame time. |
-| `og_center_postprocessing` | A Linux native OVISION recording with packed stereo, camera exposure/IMU files, calibration, and both gloves. |
+| `og_center_postprocessing` | A Linux native OVISION recording with packed stereo, camera exposure/IMU files, calibration, and both gloves. This path still needs physical Linux validation. |
 
 `export(profile)` includes only complete, kept takes that passed that profile. It verifies the saved file inventory and SHA-256 checksums, writes a ZIP under `captures/studio/exports/`, and returns its path. Keep the whole ZIP for downstream work.
 

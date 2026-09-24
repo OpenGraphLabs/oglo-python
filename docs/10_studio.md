@@ -8,9 +8,9 @@ OGLO Studio is a local web page for recording **two USB OGLO gloves and one came
 | --- | --- | --- |
 | USB webcam on macOS, Windows, or Linux | Video, host timing, both gloves | **Portable source archive** |
 | OVISION on macOS | Both eyes in one video; host timing; both gloves | **Portable source archive** |
-| Native OVISION on Linux | Original stereo video, camera exposure timing, camera IMU, calibration, both gloves | **OG Center sensor source** |
+| Native OVISION on Linux | Original stereo video, camera exposure timing, camera IMU, calibration, both gloves | **OG Center sensor source** (experimental) |
 
-For OVISION, **left/right eye selects the preview and review view**. New recordings keep both eyes in the source video. macOS capture cannot save OVISION's native exposure/IMU metadata, so it cannot use the OG Center sensor profile. The Linux native path needs the camera's valid flash calibration and stereo metadata.
+For OVISION, **left/right eye selects the preview and review view**. New recordings keep both eyes in the source video. macOS capture cannot save OVISION's native exposure/IMU metadata, so it cannot use the OG Center sensor profile. The Linux native path needs the camera's valid flash calibration and stereo metadata. Its code has simulated-device tests; physical Linux capture is still awaiting validation.
 
 ## Prepare and start
 
@@ -49,7 +49,7 @@ If port 8765 is in use, run `oglo studio --port 8766 --output ./captures/studio`
 | --- | --- | --- |
 | **Portable source archive** | Any supported camera | Video, camera host times, both glove recordings, calibration, and checksums were saved and validated. |
 | **Annotation handoff** | A camera adapter with real per-frame device time | Native camera timing is present in addition to the source files. |
-| **OG Center sensor source** | Native OVISION on Linux | Packed stereo video, native exposure/IMU files, stereo calibration, and both gloves are present and validated. |
+| **OG Center sensor source** | Native OVISION on Linux; experimental until physical testing | Packed stereo video, native exposure/IMU files, stereo calibration, and both gloves are present and validated. |
 
 **OG Center sensor source checks the recorded sensor information.** It does not confirm that the footage shows a useful task or that touch happened. It also does not upload to OG Center; importing the ZIP into OG Center is a separate workflow. Try a short native recording and review its source files before relying on it for a larger collection.
 
