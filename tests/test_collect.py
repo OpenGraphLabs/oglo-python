@@ -279,6 +279,17 @@ def test_a_task_folder_belongs_to_one_wording(tmp_path):
         collect.Collector(make_args(tmp_path, task="pick up a cup"), display=ScriptedDisplay("")).run()
 
 
+def test_task_folder_checks_every_episode_wording(tmp_path):
+    out = tmp_path / "captures"
+    folder = out / "pick_up_a_cup"
+    for number, wording in ((1, "Pick up a cup!"), (2, "pick-up a CUP")):
+        session = folder / f"pick_up_a_cup_{number:03d}"
+        session.mkdir(parents=True)
+        (session / "manifest.json").write_text(json.dumps({"task_description": wording}))
+    with pytest.raises(RuntimeError, match="already holds episodes of 'pick-up a CUP'"):
+        collect.check_task_folder(out, "Pick up a cup!")
+
+
 def test_a_failure_after_x_is_a_failure_not_a_discard(tmp_path, monkeypatch):
     patch_devices(monkeypatch)
 

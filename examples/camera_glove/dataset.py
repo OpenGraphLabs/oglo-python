@@ -137,6 +137,43 @@ def alignment_rows(session):
         return sum(1 for line in handle if line.strip())
 
 
+def glove_files_reason(session, entry):
+    """Why a glove episode is incomplete, or None when all recorded files exist."""
+    if not isinstance(entry, dict):
+        return "invalid glove entry"
+    side = entry.get("side")
+    if side not in ("left", "right"):
+        return f"invalid glove side: {side!r}"
+    episode = entry.get("episode")
+    if not episode or not (session / episode).is_dir():
+        return f"{side} episode folder missing"
+    calibration = entry.get("calibration")
+    if not calibration or not (session / calibration).is_file():
+        return f"{side} calibration file missing: {calibration}"
+
+    folder = session / episode
+    try:
+        meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return f"{side} meta.json unreadable: {exc}"
+    if not isinstance(meta, dict) or meta.get("schema") != 3 or meta.get("complete") is not True:
+        return f"{side} meta.json is not a complete schema-3 episode"
+    if meta.get("side") != side or meta.get("serial") != entry.get("serial"):
+        return f"{side} meta.json identity differs from the manifest"
+    clean_file = f"tactile_{side}.jsonl"
+    calibration_file = f"tactile_{side}.calibration.json"
+    if meta.get("clean_file") != clean_file or meta.get("calibration") != calibration_file:
+        return f"{side} meta.json does not name its clean tactile and calibration files"
+    if type(meta.get("stream_clean")) is not bool:
+        return f"{side} meta.json has no stream mode"
+    tactile_file = clean_file if meta["stream_clean"] else f"tactile_{side}.raw.jsonl"
+    for name in (tactile_file, clean_file, calibration_file,
+                 f"wrist_imu_{side}.jsonl", f"wrist_mag_{side}.jsonl"):
+        if not (folder / name).is_file():
+            return f"{side} glove file missing: {episode}/{name}"
+    return None
+
+
 def publishable(session, manifest=None):
     """None when the episode may be indexed and uploaded, else the reason it may not.
 
@@ -161,8 +198,9 @@ def publishable(session, manifest=None):
         if not (session / relative).is_file():
             return f"camera {key} file missing: {relative}"
     for entry in manifest.get("gloves") or []:
-        if not entry.get("episode") or not (session / entry["episode"]).is_dir():
-            return f"{entry.get('side') or 'glove'} episode folder missing"
+        reason = glove_files_reason(session, entry)
+        if reason is not None:
+            return reason
     frames = camera.get("frames_decoded")
     rows = alignment_rows(session)
     if rows is None:

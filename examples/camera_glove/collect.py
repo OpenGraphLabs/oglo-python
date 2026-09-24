@@ -615,7 +615,6 @@ def check_task_folder(out, task):
         if recorded is not None and recorded.strip() != task.strip():
             raise RuntimeError(f"task folder {folder} already holds episodes of {recorded!r}; "
                                f"use that exact wording for --task, or another --out")
-        return  # One manifest is enough: every episode in the folder passed this check.
 
 
 def next_session_dir(out, task):
