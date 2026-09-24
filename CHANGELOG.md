@@ -3,22 +3,6 @@
 User-facing changes by version. Version numbers follow
 [Semantic Versioning](https://semver.org/) and [PEP 440](https://peps.python.org/pep-0440/).
 
-## Unreleased - RealSense D455 on Ubuntu
-
-- `oglo.studio_realsense.RealSenseCameraWorker`: an SDK worker for the Intel
-  RealSense D455 on Ubuntu, following the OVISION worker's pattern. Records
-  color video plus the camera's own accelerometer and gyroscope on the
-  camera's clock, and writes the unit's factory calibration.
-- OGLO Studio lists a RealSense D455 camera choice (color + camera IMU) and
-  offers it for **Portable source archive** or **Annotation handoff**; it is
-  not an OG Center sensor source.
-- `examples/camera_glove/realsense.py` (one session, `--check`) and
-  `collect.py --camera-backend realsense` (many episodes, one worker kept open
-  for the session) share the same worker, matching the OVISION examples.
-- `examples/camera_glove/REALSENSE.md`: a partner-facing setup and recording
-  guide, plus documentation updates across `docs/09`, `docs/10`, `docs/11`,
-  and `docs/13`. Not yet tested on hardware.
-
 ## 0.1.0rc8.dev2 - Generic firmware preparation
 
 - Discover attached devices and decide updates by hardware, update contract and
@@ -56,6 +40,19 @@ User-facing changes by version. Version numbers follow
 - Experimental native Linux OVISION stereo, camera IMU, exposure timing, and
   calibration capture for the OG Center sensor-source profile; physical Linux
   hardware validation remains pending.
+- `oglo.studio_realsense.RealSenseCameraWorker`: an SDK worker for the Intel
+  RealSense D455 on Ubuntu, following the OVISION worker's pattern. Records
+  color video plus the camera's own accelerometer and gyroscope on the
+  camera's clock, and writes the unit's factory calibration.
+- OGLO Studio lists a RealSense D455 camera choice (color + camera IMU) and
+  offers it for **Portable source archive** or **Annotation handoff**; it is
+  not an OG Center sensor source.
+- `examples/camera_glove/realsense.py` (one session, `--check`) and
+  `collect.py --camera-backend realsense` (many episodes, one worker kept open
+  for the session) share the same worker, matching the OVISION examples.
+- `examples/camera_glove/REALSENSE.md`: a partner-facing setup and recording
+  guide, plus documentation updates across `docs/09`, `docs/10`, `docs/11`,
+  and `docs/13`. Not yet tested on hardware.
 - JSONL-only recording and replay using the `og-skill` sensor format and filenames.
 - Automatic calibration read-back, RAW preservation, and CLEAN derivation.
 - Exact sequence, loss, and timing metadata in each row's `oglo` object.
