@@ -84,6 +84,10 @@ This mirrors `oglo.studio_ovision.NativeOvisionCameraWorker`, which Studio,
   is in the hardware-clock domain, `device_timestamp` is `null`; the episode then fails
   its completeness check.
 - **Device time for IMU:** the motion frame's hardware-clock timestamp, as integer µs.
+- **Clock wrap:** the camera clock is a 32-bit µs counter (wraps every ~71.6 min;
+  librealsense trims HID timestamps to 32 bits to match UVC). Every stream is
+  unwrapped against one worker-wide reference, so saved values only increase within
+  a session (`device_clock_unwrapped: true`).
 - **`begin(folder, stop)`:** create `camera/`, open the video writer (`writer_factory`
   if given, else OpenCV `mp4v`, as Studio's webcam worker does), and start one writer
   thread. The thread drains the color queue into the video and `timestamps.jsonl`, and
@@ -140,11 +144,11 @@ This mirrors `oglo.studio_ovision.NativeOvisionCameraWorker`, which Studio,
 - `collect.py`:
   - `--camera-backend` choices become `auto, ovision, realsense, opencv`.
   - `choose_backend` in `auto`:
-    1. OVISION if it answers (unchanged).
-    2. Otherwise, if the V4L2 card name of `--camera` contains `RealSense`:
-       `realsense` when `realsense.problem()` is `None`, else `opencv` with that
-       reason. The idle window shows the reason, so a RealSense episode never loses
-       its IMU silently.
+    1. If the V4L2 card name of `--camera` contains `RealSense`: `realsense` when
+       `realsense.problem()` is `None`, else `opencv` with that reason. The idle
+       window shows the reason, so a RealSense episode never loses its IMU
+       silently. A RealSense is never probed as an OVISION.
+    2. Otherwise OVISION if it answers (unchanged).
     3. Otherwise `opencv`.
 
     An explicit `--camera-backend realsense` raises instead of falling back.
@@ -190,7 +194,10 @@ timestamp rows, glove replay, host-time overlap):
 1. At least 2 accel and 2 gyro samples.
 2. Every color frame has an integer `device_timestamp`.
 3. Device timestamps strictly increase within color, within accel, and within gyro.
-4. The IMU device-time range overlaps the color device-time range.
+4. The IMU device-time range overlaps the color device-time range, starts and ends
+   within 0.5 s of it, and never pauses longer than 0.25 s (so `camera_imu: true`
+   is never claimed for a take whose IMU stopped partway). The metadata records
+   expected vs. actual samples and the largest gap per stream.
 
 `native_frames_dropped` (gaps in the color frame counter) is recorded, not a failure.
 
