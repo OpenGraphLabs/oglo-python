@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import dataclass
+import sys
 import threading
 import time
 import zipfile
@@ -19,6 +20,11 @@ from oglo.studio import Studio, _load_episode, create_app
 from oglo.collection import CameraSelection, Collection
 from test_camera_glove import Camera
 from studio_fake_devices import simulated_studio_glove
+import fake_realsense
+
+REALSENSE_SERIAL = "123456789012"
+REALSENSE_CHOICE = {"index": 0, "mode": "realsense", "name": REALSENSE_SERIAL,
+                    "label": "Intel RealSense D455 · color + camera IMU · serial 123456789012"}
 
 
 @pytest.fixture
@@ -602,3 +608,111 @@ def test_pair_and_trigger_provenance(studio_client, monkeypatch):
     assert {entry["side"] for entry in episode["gloves"]} == {"left", "right"}
     for entry in episode["gloves"]:
         assert (studio.root / episode["id"] / entry["calibration"]).is_file()
+
+
+def test_realsense_choice_is_listed_first_on_linux(monkeypatch):
+    monkeypatch.setattr(studio_module.sys, "platform", "linux")
+    fake_realsense.install(monkeypatch)
+    choices = studio_module._camera_choices()
+    assert choices[0] == REALSENSE_CHOICE
+
+
+def test_no_realsense_choice_without_pyrealsense2(monkeypatch):
+    monkeypatch.setattr(studio_module.sys, "platform", "linux")
+    monkeypatch.delitem(sys.modules, "pyrealsense2", raising=False)
+    choices = studio_module._camera_choices()
+    assert all(choice.get("mode") != "realsense" for choice in choices)
+
+
+def test_realsense_take_is_ready_for_annotation_handoff_and_exports_imu_files(studio_client, monkeypatch):
+    studio, _ = studio_client
+    fake_realsense.install(monkeypatch)
+    monkeypatch.setattr(studio_module, "_camera_choices", lambda: [REALSENSE_CHOICE])
+    studio.connect(0, camera_mode="realsense", camera_name=REALSENSE_SERIAL)
+    _wait_for_live(studio)
+    studio.start("RealSense annotation take", profile="annotation_handoff")
+    time.sleep(1.2)
+    studio.stop()
+    result = _wait_for_result(studio)
+    assert result["state"] == "review", result.get("error")
+    episode = result["episodes"][0]
+    assert episode["complete"] is True
+    assert episode["camera"]["kind"] == "realsense"
+    assert episode["delivery_validation"]["annotation_handoff"] == "ready"
+    assert episode["delivery_validation"]["og_center_postprocessing"].startswith("blocked")
+    studio.select(episode["id"], "kept")
+    with zipfile.ZipFile(studio.export("annotation_handoff")) as archive:
+        names = archive.namelist()
+        assert f"{episode['id']}/camera/realsense.accel.jsonl" in names
+        assert f"{episode['id']}/camera/realsense.gyro.jsonl" in names
+        assert f"{episode['id']}/camera/realsense.calibration.json" in names
+
+
+def test_realsense_og_center_profile_is_refused(studio_client, monkeypatch):
+    studio, _ = studio_client
+    fake_realsense.install(monkeypatch)
+    monkeypatch.setattr(studio_module, "_camera_choices", lambda: [REALSENSE_CHOICE])
+    studio.connect(0, camera_mode="realsense", camera_name=REALSENSE_SERIAL)
+    _wait_for_live(studio)
+    with pytest.raises(ValueError, match="native OVISION stereo"):
+        studio.start("Not sensor complete", profile="og_center_postprocessing")
+    assert list(studio.root.glob("ep_*")) == []
+
+
+def test_realsense_take_without_camera_clock_time_ends_incomplete(studio_client, monkeypatch):
+    studio, _ = studio_client
+    fake_realsense.install(monkeypatch, fake_realsense.Hardware(metadata=False, honor_global_time=False))
+    monkeypatch.setattr(studio_module, "_camera_choices", lambda: [REALSENSE_CHOICE])
+    studio.connect(0, camera_mode="realsense", camera_name=REALSENSE_SERIAL)
+    _wait_for_live(studio)
+    studio.start("No camera clock", profile="source_archive")
+    time.sleep(0.6)
+    studio.stop()
+    result = _wait_for_result(studio)
+    assert result["state"] == "error"
+    assert "camera-clock time" in result["episodes"][0]["error"]
+
+
+def test_server_rejects_unknown_camera_mode_but_accepts_realsense(tmp_path):
+    import uvicorn
+    import requests
+
+    studio = Studio(tmp_path / "server-captures")
+    app = create_app(studio.root, studio=studio)
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.02)
+        port = server.servers[0].sockets[0].getsockname()[1]
+        base = f"http://127.0.0.1:{port}"
+        bad = requests.post(f"{base}/api/connect", json={"camera_mode": "not-a-mode"})
+        assert bad.status_code == 422
+        accepted = requests.post(f"{base}/api/connect", json={
+            "camera_mode": "realsense", "camera_name": REALSENSE_SERIAL})
+        assert accepted.status_code != 422
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+        studio.close()
+
+
+def test_reconnecting_the_realsense_in_use_works_when_listing_hides_it(studio_client, monkeypatch):
+    """librealsense's libusb backend can hide a camera it is streaming from a second
+    device listing; reconnecting the RealSense already in use must still work."""
+    studio, _ = studio_client
+    hardware = fake_realsense.install(monkeypatch)
+    listed = {"choices": [REALSENSE_CHOICE]}
+    monkeypatch.setattr(studio_module, "_camera_choices", lambda: listed["choices"])
+    studio.connect(0, camera_mode="realsense", camera_name=REALSENSE_SERIAL)
+    _wait_for_live(studio)
+    listed["choices"] = []  # The streaming camera no longer shows up.
+    studio.connect(0, camera_mode="realsense", camera_name=REALSENSE_SERIAL)
+    _wait_for_live(studio)
+    assert hardware.starts == 2 and studio.camera.name == REALSENSE_SERIAL
+    other = "000000000000"
+    with pytest.raises(ValueError, match="no longer available"):
+        studio.connect(0, camera_mode="realsense", camera_name=other)
