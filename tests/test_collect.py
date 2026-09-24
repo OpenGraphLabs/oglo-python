@@ -1143,3 +1143,251 @@ def test_main_reports_device_errors_of_every_kind_without_a_traceback(tmp_path, 
     monkeypatch.setattr(collect.ovision, "problem", lambda device: None)
     assert collect.main(["--out", str(tmp_path), "--task", "t", "--camera", "4", "--skip-doctor"]) == 1
     assert "FileNotFoundError" in capsys.readouterr().err
+
+
+# -- RealSense backend (fake pyrealsense2; runs on every OS, never skipped) ------------
+
+def patch_realsense(monkeypatch, hardware=None):
+    """collect.py's RealSense backend on the fake pyrealsense2 with small color frames;
+    returns the simulated camera."""
+    import fake_realsense
+
+    hardware = fake_realsense.install(monkeypatch, *([hardware] if hardware else []))
+    monkeypatch.setattr(collect.realsense, "problem", lambda platform=None: None)
+    monkeypatch.setattr(collect.realsense, "COLOR_SIZE", (320, 240))
+    monkeypatch.setattr(collect, "REALSENSE_IDLE_PERIOD", 0.01)
+    return hardware
+
+
+def test_realsense_backend_keeps_one_worker_and_saves_the_camera_imu_per_episode(tmp_path, monkeypatch):
+    patch_devices(monkeypatch)
+    hardware = patch_realsense(monkeypatch)
+    keys = (["g"] + [None] * 15 + ["h"] + ["g"] + [None] * 15 + ["x"] + ["g"] + [None] * 15 + ["h"])
+    collector = collect.Collector(make_args(tmp_path, seconds=5, camera_backend="realsense"),
+                                  display=ScriptedDisplay(keys))
+    episodes = collector.run()
+    assert [e["outcome"] for e in episodes] == ["saved", "discarded", "saved"]
+    assert hardware.starts == 1  # One worker for the whole session.
+    out = tmp_path / "captures"
+    for session in (out / SLUG / f"{SLUG}_001", out / SLUG / f"{SLUG}_003"):
+        manifest = json.loads((session / "manifest.json").read_text())
+        camera = manifest["camera"]
+        assert manifest["complete"] is True and camera["kind"] == "realsense"
+        assert (camera["width"], camera["height"], camera["codec"]) == (320, 240, "mp4v")
+        assert camera["usb_serial"] == "123456789012" and camera["device_clock_domain"] == "realsense_hw_clock"
+        for key in ("video", "timestamps", "accel", "gyro", "calibration"):
+            assert (session / camera[key]).is_file(), key
+        assert camera["accel_samples"] >= 2 and camera["gyro_samples"] >= 2
+        frames = camera["frames_decoded"]
+        rows = [json.loads(line) for line in (session / "camera/timestamps.jsonl").read_text().splitlines()]
+        assert len(rows) == frames >= 2 and all(type(row["device_timestamp"]) is int for row in rows)
+        assert len((session / "alignment.preview.jsonl").read_text().splitlines()) == frames
+        assert not any(key in camera for key in ("index", "mode", "name"))  # Studio-only fields stay out.
+    rows = index_rows(out)
+    assert [(r["session"], r["camera_kind"], r["camera_imu"]) for r in rows] == [
+        (f"{SLUG}_001", "realsense", True), (f"{SLUG}_003", "realsense", True)]
+    card = (out / "README.md").read_text()
+    assert "RealSense D455 recorded through pyrealsense2" in card and "camera/realsense.accel.jsonl" in card
+    assert "camera IMU is not recorded" not in card
+
+
+def test_realsense_color_stall_fails_the_episode_and_reopens_the_camera(tmp_path, monkeypatch):
+    import oglo.studio_realsense as studio_realsense
+
+    patch_devices(monkeypatch, pair=False)
+    hardware = patch_realsense(monkeypatch)
+    monkeypatch.setattr(studio_realsense, "STALL_NS", 300_000_000)
+
+    class StallDisplay(ScriptedDisplay):
+        def show(self, image, listen=True):
+            if listen and self.shown == 8 and hardware.starts == 1:
+                hardware.color_stalled.set()  # The first episode's camera stops sending color.
+            return super().show(image, listen)
+
+    keys = ["g"] + [None] * 60 + ["g"] + [None] * 15 + ["h"]
+    collector = collect.Collector(make_args(tmp_path, pair=False, seconds=5, camera_backend="realsense"),
+                                  display=StallDisplay(keys))
+    collector.reconnect_pause = 0
+    reconnect = collector.reconnect_camera
+
+    def reconnect_a_healthy_camera(reason):
+        hardware.color_stalled.clear()  # The reopened camera streams again.
+        return reconnect(reason)
+
+    collector.reconnect_camera = reconnect_a_healthy_camera
+    episodes = collector.run()
+    assert [e["outcome"] for e in episodes] == ["failed", "saved"]
+    assert hardware.starts == 2  # The failed worker was replaced.
+    failed = tmp_path / "captures" / SLUG / "_failed" / f"{SLUG}_001" / "manifest.json"
+    assert "five seconds" in json.loads(failed.read_text())["error"]
+    saved = json.loads((tmp_path / "captures" / SLUG / f"{SLUG}_002" / "manifest.json").read_text())
+    assert saved["complete"] is True and saved["camera"]["kind"] == "realsense"
+
+
+def test_realsense_unplugged_while_idle_is_waited_for_and_found_again(tmp_path, monkeypatch, capsys):
+    patch_devices(monkeypatch, pair=False)
+    hardware = patch_realsense(monkeypatch)
+    monkeypatch.setattr(collect, "REALSENSE_STALL_SECONDS", 0.3)
+    monkeypatch.setattr(collect.realsense, "problem",
+                        lambda platform=None: None if hardware.plugged else "no RealSense camera is connected")
+    replug_frames = []
+    reconnecting = []
+
+    class ReplugDisplay(ScriptedDisplay):
+        def show(self, image, listen=True):
+            if listen and self.shown == 20 and hardware.starts == 1:
+                hardware.unplug()
+            if listen and not hardware.plugged:
+                if reconnecting:  # Plugged back in only once the collector is waiting for it.
+                    replug_frames.append(1)
+                if len(replug_frames) >= 12:
+                    hardware.replug()
+                self.shown += 1
+                return -1
+            return super().show(image, listen)
+
+    collector = collect.Collector(make_args(tmp_path, pair=False, camera_backend="realsense"),
+                                  display=ReplugDisplay([None] * 120))
+    collector.reconnect_pause = 0
+    reconnect = collector.reconnect_camera
+    collector.reconnect_camera = lambda reason: reconnecting.append(1) or reconnect(reason)
+    assert collector.run() == []
+    assert hardware.starts == 2
+    err = capsys.readouterr().err
+    assert "no color frame from the RealSense for 0.3 s" in err
+    assert "camera reconnect attempt 1 failed: no RealSense camera is connected" in err
+
+
+def test_realsense_idle_source_reports_a_worker_error_and_a_stall():
+    worker = SimpleNamespace(error=None, last_frame_ns=time.monotonic_ns(), latest_frame=np.zeros((4, 4, 3)))
+    source = collect.RealSenseIdleSource(worker, period=0, stall_seconds=0.2)
+    ok, frame = source.read()
+    assert ok and frame is worker.latest_frame
+    worker.last_frame_ns -= 1_000_000_000
+    assert source.read() == (False, None) and "no color frame" in source.reason
+    worker.error = "RealSense stopped returning color frames for five seconds"
+    assert source.read() == (False, None) and source.reason == worker.error
+
+
+def test_realsense_is_chosen_by_camera_name_and_never_probed_as_an_ovision(monkeypatch, tmp_path):
+    monkeypatch.setattr(collect.ovision, "problem", lambda device: pytest.fail("a RealSense is not an OVISION"))
+    monkeypatch.setattr(collect.realsense, "problem", lambda platform=None: None)
+    card = "Intel(R) RealSense(TM) Depth Ca"
+    assert collect.choose_backend("auto", 2, card=card) == ("realsense", None)
+    assert collect.choose_backend("realsense", 2) == ("realsense", None)
+    monkeypatch.setattr(collect.realsense, "problem", lambda platform=None: "pyrealsense2 is not installed")
+    assert collect.choose_backend("auto", 2, card=card) == (
+        "opencv", "a RealSense recorded without its IMU: pyrealsense2 is not installed")
+    with pytest.raises(RuntimeError, match="--camera-backend realsense: pyrealsense2 is not installed"):
+        collect.choose_backend("realsense", 2)
+    # The card comes from sysfs when the caller does not pass it.
+    (tmp_path / "video2").mkdir()
+    (tmp_path / "video2" / "name").write_text(card + "\n")
+    monkeypatch.setattr(collect, "V4L2_SYSFS", tmp_path)
+    assert collect.camera_card(2) == card and collect.camera_card(7) is None
+
+
+def test_main_names_the_realsense_backend_and_probes_its_encoder(tmp_path, monkeypatch, capsys):
+    seen = {}
+
+    class StubCollector:
+        def __init__(self, args):
+            seen["args"] = args
+
+        def run(self):
+            return []
+
+    probed = []
+    monkeypatch.setattr(collect, "Collector", StubCollector)
+    monkeypatch.setattr(collect.capture, "probe_encoder", lambda *a: probed.append(a) or None)
+    monkeypatch.setattr(collect.realsense, "problem", lambda platform=None: None)
+    argv = ["--out", str(tmp_path), "--task", "t", "--camera", "2", "--skip-doctor",
+            "--camera-backend", "realsense", "--codec", "libx264"]
+    assert collect.main(argv) == 0
+    assert seen["args"].camera_backend == "realsense" and probed == [("libx264", 23)]
+    assert "camera backend: RealSense (color 1280x720 at 30 fps through libx264" in capsys.readouterr().out
+
+
+def test_realsense_problem_names_what_is_missing(monkeypatch):
+    import fake_realsense
+    from fake_realsense import Hardware
+
+    realsense = collect.realsense
+    assert "macOS" in realsense.problem(platform="darwin")
+    monkeypatch.setattr(realsense, "installed_version", lambda: None)
+    assert "not installed" in realsense.problem(platform="linux")
+    monkeypatch.setattr(realsense, "installed_version", lambda: "2.55.1")
+    assert "targets 2.58.4.10922" in realsense.problem(platform="linux")
+    monkeypatch.setattr(realsense, "installed_version", lambda: "2.58.4.10922")
+    for hardware, expected in (
+        ((), "no RealSense camera is connected"),
+        ((Hardware(), Hardware("999")), "2 RealSense cameras are connected (123456789012, 999)"),
+        ((Hardware(imu=False, name="Intel RealSense D415"),), "D415 has no accelerometer"),
+        ((Hardware(usb_type="2.1"),), "USB 2.1 connection; plug it into a USB 3 port"),
+    ):
+        fake_realsense.install(monkeypatch, *hardware)
+        if not hardware:
+            fake_realsense.Hardware.attached = []
+        assert expected in realsense.problem(platform="linux")
+    fake_realsense.install(monkeypatch)
+    assert realsense.problem(platform="linux") is None
+
+
+def test_realsense_check_describes_the_camera_and_records_a_few_seconds(monkeypatch):
+    import fake_realsense
+    from fake_realsense import Hardware
+
+    fake_realsense.install(monkeypatch, Hardware(recommended="5.17.0.0"))
+    monkeypatch.setattr(collect.realsense, "problem", lambda platform=None: None)
+    monkeypatch.setattr(collect.realsense, "COLOR_SIZE", (320, 240))
+    lines = []
+    assert collect.realsense.check(seconds=0.5, out=lines.append) == 0
+    text = "\n".join(lines)
+    assert "device     Intel RealSense D455  serial 123456789012" in text
+    assert "firmware   5.16.0.1 (recommended 5.17.0.0) -- update with RealSense Viewer" in text
+    assert "accel      250 Hz (offered 63, 250)" in text and "gyro       400 Hz (offered 200, 400)" in text
+    assert "device time sensor_timestamp (realsense_hw_clock)" in text
+    assert lines[-1] == "OK: this camera can record color + camera IMU."
+
+    fake_realsense.install(monkeypatch, Hardware(metadata=False, honor_global_time=False))
+    lines.clear()
+    assert collect.realsense.check(seconds=0.3, out=lines.append) == 1
+    assert lines[-1].startswith("FAIL:") and "camera-clock time" in lines[-1]
+
+
+def test_realsense_single_session_records_both_gloves_for_the_full_duration(tmp_path, monkeypatch):
+    patch_devices(monkeypatch)
+    patch_realsense(monkeypatch)
+    output = tmp_path / "rs_001"
+    assert collect.realsense.main(["--output", str(output), "--task", "t", "--seconds", "0.8", "--pair"]) == 0
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["complete"] is True and manifest["stop_reason"] == "duration"
+    assert manifest["camera"]["kind"] == "realsense" and len(manifest["gloves"]) == 2
+    assert manifest["camera"]["frames_decoded"] == manifest["camera"]["frames_submitted"] >= 2
+
+
+def test_the_realsense_backend_checks_the_usb_controller_of_the_realsense_itself(tmp_path, monkeypatch):
+    for index, card in ((0, "Integrated Camera"), (4, "Intel(R) RealSense(TM) Depth Ca")):
+        (tmp_path / f"video{index}").mkdir()
+        (tmp_path / f"video{index}" / "name").write_text(card + "\n")
+    monkeypatch.setattr(collect, "V4L2_SYSFS", tmp_path)
+    monkeypatch.setattr(collect, "is_capture_node", lambda index: True)
+    assert collect.locate_realsense(4, "4") == (4, "4", None)
+    index, spec, note = collect.locate_realsense(0, "0")
+    assert (index, spec) == (4, "RealSense") and "--camera 0 is not the RealSense" in note
+    (tmp_path / "video4" / "name").write_text("Some Webcam\n")
+    index, spec, note = collect.locate_realsense(0, "0")
+    assert (index, spec) == (0, "0") and "no /dev/video node is named RealSense" in note
+
+
+def test_realsense_py_refuses_a_bad_quality_and_a_missing_encoder_before_opening_devices(monkeypatch, capsys):
+    monkeypatch.setattr(collect.realsense, "problem", lambda platform=None: None)
+    monkeypatch.setattr(collect.realsense, "capture", lambda *a, **k: pytest.fail("no device may open"))
+    base = ["--output", "unused", "--task", "t"]
+    with pytest.raises(SystemExit):
+        collect.realsense.main(base + ["--video-quality", "60"])
+    assert "--video-quality must be 0..51" in capsys.readouterr().err
+    monkeypatch.setattr(collect.realsense, "probe_encoder", lambda codec, quality: "no NVENC device")
+    with pytest.raises(SystemExit):
+        collect.realsense.main(base + ["--codec", "hevc_nvenc"])
+    assert "--codec hevc_nvenc does not work here: no NVENC device" in capsys.readouterr().err
