@@ -710,6 +710,8 @@ def test_reconnecting_the_realsense_in_use_works_when_listing_hides_it(studio_cl
     studio.connect(0, camera_mode="realsense", camera_name=REALSENSE_SERIAL)
     _wait_for_live(studio)
     listed["choices"] = []  # The streaming camera no longer shows up.
+    (choice,) = [c for c in studio.devices()["cameras"] if c.get("mode") == "realsense"]
+    assert choice["name"] == REALSENSE_SERIAL and choice["label"].endswith("· connected")
     studio.connect(0, camera_mode="realsense", camera_name=REALSENSE_SERIAL)
     _wait_for_live(studio)
     assert hardware.starts == 2 and studio.camera.name == REALSENSE_SERIAL

@@ -512,6 +512,14 @@ class Collection:
         """Discover choices without disturbing already connected streams."""
         with self._lock:
             cameras = _camera_choices()
+            in_use = self.camera if getattr(self.camera, "mode", None) == "realsense" else None
+            if in_use is not None and not any(choice.get("mode") == "realsense" and
+                                              choice.get("name") == in_use.name for choice in cameras):
+                # librealsense's libusb backend can hide the camera it is streaming from
+                # a second listing; keep the connected one selectable.
+                cameras.insert(0, {"index": in_use.index, "mode": "realsense", "name": in_use.name,
+                                   "label": f"{in_use.device_info.get('model') or 'RealSense'} · "
+                                            f"color + camera IMU · serial {in_use.name} · connected"})
             if self.gloves:
                 gloves = [{"port": self.glove_ports.get(glove.info.side, ""),
                            "side": glove.info.side, "serial": glove.info.serial,
