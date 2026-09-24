@@ -8,20 +8,37 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 import oglo
 from oglo._usb import list_candidates
-from fastapi import Request
+
+
+@dataclass(frozen=True)
+class CameraSelection:
+    """One device choice returned by :meth:`Collection.devices`."""
+
+    index: int
+    mode: str = "default"
+    name: str | None = None
+
+    @classmethod
+    def from_choice(cls, choice: dict) -> CameraSelection:
+        """Turn one ``devices()['cameras']`` row into a stable selection."""
+        return cls(index=choice["index"], mode=choice.get("mode", "default"),
+                   name=choice.get("name"))
 
 
 def _atomic_json(path: Path, value: dict) -> None:
@@ -58,8 +75,34 @@ def _load_episode(root: Path, episode_id: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _episode_video_path(root: Path, episode_id: str) -> Path:
+    manifest = _load_episode(root, episode_id)
+    if not manifest.get("complete"):
+        raise ValueError("episode is incomplete")
+    relative = manifest.get("camera", {}).get("video")
+    if type(relative) is not str or not relative.startswith("camera/") or not relative.endswith(".mp4"):
+        raise ValueError("episode video is unavailable")
+    folder = (root / episode_id).resolve()
+    path = (folder / relative).resolve()
+    if not path.is_relative_to(folder) or not path.is_file():
+        raise ValueError("episode video is unavailable")
+    return path
+
+
+def _review_eye_crop(manifest: dict) -> tuple[int, int, int] | None:
+    """Return the selected-eye crop for a packed source video."""
+    camera = manifest.get("camera", {})
+    if camera.get("kind") not in {"ovision_uvc_stereo_host_timed", "ovision_native_stereo"}:
+        return None
+    width, height = camera.get("width"), camera.get("height")
+    eye = camera.get("eye")
+    if type(width) is not int or type(height) is not int or width % 2 or eye not in {"left", "right"}:
+        raise ValueError("packed OVISION review metadata is invalid")
+    return width // 2, height, 0 if eye == "left" else width // 2
+
+
 def _camera_choices() -> list[dict]:
-    """List OpenCV camera indices, with OS names when their index mapping is known."""
+    """List camera modes without opening a device that may already be recording."""
     cameras = []
     if sys.platform.startswith("linux"):
         for node in sorted(Path("/sys/class/video4linux").glob("video*"),
@@ -71,35 +114,141 @@ def _camera_choices() -> list[dict]:
                         name = (node / "name").read_text(encoding="utf-8").strip()
                     except OSError:
                         name = "USB camera"
-                    cameras.append({"index": index, "label": f"{name} · /dev/{node.name}"})
+                    device = f"/dev/{node.name}"
+                    try:
+                        formats = subprocess.run(
+                            ["v4l2-ctl", "--device", device, "--list-formats-ext"],
+                            capture_output=True, text=True, timeout=2, check=False)
+                        native = (formats.returncode == 0 and
+                                  re.search(r"'H264'.*?3840x1080", formats.stdout, re.S))
+                    except (OSError, subprocess.TimeoutExpired):
+                        native = False
+                    if native:
+                        for eye in ("left", "right"):
+                            cameras.append({"index": index, "mode": f"ovision_native_{eye}",
+                                            "name": device,
+                                            "label": f"{name} · native OVISION · {eye} preview · {device}"})
+                    cameras.append({"index": index, "mode": "default",
+                                    "label": f"{name} · {device}"})
     elif sys.platform == "darwin":
+        # OpenCV indexes AVFoundation's video devices followed by muxed devices.
+        # FFmpeg's numeric indexes can differ, so stereo capture uses the name.
+        script = """import AVFoundation
+import CoreMedia
+let devices = AVCaptureDevice.devices(for: .video) + AVCaptureDevice.devices(for: .muxed)
+for (index, device) in devices.enumerated() {
+    let stereo = device.formats.contains {
+        let size = CMVideoFormatDescriptionGetDimensions($0.formatDescription)
+        return size.width == 3840 && size.height == 1080
+    }
+    print("\\(index)|\\(device.localizedName)|\\(stereo ? \"stereo\" : \"\")")
+}
+"""
         try:
             result = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
-                capture_output=True, text=True, timeout=5, check=False)
-            section = result.stderr.split("AVFoundation video devices:", 1)[1].split(
-                "AVFoundation audio devices:", 1)[0]
-            for index, name in re.findall(r"\[(\d+)\] ([^\n]+)", section):
-                if int(index) <= 32:
-                    cameras.append({"index": int(index), "label": name.strip()})
-        except (OSError, subprocess.TimeoutExpired, IndexError):
+                ["swift", "-e", script], capture_output=True, text=True,
+                timeout=10, check=False)
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    index, name, capability = line.split("|", 2)
+                    if not index.isdigit() or int(index) > 32:
+                        continue
+                    camera_index = int(index)
+                    if capability == "stereo" and ":" not in name:
+                        for eye in ("left", "right"):
+                            cameras.append({"index": camera_index, "mode": f"ovision_{eye}",
+                                            "name": name,
+                                            "label": f"{name} · OVISION {eye} preview · saves both eyes"})
+                    cameras.append({"index": camera_index, "mode": "default",
+                                    "label": f"{name} · standard view · index {camera_index}"})
+        except (OSError, subprocess.TimeoutExpired, ValueError):
             pass
-    return cameras or [{"index": index, "label": f"Camera {index} · verify live view"}
+    return cameras or [{"index": index, "mode": "default",
+                       "label": f"Camera {index} · verify live view"}
                        for index in range(5)]
+
+
+def _ffmpeg_executable() -> str | None:
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, RuntimeError):
+        return shutil.which("ffmpeg")
+
+
+class FFmpegEyeCapture:
+    """Read the complete OVISION frame; the selected eye is only for preview."""
+
+    width, height = 3840, 1080
+
+    def __init__(self, name: str, eye: str) -> None:
+        executable = _ffmpeg_executable()
+        if not executable:
+            raise RuntimeError("OVISION eye capture requires FFmpeg; reinstall OGLO Studio extras")
+        if eye not in {"left", "right"}:
+            raise ValueError("OVISION eye must be left or right")
+        self.process = subprocess.Popen([
+            executable, "-nostdin", "-hide_banner", "-loglevel", "error",
+            "-f", "avfoundation", "-video_size", "3840x1080", "-framerate", "30",
+            "-i", f"{name}:none", "-an",
+            "-pix_fmt", "bgr24", "-r", "30", "-f", "rawvideo", "pipe:1",
+        ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+           bufsize=0)
+
+    def isOpened(self) -> bool:
+        return self.process.poll() is None
+
+    def getBackendName(self) -> str:
+        return "FFmpeg AVFoundation OVISION eye"
+
+    def set(self, *_args) -> bool:
+        return False
+
+    def read(self):
+        import numpy as np
+
+        size = self.width * self.height * 3
+        frame = bytearray(size)
+        view = memoryview(frame)
+        offset = 0
+        while offset < size:
+            count = self.process.stdout.readinto(view[offset:])
+            if not count:
+                return False, None
+            offset += count
+        return True, np.frombuffer(frame, dtype=np.uint8).reshape(self.height, self.width, 3)
+
+    def release(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=2)
+        self.process.stdout.close()
 
 
 class CameraWorker:
     """Continuously reads one webcam for preview and bounded episode capture."""
 
     native_device_timestamps = False
+    postprocessing_capable = False
 
-    def __init__(self, index: int, fps: float = 30.0) -> None:
+    def __init__(self, index: int, fps: float = 30.0, *, mode: str = "default",
+                 name: str | None = None) -> None:
         import cv2
 
         self.cv2 = cv2
         self.index = index
+        self.mode = mode
+        self.name = name
+        self.size: tuple[int, int] | None = None
         self.fps = fps
-        self.device = cv2.VideoCapture(index)
+        self.eye = mode.removeprefix("ovision_") if mode.startswith("ovision_") else None
+        if self.eye and (self.eye not in {"left", "right"} or not name):
+            raise ValueError("a named OVISION left or right eye is required")
+        self.device = FFmpegEyeCapture(name, self.eye) if self.eye and name else cv2.VideoCapture(index)
         if not self.device.isOpened():
             self.device.release()
             raise RuntimeError(f"camera {index} could not be opened")
@@ -111,6 +260,8 @@ class CameraWorker:
         self._last_capture = None
         self._jpeg = None
         self._last_frame_ns = None
+        self._brightness: float | None = None
+        self._dark_samples = 0
         self.error = None
         self._thread = threading.Thread(target=self._run, name="oglo-camera", daemon=True)
         self._thread.start()
@@ -124,6 +275,8 @@ class CameraWorker:
             last = self._last_frame_ns
             return {"ready": self._jpeg is not None and self.error is None,
                     "age_ms": round((time.monotonic_ns() - last) / 1_000_000) if last else None,
+                    "dark": self._dark_samples >= 3,
+                    "brightness": self._brightness,
                     "error": self.error}
 
     def begin(self, folder: Path, stop: threading.Event) -> None:
@@ -154,9 +307,11 @@ class CameraWorker:
         with self._lock:
             if self._capture is not None:
                 self._capture["stop"].set()
+        if isinstance(self.device, FFmpegEyeCapture):
+            self.device.release()  # Unblock a pipe read before joining the worker.
         self._thread.join(timeout=2)
         # Avoid releasing a device while a blocked driver read still owns it.
-        if not self._thread.is_alive():
+        if not self._thread.is_alive() and not isinstance(self.device, FFmpegEyeCapture):
             self.device.release()
 
     def _seal(self, capture: dict) -> None:
@@ -168,13 +323,21 @@ class CameraWorker:
             if capture["count"] < 2 and not capture["error"]:
                 capture["error"] = "camera captured fewer than two frames"
             capture["result"] = {
-                "kind": "usb_webcam", "index": self.index,
+                "kind": "ovision_uvc_stereo_host_timed" if self.eye else "usb_webcam",
+                "index": self.index, "mode": self.mode, "name": self.name,
+                "eye": self.eye, "source_eye_order": ["left", "right"] if self.eye else None,
+                "source_width": (capture["size"] or (0, 0))[0] if self.eye else None,
+                "source_height": (capture["size"] or (0, 0))[1] if self.eye else None,
+                "preview_width": (capture["size"] or (0, 0))[0] // 2 if self.eye else None,
+                "preview_height": (capture["size"] or (0, 0))[1] if self.eye else None,
                 "video": "camera/video.mp4", "timestamps": "camera/timestamps.jsonl",
                 "codec": "mp4v", "playback_fps": self.fps,
                 "requested_fps": self.fps,
                 "fps_request_accepted": self.fps_request_accepted,
                 "backend": self.backend,
-                "host_timestamp_meaning": "OpenCV read-return time, not exposure time",
+                "host_timestamp_meaning": (
+                    "FFmpeg pipe read-return time, not exposure time" if self.eye
+                    else "OpenCV read-return time, not exposure time"),
                 "native_device_timestamps": False,
                 "frames_submitted": capture["count"], "width": (capture["size"] or (0, 0))[0],
                 "height": (capture["size"] or (0, 0))[1],
@@ -200,18 +363,26 @@ class CameraWorker:
                 received = time.monotonic_ns()
                 if not ok or frame is None:
                     raise RuntimeError("camera stopped returning frames")
+                height, width = frame.shape[:2]
+                if self.eye and width % 2:
+                    raise RuntimeError("OVISION packed frame width must be even")
+                preview = (frame[:, :width // 2] if self.eye == "left" else
+                           frame[:, width // 2:] if self.eye == "right" else frame)
                 with self._lock:
                     self._last_frame_ns = received
+                    self.size = (preview.shape[1], preview.shape[0])
                 now = time.monotonic()
                 if now - last_preview >= 0.2:
-                    encoded, jpeg = self.cv2.imencode(".jpg", frame)
-                    if encoded:
-                        with self._lock:
+                    brightness = float(preview[::16, ::16].mean())
+                    encoded, jpeg = self.cv2.imencode(".jpg", preview)
+                    with self._lock:
+                        self._brightness = round(brightness, 1)
+                        self._dark_samples = min(3, self._dark_samples + 1) if brightness < 18 else 0
+                        if encoded:
                             self._jpeg = jpeg.tobytes()
                     last_preview = now
                 if capture is None:
                     continue
-                height, width = frame.shape[:2]
                 if capture["writer"] is None:
                     if width % 2 or height % 2:
                         raise RuntimeError("camera dimensions must be even for MP4")
@@ -245,7 +416,14 @@ class CameraWorker:
                 self._seal(capture)
 
 
-class Studio:
+class Collection:
+    """Capture, validate, review, and export a paired-glove camera session.
+
+    The same controller backs the localhost UI and the Python SDK. Camera and
+    glove streams have one owner, so a script and the UI cannot accidentally
+    drain the same device independently.
+    """
+
     def __init__(self, root: Path, camera_factory=CameraWorker) -> None:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -262,11 +440,18 @@ class Studio:
         self.last_calibration: dict | None = None
         self.camera_factory = camera_factory
         self._preview_lock = threading.Lock()
+        self._review_lock = threading.Lock()
         self._live_tactile: dict = {}
         self._baselines: dict = {}
         self._preview_errors: dict = {}
         self._monitor_stop: threading.Event | None = None
         self._monitor_threads: list[threading.Thread] = []
+
+    def __enter__(self) -> Collection:
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.close()
 
     def status(self) -> dict:
         with self._lock:
@@ -276,13 +461,18 @@ class Studio:
                     episodes.append(json.loads(path.read_text(encoding="utf-8")))
                 except (OSError, json.JSONDecodeError):
                     continue
+            episodes.sort(key=lambda episode: (episode.get("started_wall_time_ns", 0), episode.get("id", "")))
             return {"state": self.state, "current": self.current, "error": self.error,
                     "gloves": [{"side": g.info.side, "serial": g.info.serial,
                                 "zero_valid": g.info.zero_valid,
                                 "threshold": g.info.stream_thr,
                                 "stream_clean": g.info.stream_clean} for g in self.gloves],
-                    "camera": {"index": self.camera.index, "error": self.camera.error,
-                               "native_device_timestamps": self.camera.native_device_timestamps} if self.camera else None,
+                    "camera": {"index": self.camera.index, "mode": self.camera.mode,
+                               "name": self.camera.name, "eye": self.camera.eye,
+                               "size": self.camera.size,
+                               "error": self.camera.error,
+                               "native_device_timestamps": self.camera.native_device_timestamps,
+                               "postprocessing_capable": getattr(self.camera, "postprocessing_capable", False)} if self.camera else None,
                     "calibration": self.last_calibration,
                     "episodes": episodes,
                     "delivery_profiles": {
@@ -290,6 +480,9 @@ class Studio:
                         "annotation_handoff": "available with native camera timing" if
                         self.camera and self.camera.native_device_timestamps else
                         "requires a camera with native frame timestamps",
+                        "og_center_postprocessing": "available with native OVISION stereo, IMU, and calibration" if
+                        self.camera and getattr(self.camera, "postprocessing_capable", False) else
+                        "requires Linux native OVISION capture",
                     }}
 
     def live(self) -> dict:
@@ -391,10 +584,21 @@ class Studio:
             self._baselines[glove.info.side] = list(recipe["baseline"])
 
     def connect(self, camera_index: int, left_port: str | None = None,
-                right_port: str | None = None) -> dict:
+                right_port: str | None = None, camera_mode: str = "default",
+                camera_name: str | None = None) -> dict:
         with self._lock:
             if self.state not in {"disconnected", "ready", "error"}:
                 raise ValueError("stop and finish the active episode before reconnecting")
+            if camera_mode not in {"default", "ovision_left", "ovision_right",
+                                   "ovision_native_left", "ovision_native_right"}:
+                raise ValueError("invalid camera mode")
+            if camera_mode != "default":
+                selected = next((choice for choice in _camera_choices()
+                                 if choice.get("mode") == camera_mode
+                                 and choice.get("name") == camera_name), None)
+                if selected is None:
+                    raise ValueError("selected OVISION eye is no longer available")
+                camera_index = selected["index"]  # Display only; capture uses the name.
             if (left_port is None) != (right_port is None):
                 raise ValueError("select both glove ports")
             if left_port is not None:
@@ -407,7 +611,10 @@ class Studio:
                     self.gloves = list(oglo.connect_pair())
                 else:
                     for side, port in (("left", left_port), ("right", right_port)):
-                        glove = oglo.connect(port=port)
+                        try:
+                            glove = oglo.connect(port=port)
+                        except Exception as exc:
+                            raise RuntimeError(f"{side} glove at {port}: {exc}") from exc
                         self.gloves.append(glove)
                         if glove.info.side != side:
                             raise ValueError(f"{port} reports {glove.info.side}, expected {side}")
@@ -419,7 +626,15 @@ class Studio:
                 for glove in self.gloves:
                     glove.raw()
                     self._read_baseline(glove)
-                self.camera = self.camera_factory(camera_index)
+                if camera_mode.startswith("ovision_native_"):
+                    from oglo.studio_ovision import NativeOvisionCameraWorker
+                    self.camera = NativeOvisionCameraWorker(
+                        camera_index, mode=camera_mode, name=camera_name, root=self.root)
+                elif camera_mode == "default":
+                    self.camera = self.camera_factory(camera_index)
+                else:
+                    self.camera = self.camera_factory(camera_index, mode=camera_mode,
+                                                      name=camera_name)
                 self._start_monitors()
                 self.state = "ready" if all(g.info.zero_valid for g in self.gloves) else "needs_calibration"
                 self.error = None
@@ -430,6 +645,13 @@ class Studio:
                 self.state = "disconnected"
                 raise
             return self.status()
+
+    def connect_camera(self, camera: CameraSelection, *, left_port: str | None = None,
+                       right_port: str | None = None) -> dict:
+        """Connect a discovered camera and the verified left/right glove pair."""
+        if not isinstance(camera, CameraSelection):
+            raise TypeError("camera must be a CameraSelection")
+        return self.connect(camera.index, left_port, right_port, camera.mode, camera.name)
 
     def _close_devices(self) -> None:
         self._stop_monitors()
@@ -447,10 +669,128 @@ class Studio:
             self._preview_errors.clear()
 
     def close(self) -> None:
-        """Stop active device streams before the local server exits."""
+        """Finish an active take before releasing its camera and gloves."""
+        with self._lock:
+            active, state = self.current, self.state
+        if active and state == "recording":
+            self.stop(source="external")
+        if active and state in {"recording", "finalizing"}:
+            self.wait(active, timeout=60)
         with self._lock:
             self._close_devices()
             self.state = "disconnected"
+
+    def wait(self, episode_id: str, *, timeout: float = 60.0) -> dict:
+        """Wait until a started take has sealed its manifest and inventory."""
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+        _load_episode(self.root, episode_id)
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                pending = self.current == episode_id and self.state in {"recording", "finalizing"}
+            if not pending:
+                return _load_episode(self.root, episode_id)
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"episode {episode_id} did not finish within {timeout} seconds")
+            time.sleep(0.05)
+
+    def take(self, task: str, *, seconds: float, profile: str = "source_archive",
+             selection: str | None = None) -> dict:
+        """Record one timed take and optionally keep or discard it.
+
+        Connect and calibrate first. A failed or incomplete take raises after
+        its diagnostic manifest has been saved; it is never auto-kept.
+        """
+        if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds <= 0:
+            raise ValueError("seconds must be a positive finite duration")
+        if selection not in {None, "kept", "discarded"}:
+            raise ValueError("selection must be kept, discarded, or None")
+        episode_id = self.start(task, source="external", profile=profile)["current"]
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self.state != "recording" or self.current != episode_id:
+                    break
+            time.sleep(min(0.05, max(0.001, deadline - time.monotonic())))
+        with self._lock:
+            still_recording = self.state == "recording" and self.current == episode_id
+        if still_recording:
+            self.stop(source="external")
+        episode = self.wait(episode_id)
+        if not episode.get("complete"):
+            raise RuntimeError(f"take {episode_id} is incomplete: {episode.get('error')}")
+        if selection:
+            self.select(episode_id, selection, source="external")
+            episode = _load_episode(self.root, episode_id)
+        return episode
+
+    def review_video(self, episode_id: str) -> Path:
+        """Make a browser-playable H.264 copy outside the immutable source episode."""
+        source = _episode_video_path(self.root, episode_id)
+        crop = _review_eye_crop(_load_episode(self.root, episode_id))
+        target_dir = self.root / "review"
+        target_dir.mkdir(exist_ok=True)
+        target = target_dir / f"{episode_id}.mp4"
+        with self._review_lock:
+            if target.is_file() and target.stat().st_size and target.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+                return target
+            executable = _ffmpeg_executable()
+            if not executable:
+                raise RuntimeError("video review needs FFmpeg; reinstall OGLO Studio extras")
+            temporary = target_dir / f".{episode_id}.{uuid4().hex}.mp4"
+            try:
+                command = [
+                    executable, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(source), "-an",
+                ]
+                if crop:
+                    command += ["-vf", f"crop={crop[0]}:{crop[1]}:{crop[2]}:0"]
+                command += [
+                    "-c:v", "libx264", "-preset", "veryfast",
+                    "-crf", "25", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                    str(temporary),
+                ]
+                result = subprocess.run(command, capture_output=True, text=True,
+                                        timeout=180, check=False)
+                if result.returncode or not temporary.is_file() or not temporary.stat().st_size:
+                    detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "FFmpeg failed"
+                    raise RuntimeError(f"could not prepare review video: {detail}")
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+        return target
+
+    def review_poster(self, episode_id: str) -> Path:
+        """Show the first saved frame while browser video metadata loads."""
+        source = _episode_video_path(self.root, episode_id)
+        crop = _review_eye_crop(_load_episode(self.root, episode_id))
+        target_dir = self.root / "review"
+        target_dir.mkdir(exist_ok=True)
+        target = target_dir / f"{episode_id}.jpg"
+        if target.is_file() and target.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+            return target
+        import cv2
+
+        capture = cv2.VideoCapture(str(source))
+        try:
+            ok, frame = capture.read()
+        finally:
+            capture.release()
+        if not ok:
+            raise RuntimeError("could not read a frame for video review")
+        if crop:
+            frame = frame[:, crop[2]:crop[2] + crop[0]]
+        encoded, jpeg = cv2.imencode(".jpg", frame)
+        if not encoded:
+            raise RuntimeError("could not encode the review poster")
+        temporary = target_dir / f".{episode_id}.{uuid4().hex}.jpg"
+        try:
+            temporary.write_bytes(jpeg.tobytes())
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target
 
     def calibrate(self, threshold: int | None = None) -> dict:
         if threshold is not None and (type(threshold) is not int or not 0 <= threshold <= 500):
@@ -503,15 +843,19 @@ class Studio:
             live = self.live()
             if not live["camera"] or not live["camera"]["ready"] or live["camera"]["age_ms"] > 1000:
                 raise ValueError("camera live stream is not healthy")
+            if live["camera"].get("dark"):
+                raise ValueError("camera image is too dark; check the lens, lighting, and exposure")
             if live["errors"] or any(side not in live["gloves"] or live["gloves"][side]["age_ms"] > 1000
                                      for side in ("left", "right")):
                 raise ValueError("both glove live streams must be healthy")
             if not task.strip():
                 raise ValueError("enter a task description")
-            if profile not in {"source_archive", "annotation_handoff"}:
+            if profile not in {"source_archive", "annotation_handoff", "og_center_postprocessing"}:
                 raise ValueError("unknown delivery profile")
             if profile == "annotation_handoff" and not self.camera.native_device_timestamps:
                 raise ValueError("annotation handoff needs a camera with native frame timestamps")
+            if profile == "og_center_postprocessing" and not getattr(self.camera, "postprocessing_capable", False):
+                raise ValueError("OG Center post processing needs native OVISION stereo, IMU, and calibration")
             if mapping is not None and (
                 type(mapping) is not dict or
                 any(key not in {"toggle", "confirm", "discard"} or
@@ -549,8 +893,10 @@ class Studio:
                 "trigger_mapping": mapping or {},
                 "task_description": task.strip(), "complete": False,
                 "selection": "unreviewed", "delivery_validation": {"source_archive": "pending",
-                    "annotation_handoff": "pending" if profile == "annotation_handoff"
-                    else "blocked: camera has no native device timestamp"},
+                    "annotation_handoff": "pending" if self.camera.native_device_timestamps
+                    else "blocked: camera has no native device timestamp",
+                    "og_center_postprocessing": "pending" if getattr(self.camera, "postprocessing_capable", False)
+                    else "blocked: camera lacks native OVISION stereo, IMU, and calibration"},
                 "alignment_validated": False, "stop_reason": "recording", "error": None,
                 "started_wall_time_ns": started_wall_ns,
                 "started_host_monotonic_ns": started_host_ns,
@@ -625,8 +971,11 @@ class Studio:
             manifest["complete"] = True
             manifest["stop_reason"] = "user_stop"
             manifest["delivery_validation"]["source_archive"] = "ready"
-            if manifest["capture_profile"] == "annotation_handoff":
+            if self.camera and self.camera.native_device_timestamps:
                 manifest["delivery_validation"]["annotation_handoff"] = "ready"
+            if (self.camera and getattr(self.camera, "postprocessing_capable", False) and
+                    manifest["camera"].get("kind") == "ovision_native_stereo"):
+                manifest["delivery_validation"]["og_center_postprocessing"] = "ready"
         except BaseException as exc:
             manifest["error"] = f"{type(exc).__name__}: {exc}"
             manifest["stop_reason"] = "error"
@@ -662,6 +1011,9 @@ class Studio:
         if {entry["side"] for entry in manifest["gloves"]} != {"left", "right"}:
             raise RuntimeError("capture requires both left and right gloves")
         camera = manifest["camera"]
+        if (manifest["capture_profile"] == "og_center_postprocessing" and
+                camera.get("kind") != "ovision_native_stereo"):
+            raise RuntimeError("OG Center post processing needs a native OVISION stereo recording")
         video = folder / camera["video"]
         timestamps = folder / camera["timestamps"]
         decoder = cv2.VideoCapture(str(video))
@@ -669,7 +1021,12 @@ class Studio:
             raise RuntimeError("saved camera video cannot be decoded")
         try:
             frames = 0
-            while decoder.read()[0]:
+            while True:
+                decoded, frame = decoder.read()
+                if not decoded:
+                    break
+                if frames == 0 and camera.get("kind") == "ovision_native_stereo" and frame.shape[:2] != (1080, 3840):
+                    raise RuntimeError("native OVISION video did not decode as 3840×1080 stereo")
                 frames += 1
         finally:
             decoder.release()
@@ -686,7 +1043,8 @@ class Studio:
                     raise RuntimeError("camera host timestamps went backwards")
                 if last is not None:
                     max_camera_gap = max(max_camera_gap, stamp - last)
-                if manifest["capture_profile"] == "annotation_handoff" and (
+                if (camera.get("kind") == "ovision_native_stereo" or
+                    manifest["capture_profile"] in {"annotation_handoff", "og_center_postprocessing"}) and (
                     type(row.get("device_timestamp")) is not int or
                     not row.get("device_timestamp_unit") or
                     not row.get("device_clock_domain") or
@@ -700,6 +1058,10 @@ class Studio:
             raise RuntimeError("camera video and timing rows do not match")
         camera["frames_decoded"] = frames
         camera["observed_fps"] = round((frames - 1) * 1_000_000_000 / (last - first), 2) if last > first else 0.0
+        if camera.get("kind", "").startswith("ovision") and camera["observed_fps"] > 60:
+            raise RuntimeError("OVISION eye frames exceeded 60 FPS; capture timing is invalid")
+        if camera.get("kind") == "ovision_native_stereo":
+            self._validate_native_ovision(folder, camera, frames)
         starts, ends = [first], [last]
         stream_metrics = {"camera": {"frames": frames, "max_gap_ns": max_camera_gap}}
         for entry in manifest["gloves"]:
@@ -737,6 +1099,75 @@ class Studio:
         manifest["validation"] = {"schema": "oglo-studio-validation.v1", "profile": manifest["capture_profile"],
                                   "coverage_fraction": round(coverage, 5), "streams": stream_metrics}
 
+    @staticmethod
+    def _validate_native_ovision(folder: Path, camera: dict, frames: int) -> None:
+        if (camera.get("width"), camera.get("height")) != (3840, 1080):
+            raise RuntimeError("native OVISION video must preserve the 3840×1080 stereo frame")
+        root = folder / "camera"
+        required = ("cam_ego.mp4", "cam_ego.stereo.jsonl", "cam_ego.imu.jsonl",
+                    "cam_ego.accel.jsonl", "cam_ego.gyro.jsonl", "cam_ego.mag.jsonl",
+                    "cam_ego.calibration.json", "cam_ego.calibration.yaml",
+                    "cam_ego.calibration.bin", "sync_point.json")
+        for name in required:
+            path = root / name
+            if not path.is_file() or (name != "cam_ego.mag.jsonl" and path.stat().st_size == 0):
+                raise RuntimeError(f"native OVISION source is missing {name}")
+        calibration = json.loads((root / "cam_ego.calibration.json").read_text(encoding="utf-8"))
+        stereo = calibration.get("stereo", {})
+        streams = calibration.get("streams", {})
+        def matrix(value, size):
+            return (isinstance(value, list) and len(value) == size and
+                    all(isinstance(row, list) and len(row) == size and
+                        all(type(number) in (int, float) and math.isfinite(number)
+                            for number in row) for row in value))
+
+        right_from_left = stereo.get("T_right_left")
+        baseline_valid = (matrix(right_from_left, 4) and
+                          sum(right_from_left[row][3] ** 2 for row in range(3)) > 0)
+        def eye_geometry(eye):
+            spec = streams.get(eye, {})
+            intrinsics = spec.get("intrinsics")
+            distortion = spec.get("distortion_coeffs")
+            return (spec.get("resolution") == [1920, 1080] and
+                    matrix(intrinsics, 3) and intrinsics[0][0] > 0 and intrinsics[1][1] > 0 and
+                    isinstance(distortion, list) and 4 <= len(distortion) <= 8 and
+                    all(type(value) in (int, float) and math.isfinite(value) for value in distortion) and
+                    matrix(spec.get("T_cam_imu"), 4))
+
+        if (calibration.get("schema") != "syncfield.ovision_calibration.v1" or
+            stereo.get("layout") != "side_by_side" or
+            stereo.get("packed_resolution") != [3840, 1080] or
+            stereo.get("eye_order") != ["left", "right"] or
+            stereo.get("synchronization") != "internal_fsync" or
+            not baseline_valid or
+            not all(eye_geometry(eye) for eye in ("left", "right"))):
+            raise RuntimeError("native OVISION calibration lacks stereo/IMU geometry")
+        with (root / "cam_ego.stereo.jsonl").open(encoding="utf-8") as source:
+            if sum(1 for _ in source) != frames:
+                raise RuntimeError("native OVISION stereo metadata does not match video frames")
+        channels_by_file = {
+            "cam_ego.imu.jsonl": {"accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z"},
+            "cam_ego.accel.jsonl": {"accel_x", "accel_y", "accel_z"},
+            "cam_ego.gyro.jsonl": {"gyro_x", "gyro_y", "gyro_z"},
+        }
+        for name, channels in channels_by_file.items():
+            last_capture = None
+            count = 0
+            with (root / name).open(encoding="utf-8") as source:
+                for line in source:
+                    row = json.loads(line)
+                    capture_ns = row.get("capture_ns")
+                    if (row.get("frame_number") != count or
+                        type(capture_ns) is not int or
+                        type(row.get("device_timestamp_ns")) is not int or
+                        (last_capture is not None and capture_ns < last_capture) or
+                        not channels <= set(row.get("channels") or {})):
+                        raise RuntimeError(f"native OVISION motion stream is invalid: {name}")
+                    last_capture = capture_ns
+                    count += 1
+            if not count:
+                raise RuntimeError(f"native OVISION motion stream is empty: {name}")
+
     def select(self, episode_id: str, selection: str, source: str = "onscreen",
                input_event: dict | None = None) -> dict:
         if selection not in {"kept", "discarded"}:
@@ -760,7 +1191,7 @@ class Studio:
         with self._lock:
             if self.state in {"recording", "finalizing", "calibrating"}:
                 raise ValueError("finish the active operation before exporting")
-            if profile not in {"source_archive", "annotation_handoff"}:
+            if profile not in {"source_archive", "annotation_handoff", "og_center_postprocessing"}:
                 raise ValueError("unknown delivery profile")
             chosen = [item for item in self.status()["episodes"]
                       if item.get("complete") and item.get("selection") == "kept"
@@ -800,7 +1231,10 @@ class Studio:
                     archive.writestr("README.txt", "OGLO Studio source archive v1\n"
                                      "Each episode contains video, timing, SDK glove data, calibration, "
                                      "manifest, and inventory. Verify SHA-256 files against dataset.json.\n"
-                                     "Webcam frames have no native device timestamp; alignment_validated is false.\n")
+                                     "Native Linux OVISION episodes retain both eyes, exposure metadata, "
+                                     "camera IMU, and calibration. Selected-eye previews do not alter source video.\n"
+                                     "Mac OVISION and ordinary webcam episodes lack native camera metadata; "
+                                     "alignment_validated is false. OG Center ingestion is a separate step.\n")
                     for episode_id, files in checksums.items():
                         for relative in files:
                             archive.write(self.root / episode_id / relative,
@@ -822,175 +1256,13 @@ class Studio:
             return destination
 
 
-def create_app(root: Path | str, studio: Studio | None = None):
-    """Create the optional FastAPI app without making web dependencies mandatory."""
-    from contextlib import asynccontextmanager
-    from fastapi import FastAPI, HTTPException
-    from fastapi.responses import FileResponse, Response
-    from starlette.concurrency import run_in_threadpool
-    from urllib.parse import urlparse
 
-    service = studio or Studio(Path(root))
+# Existing callers of oglo.studio.Studio continue to use the SDK controller.
+Studio = Collection
 
-    @asynccontextmanager
-    async def lifespan(app):
-        try:
-            yield
-        finally:
-            await run_in_threadpool(service.close)
 
-    app = FastAPI(title="OGLO Studio", lifespan=lifespan)
-    static = Path(__file__).with_name("studio_web")
+def create_app(root: Path | str, studio: Collection | None = None):
+    """Load the optional web adapter only when the localhost UI is requested."""
+    from .studio_server import create_app as create_web_app
 
-    @app.middleware("http")
-    async def same_origin(request: Request, next_handler):
-        if request.method not in {"GET", "HEAD", "OPTIONS"}:
-            origin = request.headers.get("origin")
-            if origin and urlparse(origin).netloc != request.headers.get("host"):
-                return Response(status_code=403, content="cross-origin control is disabled")
-        return await next_handler(request)
-
-    def call(action, *args):
-        try:
-            return action(*args)
-        except (ValueError, RuntimeError, OSError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    def source_of(body: dict) -> str:
-        source = body.get("source", "onscreen")
-        if type(source) is not str or source not in {"onscreen", "keyboard", "focus_loss", "external"}:
-            raise HTTPException(status_code=422, detail="invalid input source")
-        return source
-
-    def input_event_of(body: dict) -> dict | None:
-        event = body.get("input_event")
-        if event is None:
-            return None
-        if (type(event) is not dict or set(event) - {"control_id", "host_received_ns"}
-            or type(event.get("control_id")) is not str
-            or not 1 <= len(event["control_id"]) <= 64
-            or (event.get("host_received_ns") is not None and
-                (type(event["host_received_ns"]) is not int or event["host_received_ns"] < 0))):
-            raise HTTPException(status_code=422, detail="invalid button input event")
-        return event
-
-    async def json_object(request: Request) -> dict:
-        try:
-            body = await request.json()
-        except (ValueError, UnicodeDecodeError) as exc:
-            raise HTTPException(status_code=422, detail="expected a JSON object") from exc
-        if type(body) is not dict:
-            raise HTTPException(status_code=422, detail="expected a JSON object")
-        return body
-
-    @app.get("/")
-    def home():
-        return FileResponse(static / "index.html")
-
-    @app.get("/studio.js")
-    def script():
-        return FileResponse(static / "studio.js", media_type="text/javascript")
-
-    @app.get("/studio.css")
-    def style():
-        return FileResponse(static / "studio.css", media_type="text/css")
-
-    @app.get("/guide")
-    def guide():
-        return FileResponse(static / "guide.html", media_type="text/html")
-
-    @app.get("/api/status")
-    def status():
-        return service.status()
-
-    @app.get("/api/live")
-    def live():
-        return service.live()
-
-    @app.get("/api/devices")
-    async def devices():
-        return await run_in_threadpool(call, service.devices)
-
-    @app.post("/api/connect")
-    async def connect(request: Request):
-        body = await json_object(request)
-        index = body.get("camera_index", 0)
-        if type(index) is not int or not 0 <= index <= 32:
-            raise HTTPException(status_code=422, detail="invalid camera selection")
-        left_port = body.get("left_port")
-        right_port = body.get("right_port")
-        if any(port is not None and (type(port) is not str or not port or len(port) > 256)
-               for port in (left_port, right_port)):
-            raise HTTPException(status_code=422, detail="invalid glove selection")
-        if body.get("pair", True) is not True or body.get("serial") is not None:
-            raise HTTPException(status_code=422, detail="Studio requires both left and right OGLO gloves")
-        return await run_in_threadpool(call, service.connect, index, left_port, right_port)
-
-    @app.post("/api/calibrate")
-    async def calibrate(request: Request):
-        body = await json_object(request)
-        threshold = body.get("threshold")
-        if threshold is not None and (type(threshold) is not int or not 0 <= threshold <= 500):
-            raise HTTPException(status_code=422, detail="calibration threshold must be 0..500")
-        return await run_in_threadpool(call, service.calibrate, threshold)
-
-    @app.post("/api/start")
-    async def start(request: Request):
-        body = await json_object(request)
-        task = body.get("task")
-        if type(task) is not str or not 1 <= len(task) <= 500:
-            raise HTTPException(status_code=422, detail="enter a task description")
-        return await run_in_threadpool(call, service.start, task, source_of(body),
-                                       body.get("profile", "source_archive"), body.get("mapping"),
-                                       input_event_of(body))
-
-    @app.post("/api/stop")
-    async def stop(request: Request):
-        body = await json_object(request)
-        return await run_in_threadpool(call, service.stop, source_of(body), input_event_of(body))
-
-    @app.post("/api/episodes/{episode_id}/selection")
-    async def select(episode_id: str, request: Request):
-        body = await json_object(request)
-        return await run_in_threadpool(call, service.select, episode_id,
-                                       body.get("selection"), source_of(body), input_event_of(body))
-
-    @app.get("/api/preview")
-    def preview():
-        image = service.camera.preview() if service.camera else None
-        if image is None:
-            return Response(status_code=204)
-        return Response(content=image, media_type="image/jpeg",
-                        headers={"Cache-Control": "no-store"})
-
-    @app.get("/api/episodes/{episode_id}/video")
-    def video(episode_id: str):
-        manifest = call(_load_episode, service.root, episode_id)
-        if not manifest.get("complete"):
-            raise HTTPException(status_code=409, detail="episode is incomplete")
-        camera = manifest.get("camera", {})
-        relative = camera.get("video")
-        if type(relative) is not str or not relative.startswith("camera/") or not relative.endswith(".mp4"):
-            raise HTTPException(status_code=409, detail="episode video is unavailable")
-        folder = (service.root / episode_id).resolve()
-        path = (folder / relative).resolve()
-        if not path.is_relative_to(folder) or not path.is_file():
-            raise HTTPException(status_code=409, detail="episode video is unavailable")
-        return FileResponse(path, media_type="video/mp4")
-
-    @app.post("/api/export")
-    async def export(request: Request):
-        body = await json_object(request)
-        path = await run_in_threadpool(call, service.export, body.get("profile", "source_archive"))
-        return {"download": f"/api/download/{path.name}", "filename": path.name}
-
-    @app.get("/api/download/{name}")
-    def download(name: str):
-        if not re.fullmatch(r"oglo-dataset-[0-9a-f]{32}\.zip", name):
-            raise HTTPException(status_code=404, detail="dataset not found")
-        path = service.root / "exports" / name
-        if not path.is_file():
-            raise HTTPException(status_code=404, detail="dataset not found")
-        return FileResponse(path, media_type="application/zip", filename=name)
-
-    return app
+    return create_web_app(root, studio=studio)
