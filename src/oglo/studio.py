@@ -1151,7 +1151,6 @@ class Collection:
             "cam_ego.gyro.jsonl": {"gyro_x", "gyro_y", "gyro_z"},
         }
         for name, channels in channels_by_file.items():
-            last_capture = None
             count = 0
             with (root / name).open(encoding="utf-8") as source:
                 for line in source:
@@ -1160,10 +1159,8 @@ class Collection:
                     if (row.get("frame_number") != count or
                         type(capture_ns) is not int or
                         type(row.get("device_timestamp_ns")) is not int or
-                        (last_capture is not None and capture_ns < last_capture) or
                         not channels <= set(row.get("channels") or {})):
                         raise RuntimeError(f"native OVISION motion stream is invalid: {name}")
-                    last_capture = capture_ns
                     count += 1
             if not count:
                 raise RuntimeError(f"native OVISION motion stream is empty: {name}")

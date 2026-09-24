@@ -470,10 +470,17 @@ def test_native_ovision_worker_retains_all_sensor_sidecars(tmp_path, monkeypatch
                 "mag": {"mag_x_raw": 0},
             }
             for stream, channels in motion_channels.items():
-                (folder / f"cam_ego.{stream}.jsonl").write_text(json.dumps({
+                rows = [{
                     "frame_number": 0, "capture_ns": first,
                     "device_timestamp_ns": 1000, "channels": channels,
-                }) + "\n")
+                }]
+                if stream != "mag":
+                    # Native packet jitter can reverse estimated host IMU time
+                    # while the measured device clock continues forward.
+                    rows.append({"frame_number": 1, "capture_ns": first - 10,
+                                 "device_timestamp_ns": 2000, "channels": channels})
+                (folder / f"cam_ego.{stream}.jsonl").write_text(
+                    "".join(json.dumps(row) + "\n" for row in rows))
             identity = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
             right_from_left = [row.copy() for row in identity]
             right_from_left[0][3] = 0.06
