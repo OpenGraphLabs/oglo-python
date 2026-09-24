@@ -341,3 +341,48 @@ def test_close_during_a_take_ends_it_without_hanging(tmp_path, monkeypatch):
     assert time.monotonic() - started < 3
     assert hardware._thread is None  # The pipeline was stopped.
     assert (tmp_path / "camera" / "timestamps.jsonl").is_file()
+
+
+def test_a_stop_before_two_color_frames_is_too_few_frames_not_a_failure(tmp_path, monkeypatch):
+    hardware = Hardware()
+    worker = open_worker(monkeypatch, hardware)
+    try:
+        hardware.color_stalled.set()  # g then h before the next color frame arrives.
+        worker.begin(tmp_path / "camera", threading.Event())
+        with pytest.raises(studio_realsense.TooFewFrames, match="nothing to keep"):
+            worker.finish()
+        assert worker.error is None  # The camera is fine; the next take may start.
+        hardware.color_stalled.clear()
+        (tmp_path / "next").mkdir()
+        assert record(worker, tmp_path / "next" / "camera", seconds=0.4)["frames_submitted"] >= 2
+    finally:
+        worker.close()
+
+
+def test_a_writer_stuck_after_stop_marks_the_worker_failed(tmp_path, monkeypatch):
+    release = threading.Event()
+
+    class Stuck:
+        def isOpened(self):
+            return True
+
+        def write(self, image):
+            release.wait()  # An encoder pipe that stopped draining.
+
+        def release(self):
+            pass
+
+    worker = open_worker(monkeypatch, writer_factory=lambda path, fps, size: Stuck())
+    try:
+        worker.begin(tmp_path / "camera", threading.Event())
+        time.sleep(0.3)
+        with pytest.raises(RuntimeError, match="did not finish after Stop"):
+            worker.finish(timeout=0.3)
+        assert worker.error and worker.live_status()["ready"] is False
+        (tmp_path / "next").mkdir()
+        with pytest.raises(RuntimeError, match="did not finish after Stop"):
+            worker.begin(tmp_path / "next" / "camera", threading.Event())
+    finally:
+        release.set()
+        worker.close()
+

@@ -83,6 +83,13 @@ def _vector(values) -> list[float]:
     return [float(value) for value in values]
 
 
+class TooFewFrames(RuntimeError):
+    """The take was stopped before two color frames arrived (``g`` then ``h`` at once).
+
+    Nothing to keep and nothing broke: the camera and the gloves are fine.
+    """
+
+
 class _Take:
     """One take's routing target: the callback fills it, the writer thread drains it."""
 
@@ -401,7 +408,12 @@ class RealSenseCameraWorker:
         take.ending.set()
         take.writer_thread.join(timeout)
         if take.writer_thread.is_alive():
-            raise RuntimeError("RealSense writer did not finish after Stop; capture is incomplete")
+            # A writer stuck in the encoder never reaches its own cleanup: mark the worker
+            # failed so Studio and collect.py replace it instead of refusing every take.
+            self.error = "RealSense writer did not finish after Stop; capture is incomplete"
+            self._stop_routing(take)
+            self._last_take = None
+            raise RuntimeError(self.error)
         with self._lock:
             if self._take is take:
                 self._take = None
@@ -529,7 +541,7 @@ class RealSenseCameraWorker:
 
     def _check(self, take: _Take) -> None:
         if take.count < 2:
-            raise RuntimeError("RealSense captured fewer than two color frames")
+            raise TooFewFrames(f"{take.count} color frame(s) before the stop: nothing to keep")
         if take.untimed:
             raise RuntimeError(f"{take.untimed} color frame(s) lack camera-clock time: the camera's frame "
                                "metadata is not reaching librealsense (check the udev rules; through the "

@@ -23,6 +23,7 @@ import time
 import cv2
 from oglo.data import CameraData
 from oglo.studio_realsense import PYREALSENSE2_VERSION, installed_version, list_devices
+from oglo.studio_realsense import TooFewFrames  # noqa: F401 - collect.py treats it as a discard
 
 from capture import CODECS, capture, open_writer, positive_number, probe_encoder
 

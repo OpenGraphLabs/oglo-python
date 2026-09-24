@@ -1391,3 +1391,30 @@ def test_realsense_py_refuses_a_bad_quality_and_a_missing_encoder_before_opening
     with pytest.raises(SystemExit):
         collect.realsense.main(base + ["--codec", "hevc_nvenc"])
     assert "--codec hevc_nvenc does not work here: no NVENC device" in capsys.readouterr().err
+
+
+def test_realsense_stop_before_two_frames_is_a_discard_that_reconnects_nothing(tmp_path, monkeypatch):
+    """As for OVISION (PR #18): g then h before the camera delivered two frames leaves
+    nothing to keep; no episode under _failed/, no camera or glove reconnect."""
+    patch_devices(monkeypatch, pair=False)
+    connects = []
+    monkeypatch.setattr(collect.oglo, "connect", lambda **_: connects.append(1) or simulated_glove("left"))
+    hardware = patch_realsense(monkeypatch)
+
+    class QuickStopDisplay(ScriptedDisplay):
+        def show(self, image, listen=True):
+            key = super().show(image, listen)
+            if key == ord("g"):
+                hardware.color_stalled.set()  # No color frame arrives before the h.
+            elif key == ord("h"):
+                hardware.color_stalled.clear()
+            return key
+
+    collector = collect.Collector(make_args(tmp_path, pair=False, seconds=5, camera_backend="realsense"),
+                                  display=QuickStopDisplay(["g", "h"] + [None] * 5))
+    episodes = collector.run()
+    assert [e["outcome"] for e in episodes] == ["discarded"]
+    out = tmp_path / "captures"
+    assert not (out / SLUG / "_failed").exists()
+    assert "nothing to keep" in collector.status
+    assert hardware.starts == 1 and connects == [1]  # Nothing was reconnected.

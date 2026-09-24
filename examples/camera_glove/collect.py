@@ -1212,13 +1212,13 @@ class Collector:
                 print(self.status, file=sys.stderr, flush=True)
                 self.start_readers()
                 return True
-        except ovision.TooFewFrames as exc:
+        except (ovision.TooFewFrames, realsense.TooFewFrames) as exc:
             too_short = exc
         except Exception as exc:
             failure = exc
         if failure is not None:  # Before the discard: an x followed by a crash is still a failure.
             self.fail(session, failure)
-        elif too_short is not None:  # Stopped before the first keyframe: nothing to keep, nothing broke.
+        elif too_short is not None:  # Stopped before the first frames arrived: nothing to keep, nothing broke.
             self.discard(session, reason=str(too_short))
         elif control.outcome == "discard":
             self.discard(session)
