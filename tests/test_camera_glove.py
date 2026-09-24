@@ -4,6 +4,8 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import shutil
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -67,8 +69,9 @@ def simulated_glove(side, clean=True):
     return Glove(transport, info, caps)
 
 
-def setup_capture(tmp_path, monkeypatch, pair=False, fail_after=None, clean=True):
-    camera = Camera(fail_after=fail_after)
+def setup_capture(tmp_path, monkeypatch, pair=False, fail_after=None, clean=True,
+                  codec="mp4v", quality=23, camera=None):
+    camera = camera or Camera(fail_after=fail_after)
     original = cv2.VideoCapture
     monkeypatch.setattr(capture.cv2, "VideoCapture",
                         lambda source: camera if isinstance(source, int) else original(source))
@@ -77,7 +80,7 @@ def setup_capture(tmp_path, monkeypatch, pair=False, fail_after=None, clean=True
                         lambda: (simulated_glove("left", clean), simulated_glove("right", clean)))
     args = argparse.Namespace(output=tmp_path / "session", camera=0, seconds=0.5,
                               fps=30, task="synthetic contact", serial=None, pair=pair,
-                              preview=False)
+                              preview=False, codec=codec, video_quality=quality)
     return args, camera
 
 
@@ -100,6 +103,7 @@ def test_capture_decode_and_join_preserve_source_files(tmp_path, monkeypatch, pa
     assert camera.released
     manifest = json.loads((root / "manifest.json").read_text())
     assert manifest["complete"] is True
+    assert manifest["stop_reason"] == "duration"
     assert manifest["alignment_validated"] is False
     assert manifest["camera"]["fps_request_accepted"] is False
     assert manifest["camera"]["frames_decoded"] >= 2
@@ -148,6 +152,102 @@ def test_capture_decode_and_join_preserve_source_files(tmp_path, monkeypatch, pa
         capture.verify_video(root / "camera/video.mp4", len(rows) + 1)
 
 
+class StopAfterFrames(Camera):
+    """Sets the external stop event as the given recorded frame is delivered: a
+    frame-triggered stop. ``WebcamCapture.prepare`` discards one setup frame and
+    ``record_camera`` one sizing frame (it opens the encoder before the timed loop)."""
+
+    def __init__(self, frames, stop):
+        super().__init__()
+        self.frames, self.stop = frames, stop
+
+    def read(self):
+        ok, image = super().read()
+        if self.count == self.frames + 2:
+            self.stop.set()
+        return ok, image
+
+
+def test_external_stop_ends_capture_complete(tmp_path, monkeypatch):
+    stop = threading.Event()
+    args, camera = setup_capture(tmp_path, monkeypatch, pair=True, camera=StopAfterFrames(12, stop))
+    args.seconds = 10  # Only a cap: the twelfth frame ends the session.
+    root = capture.capture(args, stop=stop)
+    assert camera.released and camera.count == 14  # Setup + sizing frame + twelve recorded ones.
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert manifest["complete"] is True and manifest["error"] is None
+    assert manifest["stop_reason"] == "cancelled"
+    assert manifest["requested_duration_s"] == 10
+    rows = (root / "camera/timestamps.jsonl").read_text().splitlines()
+    assert len(rows) == 12 == manifest["camera"]["frames_decoded"]
+    assert len(manifest["gloves"]) == 2
+    for hand in manifest["gloves"]:
+        assert hand["summary"]["tactile"]["n"] > 0
+        assert capture.oglo.replay(root / hand["episode"]).meta["stop_reason"] == "cancelled"
+    assert alignment.align(root, root / "alignment.preview.jsonl", max_delta_ms=50) == len(rows)
+
+
+def test_alignment_is_written_atomically(tmp_path, monkeypatch):
+    """An error part way through leaves neither the file nor a temporary next to it."""
+    stop = threading.Event()
+    args, _ = setup_capture(tmp_path, monkeypatch, camera=StopAfterFrames(6, stop))
+    root = capture.capture(args, stop=stop)
+    output = root / "alignment.preview.jsonl"
+    calls = []
+    real_dumps = alignment.json.dumps
+
+    def failing_dumps(value, *a, **k):
+        calls.append(1)
+        if len(calls) == 3:
+            raise OSError("disk full")
+        return real_dumps(value, *a, **k)
+
+    monkeypatch.setattr(alignment.json, "dumps", failing_dumps)
+    with pytest.raises(OSError, match="disk full"):
+        alignment.align(root, output, max_delta_ms=50)
+    assert not output.exists() and not list(root.glob("alignment.preview.jsonl*"))
+    monkeypatch.setattr(alignment.json, "dumps", real_dumps)
+    assert alignment.align(root, output, max_delta_ms=50) == 6
+    assert output.is_file() and not list(root.glob("*.tmp"))
+
+
+def test_ffmpeg_codec_keeps_one_decoded_frame_per_submitted_frame(tmp_path, monkeypatch):
+    if shutil.which(capture.FFMPEG) is None:
+        pytest.skip("needs the ffmpeg binary")
+    problem = capture.probe_encoder("libx264", 28)
+    if problem:
+        pytest.skip(f"ffmpeg has no working libx264: {problem}")
+    args, camera = setup_capture(tmp_path, monkeypatch, codec="libx264", quality=28)
+    root = capture.capture(args)
+    assert camera.released
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert manifest["complete"] is True
+    assert manifest["camera"]["codec"] == "libx264"
+    assert manifest["camera"]["video_quality"] == 28
+    assert manifest["camera"]["frames_decoded"] == manifest["camera"]["frames_submitted"] >= 2
+    rows = (root / "camera/timestamps.jsonl").read_text().splitlines()
+    assert len(rows) == manifest["camera"]["frames_decoded"]
+
+
+def test_missing_ffmpeg_leaves_session_incomplete(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "FFMPEG", "ffmpeg-that-does-not-exist")
+    args, camera = setup_capture(tmp_path, monkeypatch, codec="libx264")
+    with pytest.raises(RuntimeError, match="not found"):
+        capture.capture(args)
+    assert camera.released
+    manifest = json.loads((tmp_path / "session/manifest.json").read_text())
+    assert manifest["complete"] is False and "not found" in manifest["error"]
+    assert capture.probe_encoder("libx264") and "not found" in capture.probe_encoder("libx264")
+    assert capture.probe_encoder("mp4v") is None
+
+
+def test_unknown_codec_is_rejected(tmp_path, monkeypatch):
+    args, _ = setup_capture(tmp_path, monkeypatch, codec="webm")
+    with pytest.raises(RuntimeError, match="Unknown codec"):
+        capture.capture(args)
+    assert json.loads((tmp_path / "session/manifest.json").read_text())["complete"] is False
+
+
 def test_camera_failure_keeps_incomplete_manifest_and_partial_glove(tmp_path, monkeypatch):
     args, camera = setup_capture(tmp_path, monkeypatch, fail_after=3)
     with pytest.raises(RuntimeError, match="Camera did not return"):
@@ -174,8 +274,29 @@ def test_glove_failure_stops_camera_and_preserves_error(tmp_path, monkeypatch):
     manifest = json.loads((args.output / "manifest.json").read_text())
     assert not manifest["complete"]
     assert "USB disconnect" in manifest["gloves"][0]["error"]
-    assert camera.count <= 3
+    assert camera.count <= 4  # setup, sizing, at most one read before the stop was seen
     assert camera.released
+
+
+def test_a_glove_whose_recording_failed_is_not_left_streaming(tmp_path, monkeypatch):
+    """``oglo.record`` resumes the stream before it raises; a port nobody reads then
+    throttles within ~85 ms and the next command wedges the firmware. So the failure
+    path stops the glove too, on the recording thread, before anything else happens."""
+    args, _ = setup_capture(tmp_path, monkeypatch)
+    glove = simulated_glove("left")
+
+    def resume_then_fail(*_, glove, **__):
+        glove.start()  # What the SDK's pause(resume=True) leaves behind on the error path.
+        raise RuntimeError("new_tag_dropped")
+
+    monkeypatch.setattr(capture.oglo, "record", resume_then_fail)
+    with pytest.raises(RuntimeError):  # The camera's "fewer than two frames" may be the one raised.
+        capture.capture(args, gloves=(glove,))
+    manifest = json.loads((args.output / "manifest.json").read_text())
+    assert "new_tag_dropped" in manifest["gloves"][0]["error"]
+    assert glove._started is False
+    assert glove.read_batch() is not None  # Still open for the caller, as on success.
+    glove.close()
 
 
 def test_existing_session_is_not_overwritten(tmp_path, monkeypatch):
@@ -236,6 +357,10 @@ def ovision(monkeypatch):
     return load_example("ovision")
 
 
+# The SDK's native worker (what ovision.py records with) refuses to start anywhere else.
+linux_only = pytest.mark.skipif(sys.platform != "linux", reason="native OVISION capture is Linux V4L2 only")
+
+
 def native_rows():
     return [{"frame_number": i, "capture_ns": 2**53 + i * 33_333_333,
              "clock_source": "device_monotonic", "device_timestamp_ns": i * 33_333_000,
@@ -244,12 +369,14 @@ def native_rows():
              "user_data_seq": 400 + i} for i in range(3)]
 
 
-def test_ovision_join_keeps_native_bytes_and_clock_domains(tmp_path, ovision):
+def test_ovision_join_keeps_native_bytes_and_clock_domains(tmp_path):
+    """The common timestamps.jsonl the SDK worker derives next to the native rows."""
+    from oglo.studio_ovision import write_join_timestamps
+
     source = tmp_path / "cam_ego.stereo.jsonl"
     source.write_text("".join(json.dumps(row) + "\n" for row in native_rows()))
     original = source.read_bytes()
-    result = ovision.make_join_timestamps(tmp_path, 3)
-    assert result["frames_submitted"] == 3
+    assert write_join_timestamps(tmp_path, 3) == (2**53, 2**53 + 2 * 33_333_333)
     rows = [json.loads(line) for line in (tmp_path / "timestamps.jsonl").read_text().splitlines()]
     assert source.read_bytes() == original
     assert rows[1]["host_received_ns"] == 2**53 + 33_333_333
@@ -257,11 +384,13 @@ def test_ovision_join_keeps_native_bytes_and_clock_domains(tmp_path, ovision):
     assert rows[1]["device_timestamp_meaning"] == "left_exposure_start"
     assert rows[1]["host_read_started_ns"] is None
     with pytest.raises(FileExistsError):
-        ovision.make_join_timestamps(tmp_path, 3)
+        write_join_timestamps(tmp_path, 3)
 
 
 @pytest.mark.parametrize("fault", ["sequence", "host_order", "device_time", "count"])
-def test_ovision_rejects_inconsistent_native_metadata(tmp_path, ovision, fault):
+def test_ovision_rejects_inconsistent_native_metadata(tmp_path, fault):
+    from oglo.studio_ovision import write_join_timestamps
+
     rows = native_rows()
     if fault == "sequence":
         rows[1]["frame_number"] = 7
@@ -273,17 +402,14 @@ def test_ovision_rejects_inconsistent_native_metadata(tmp_path, ovision, fault):
         "".join(json.dumps(row) + "\n" for row in rows)
     )
     with pytest.raises(ValueError):
-        ovision.make_join_timestamps(tmp_path, 4 if fault == "count" else 3)
+        write_join_timestamps(tmp_path, 4 if fault == "count" else 3)
 
 
-def test_ovision_capture_uses_published_sidecars_and_common_join(tmp_path, monkeypatch, ovision):
-    native = pytest.importorskip("syncfield.adapters.ovision_camera")
+def simulated_ovision(native):
+    """A subclass of the real adapter: its serializer and finalization, no device IO."""
     from syncfield.adapters.ovision_metadata import OvisionImuSample
-    from syncfield.types import SensorSample
 
     class SimulatedOvision(native.OvisionCameraStream):
-        """Keep the real adapter serializer/finalization; replace only device IO."""
-
         def prepare(self):
             self.ready = True
 
@@ -295,6 +421,9 @@ def test_ovision_capture_uses_published_sidecars_and_common_join(tmp_path, monke
 
         def start_recording(self, clock):
             self._begin_recording_window(clock)
+            self._frame_count = 0  # Per recording, as the adapter's own start_recording resets it.
+            self._first_at = self._last_at = self._prev_capture_ns = None
+            self._intervals_ns = []
             writer = cv2.VideoWriter(str(self._file_path), cv2.VideoWriter_fourcc(*"mp4v"),
                                      30, (64, 48))
             assert writer.isOpened()
@@ -333,7 +462,15 @@ def test_ovision_capture_uses_published_sidecars_and_common_join(tmp_path, monke
         def disconnect(self):
             self.ready = False
 
-    monkeypatch.setattr(native, "OvisionCameraStream", SimulatedOvision)
+    return SimulatedOvision
+
+
+@linux_only
+def test_ovision_capture_uses_published_sidecars_and_common_join(tmp_path, monkeypatch, ovision):
+    native = pytest.importorskip("syncfield.adapters.ovision_camera")
+    from syncfield.types import SensorSample
+
+    monkeypatch.setattr(native, "OvisionCameraStream", simulated_ovision(native))
     args, _ = setup_capture(tmp_path, monkeypatch, pair=True)
     args.video_device = Path("/dev/synthetic-ovision")
     args.camera_serial = "test-camera"
@@ -341,8 +478,13 @@ def test_ovision_capture_uses_published_sidecars_and_common_join(tmp_path, monke
     manifest = json.loads((root / "manifest.json").read_text())
     assert manifest["complete"] is True
     assert manifest["camera"]["kind"] == "ovision"
+    assert manifest["camera"]["backend"] == "SyncField OVISION 0.8.14 V4L2"  # the SDK worker recorded it
+    assert manifest["camera"]["usb_serial"] == "test-camera"
     assert manifest["camera"]["frames_decoded"] > 2
     assert len(manifest["gloves"]) == 2
+    report = json.loads((root / "camera/finalization.json").read_text())
+    assert report["status"] == "completed" and report["frame_count"] == manifest["camera"]["frames_decoded"]
+    assert not (root / ".ovision-pending").exists()  # The worker's placeholder folder is never written.
     for hand in manifest["gloves"]:
         episode = root / hand["episode"]
         assert (episode / f"tactile_{hand['side']}.jsonl").stat().st_size > 0
@@ -365,3 +507,49 @@ def test_ovision_capture_uses_published_sidecars_and_common_join(tmp_path, monke
     assert native_row["device_timestamp_ns"] == common_row["device_timestamp"]
     imu = json.loads((root / "camera/cam_ego.imu.jsonl").read_text().splitlines()[0])
     assert imu["accel_unit"] == "m_s2" and imu["gyro_unit"] == "rad_s"
+
+
+@linux_only
+def test_ovision_capture_shares_one_live_worker_across_sessions(tmp_path, monkeypatch, ovision):
+    """collect.py keeps one SDK worker: each session records through it and leaves it connected."""
+    native = pytest.importorskip("syncfield.adapters.ovision_camera")
+    monkeypatch.setattr(native, "OvisionCameraStream", simulated_ovision(native))
+    worker = ovision.open_worker(Path("/dev/synthetic-ovision"), tmp_path / "nowhere")
+    assert worker.stream.ready
+    ticks = []
+    roots = []
+    for name in ("first", "second"):
+        args, _ = setup_capture(tmp_path, monkeypatch, pair=False)
+        args.output = tmp_path / name
+        args.video_device, args.camera_serial = Path("/dev/synthetic-ovision"), None
+        roots.append(ovision.capture(args, camera_factory=lambda a, o: ovision.OvisionCapture(
+            a, o, worker=worker, tick=ticks.append)))
+        assert worker.stream.ready  # close() leaves a shared worker connected for the next episode.
+    for root in roots:
+        manifest = json.loads((root / "manifest.json").read_text())
+        assert manifest["complete"] is True and manifest["camera"]["kind"] == "ovision"
+        for key in ("video", "imu", "accel", "gyro", "mag", "sync_point", "finalization", "calibration"):
+            assert (root / manifest["camera"][key]).is_file(), key
+        frames = manifest["camera"]["frames_decoded"]
+        assert frames >= 2
+        assert len((root / "camera/timestamps.jsonl").read_text().splitlines()) == frames
+    assert ticks and all(frame is None for frame in ticks)  # The simulation never decodes a preview.
+    assert not (tmp_path / "nowhere").exists()  # The worker's placeholder folder was never written.
+    worker.stream.ready = False  # A worker whose capture died is refused before the gloves are touched.
+    with pytest.raises(RuntimeError, match="not live"):
+        ovision.OvisionCapture(args, tmp_path / "third" / "camera", worker=worker).prepare()
+    worker.close()
+    assert not worker.stream.ready
+
+
+def test_preopened_gloves_are_used_and_left_open(tmp_path, monkeypatch):
+    args, _ = setup_capture(tmp_path, monkeypatch)
+    monkeypatch.setattr(capture.oglo, "connect", lambda **_: pytest.fail("must not reconnect"))
+    glove = simulated_glove("left")
+    root = capture.capture(args, gloves=(glove,))
+    assert glove._started is False  # Not left streaming into a port nobody reads.
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert manifest["complete"] is True
+    assert manifest["gloves"][0]["serial"] == glove.info.serial
+    assert glove.read_batch() is not None  # Still open for the caller.
+    glove.close()

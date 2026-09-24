@@ -3,72 +3,114 @@
 
 Requires Python 3.12+, SyncField 0.8.14, and OVISION H.264/YCTC firmware.
 See OVISION.md. Glove recording and the session format are shared with capture.py.
+
+The camera side is the SDK's own ``oglo.studio_ovision.NativeOvisionCameraWorker``,
+the worker OGLO Studio records with: it keeps the SyncField stream connected between
+recordings, watches a recording for a capture that died or stopped delivering frames,
+writes ``finalization.json`` and the common ``timestamps.jsonl`` and checks that every
+native file is there. ``collect.py`` reuses :class:`OvisionCapture` with one worker kept
+live across episodes.
 """
 
 import argparse
-from dataclasses import asdict
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 import json
 from pathlib import Path
-import socket
 import sys
 import time
 
 import cv2
-from oglo.data import CameraData, CameraFrameData
+from oglo.data import CameraData
 
-from capture import capture, positive_number, write_json
+from capture import capture, positive_number
+
+SYNCFIELD_VERSION = "0.8.14"
+MODE = "ovision_native_left"  # The eye the worker decodes for its preview; both eyes are recorded.
 
 
-def make_join_timestamps(output, expected_frames):
-    """Add a common-schema sidecar without modifying native OVISION metadata."""
-    count = 0
-    first = last = None
-    with (output / "cam_ego.stereo.jsonl").open(encoding="utf-8") as source:
-        with (output / "timestamps.jsonl").open("x", encoding="utf-8") as destination:
-            for line in source:
-                row = json.loads(line)
-                host = row["capture_ns"]
-                device = row["device_timestamp_ns"]
-                if (row["frame_number"] != count or type(host) is not int or host < 0
-                        or (last is not None and host < last)):
-                    raise ValueError("OVISION frame numbers or host timestamps are invalid")
-                if (type(device) is not int or device < 0
-                        or device != row["left_exposure_start_ns"]):
-                    raise ValueError("OVISION device timestamp must be the left exposure start")
-                timing: CameraFrameData = {
-                    "frame_index": count,
-                    # capture_ns in this adapter is host packet-arrival time,
-                    # even though native stereo rows say clock_source=device_monotonic.
-                    "host_received_ns": host, "host_read_started_ns": None,
-                    "device_timestamp": device, "device_timestamp_unit": "ns",
-                    "device_clock_domain": "ovision_camera",
-                    "device_timestamp_meaning": "left_exposure_start",
-                    "native_metadata": "cam_ego.stereo.jsonl",
-                    "native_frame_number": row["frame_number"],
-                }
-                destination.write(json.dumps(timing) + "\n")
-                if first is None:
-                    first = host
-                last = host
-                count += 1
-    if count < 2 or count != expected_frames:
-        raise ValueError(f"OVISION metadata has {count} frames; expected {expected_frames}, at least two")
-    return {"frames_submitted": count, "first_host_received_ns": first,
-            "last_host_received_ns": last}
+class TooFewFrames(RuntimeError):
+    """The recording was stopped before the camera delivered two frames.
+
+    The adapter opens the MP4 at the first IDR after ``start_recording`` (about one per
+    second on this firmware), so a stop within that time leaves nothing worth keeping.
+    Not a device failure: the camera and the gloves are fine.
+    """
+
+
+# -- the SDK worker -------------------------------------------------------------------
+
+def problem(video_device):
+    """None when the native backend can record ``video_device`` here, else why not.
+
+    The adapter's calibration read is the identity check: only OVISION firmware answers
+    the UVC extension unit with a valid flash calibration, so a webcam, a metadata node,
+    or a camera without calibration is reported instead of failing at the first episode.
+    """
+    if sys.platform != "linux":
+        return "native OVISION capture requires Linux V4L2/UVC"
+    try:
+        installed = version("syncfield")
+    except PackageNotFoundError:
+        return "syncfield is not installed (pip install -r examples/camera_glove/requirements-ovision.txt)"
+    if installed != SYNCFIELD_VERSION:
+        return f"syncfield {installed} is installed; this example targets {SYNCFIELD_VERSION}"
+    from syncfield.adapters.ovision_calibration import read_ovision_calibration
+
+    try:
+        read_ovision_calibration(video_device)
+    except Exception as exc:  # OvisionCalibrationError, OSError: wrong node, unplugged, no permission
+        return f"{video_device} did not answer as an OVISION camera: {exc}"
+    return None
+
+
+def open_worker(video_device, root, index=0):
+    """The SDK's native OVISION worker on ``video_device``, connected and delivering frames.
+
+    It reads the unit's flash calibration, applies the adapter's verified
+    exposure/gain/bitrate profile and owns the V4L2 node until ``close()``. It raises,
+    and releases the node, when the camera does not deliver valid stereo/IMU metadata
+    within ten seconds. ``root`` is where the adapter would write without a recording
+    folder; nothing is created there. ``index`` is recorded for reference only.
+    """
+    from oglo.studio_ovision import NativeOvisionCameraWorker
+
+    return NativeOvisionCameraWorker(index, mode=MODE, name=str(video_device), root=Path(root))
+
+
+def camera_report(folder):
+    """``finalization.json`` as the worker wrote it, or None."""
+    try:
+        return json.loads((folder / "finalization.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 class OvisionCapture:
-    def __init__(self, args, output):
+    """capture.py camera backend on the SDK's native OVISION worker.
+
+    Without ``worker`` it opens the camera in ``prepare()`` and releases it in
+    ``close()``, one session per process. With ``worker`` (collect.py) the caller's
+    live worker records this session under ``output`` and stays connected afterwards,
+    so the next episode starts without re-reading calibration or renegotiating video.
+    ``tick(frame)`` is called about every 50 ms while recording with the newest
+    left-eye preview frame (or None); collect.py draws its window and reads keys there.
+    ``progress(decoded, expected)`` is called while the saved video is decoded back.
+    """
+
+    def __init__(self, args, output, worker=None, tick=None, progress=None):
         self.args, self.output = args, output
-        self.stream = None
-        self.recording = False
+        self.worker, self.shared = worker, worker is not None
+        self.tick = tick
+        self.verify_progress = progress
         self.metadata: CameraData = {
             "kind": "ovision", "model": "OVISION-EGO-V1", "video_device": str(args.video_device),
-            "usb_serial": args.camera_serial, "syncfield_version": "0.8.14",
+            "usb_serial": args.camera_serial, "syncfield_version": SYNCFIELD_VERSION,
             "video": "camera/cam_ego.mp4", "timestamps": "camera/timestamps.jsonl",
             "native_stereo_metadata": "camera/cam_ego.stereo.jsonl",
             "calibration": "camera/cam_ego.calibration.json",
+            "imu": "camera/cam_ego.imu.jsonl", "accel": "camera/cam_ego.accel.jsonl",
+            "gyro": "camera/cam_ego.gyro.jsonl", "mag": "camera/cam_ego.mag.jsonl",
+            "sync_point": "camera/sync_point.json", "finalization": "camera/finalization.json",
             "codec": "h264_passthrough", "width": 3840, "height": 1080,
             "eye_order": ["left", "right"], "eye_width": 1920, "eye_height": 1080,
             "requested_fps": 30,
@@ -76,73 +118,59 @@ class OvisionCapture:
         }
 
     def prepare(self):
-        if version("syncfield") != "0.8.14":
-            raise RuntimeError("Install requirements-ovision.txt: this example targets SyncField 0.8.14")
-        from syncfield.adapters.ovision_camera import OvisionCameraStream
-
-        self.stream = OvisionCameraStream(
-            "cam_ego", self.output, video_device=self.args.video_device,
-            usb_serial=self.args.camera_serial, width=3840, height=1080, fps=30,
-        )
-        # Reads per-unit flash calibration and applies the adapter's verified
-        # exposure/gain/bitrate profile. No OpenCV camera read/re-encode path.
-        self.stream.prepare()
-        self.stream.connect()
-        deadline = time.monotonic() + 10
-        while not self.stream.capture_ready():
-            if time.monotonic() >= deadline:
-                raise RuntimeError("OVISION did not produce valid stereo/IMU metadata within 10 seconds")
-            time.sleep(0.05)
-
-    def finish(self):
-        self.recording = False
-        report = self.stream.stop_recording()
-        # Paths/enums in the native report are preserved as their string forms.
-        write_json(self.output / "finalization.json",
-                   json.loads(json.dumps(asdict(report), default=str)))
-        return report
+        if not self.shared:
+            self.worker = open_worker(self.args.video_device, self.output.parent)
+        elif self.worker.error or not self.worker.stream.capture_ready():
+            raise RuntimeError(f"OVISION camera is not live: {self.worker.error or 'capture stopped'}")
 
     def record(self, stop):
-        from syncfield.clock import SessionClock
-        from syncfield.types import SyncPoint
-
-        clock = SessionClock(SyncPoint.create_now(socket.gethostname()),
-                             recording_armed_ns=time.monotonic_ns())
-        write_json(self.output / "sync_point.json", clock.sync_point.to_dict())
-        self.recording = True
+        # ``begin`` creates camera/, writes sync_point.json, starts the recording and a
+        # watchdog that sets ``stop`` (which also stops the gloves) when the capture dies
+        # or delivers no frame for five seconds.
+        self.worker.begin(self.output, stop)
         try:
-            self.stream.start_recording(clock)
             deadline = time.monotonic() + self.args.seconds
             while time.monotonic() < deadline and not stop.is_set():
-                if not self.stream.capture_ready():
-                    raise RuntimeError("OVISION capture failed; see camera/finalization.json")
-                if self.args.preview and self.stream.latest_frame is not None:
-                    cv2.imshow("OVISION left-eye preview (q stops capture)", self.stream.latest_frame)
+                frame = self.worker.stream.latest_frame
+                if self.args.preview and frame is not None:
+                    cv2.imshow("OVISION left-eye preview (q stops capture)", frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         raise RuntimeError("Capture stopped early from the preview")
+                if self.tick is not None:
+                    self.tick(frame)
                 stop.wait(0.05)
+        except BaseException:
+            self._finish(quiet=True)  # The loop's own error (Ctrl-C, preview q) is the one to report.
+            raise
         finally:
-            report = self.finish()
             if self.args.preview:
                 cv2.destroyAllWindows()
-        if report.status != "completed" or report.error:
-            raise RuntimeError(f"OVISION finalization failed: {report.error or report.status}")
-        required = ["mp4", "stereo.jsonl", "imu.jsonl", "accel.jsonl", "gyro.jsonl",
-                    "mag.jsonl", "calibration.json", "calibration.yaml", "calibration.bin"]
-        for suffix in required:
-            path = self.output / f"cam_ego.{suffix}"
-            if not path.is_file() or (suffix != "mag.jsonl" and path.stat().st_size == 0):
-                raise RuntimeError(f"OVISION artifact missing or empty: {path.name}")
-        self.metadata["native_artifacts"] = [f"camera/cam_ego.{suffix}" for suffix in required]
-        return make_join_timestamps(self.output, report.frame_count)
+        return self._finish()
+
+    def _finish(self, quiet=False):
+        """``worker.finish()``: stop the recording, write finalization.json and the common
+        timestamps.jsonl, check the native files; raises on any failure."""
+        try:
+            result = self.worker.finish()
+        except (RuntimeError, ValueError) as exc:
+            if quiet:
+                return None
+            report = camera_report(self.output) or {}
+            frames = report.get("frame_count")
+            if (not report.get("error") and self.worker.error is None
+                    and isinstance(frames, int) and frames < 2):
+                raise TooFewFrames(
+                    f"{frames} camera frame(s) before the stop: the video starts at the first "
+                    "keyframe, up to a second after the recording began") from exc
+            raise
+        self.metadata["native_artifacts"] = result["native_artifacts"]
+        self.metadata["backend"] = result["backend"]
+        return {key: result[key] for key in ("frames_submitted", "first_host_received_ns",
+                                             "last_host_received_ns")}
 
     def close(self):
-        if self.stream is not None:
-            try:
-                if self.recording:
-                    self.finish()
-            finally:
-                self.stream.disconnect()
+        if self.worker is not None and not self.shared:
+            self.worker.close()  # Stops a recording still running (an error before _finish), then disconnects.
 
 
 def main():

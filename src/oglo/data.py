@@ -41,6 +41,7 @@ class CameraData(TypedDict, total=False):
     video: str  # Session-relative path.
     timestamps: str  # Session-relative path.
     codec: str
+    video_quality: Optional[int]  # CRF / CQ of an ffmpeg codec; None for mp4v.
     requested_fps: float
     host_timestamp_meaning: str
     width: int  # Encoded image pixels; packed width for stereo.
@@ -65,6 +66,12 @@ class CameraData(TypedDict, total=False):
     eye_width: int
     eye_height: int
     native_artifacts: list[str]
+    imu: str  # camera/cam_ego.imu.jsonl: the camera's own accelerometer + gyroscope
+    accel: str
+    gyro: str
+    mag: str
+    sync_point: str  # camera/sync_point.json: host clock anchor of the recording
+    finalization: str  # camera/finalization.json: the adapter's capture report
 
 
 class _GloveData(TypedDict):
@@ -112,3 +119,4 @@ class OGLData(_OGLData, total=False):
 
     ended_wall_time_ns: int
     overlap_host_received_ns: list[int]  # Exactly [start_ns, end_ns], start < end.
+    stop_reason: Optional[str]  # "duration", or "cancelled" by the caller's stop event.

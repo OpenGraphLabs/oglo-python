@@ -11,3 +11,4 @@ build/
 .venv/
 acceptance-results/
 captures/
+scripts/workstation.env

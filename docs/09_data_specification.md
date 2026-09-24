@@ -154,6 +154,7 @@ ordinary dictionaries; they do not validate JSON at runtime.
 | `started_host_monotonic_ns` | Host monotonic start time |
 | `camera`, `gloves` | Camera description and one entry per hand |
 | `complete`, `error` | Capture result |
+| `stop_reason` | `"duration"`, or `"cancelled"` when the caller's stop event ended the session early; `null` until complete |
 | `alignment_validated` | Always `false`; file checks do not certify synchronization |
 | `overlap_host_received_ns` | Common recorded interval `[start_ns, end_ns]` |
 
@@ -174,10 +175,13 @@ Completed sessions include `kind`, `video`, `timestamps`, `codec`, `requested_fp
 `first_host_received_ns`, and `last_host_received_ns`. Frame counts must agree and
 be at least two. Width includes both eyes for the native OVISION stereo adapter.
 
-Webcams also save `index`, `playback_fps`, `fps_request_accepted`, and `backend`.
+Webcams also save `index`, `playback_fps`, `fps_request_accepted`, `backend`, and
+`video_quality` (the CRF / CQ of an ffmpeg codec; `null` for `mp4v`).
 OVISION also saves `model`, `video_device`, optional `usb_serial`,
-`syncfield_version`, `native_stereo_metadata`, `calibration`, `eye_order`,
-`eye_width`, `eye_height`, and `native_artifacts`. Keep all
+`syncfield_version`, `backend`, `native_stereo_metadata`, `calibration`, `imu`,
+`accel`, `gyro`, `mag`, `sync_point`, `finalization`, `eye_order`, `eye_width`,
+`eye_height`, and `native_artifacts`; the path fields name the session-relative
+files that hold the camera IMU, magnetometer, clock anchor and capture report. Keep all
 [native OVISION files](../examples/camera_glove/OVISION.md#3-files-to-send).
 
 Studio's macOS UVC option uses `kind: "ovision_uvc_stereo_host_timed"` and saves

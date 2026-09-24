@@ -61,10 +61,17 @@ jobs:
           cache: pip
       - name: Install SDK and camera dependencies
         run: python -m pip install ".[dev]" -r examples/camera_glove/requirements-ovision.txt
+      - name: Install ffmpeg for the --codec tests
+        # The runner image has no ffmpeg; without it test_ffmpeg_codec_... skips and the
+        # no-skip check below fails.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Test camera examples with installed SDK
         run: |
           python tools/check_installed.py
-          python -m pytest -o pythonpath=tests --import-mode=importlib tests/test_camera_glove.py --junitxml=camera-results.xml
+          python -m pytest -o pythonpath=tests --import-mode=importlib \
+            tests/test_camera_glove.py tests/test_collect.py tests/test_dataset.py --junitxml=camera-results.xml
       - name: Require camera tests to run without skips
         run: |
           python - <<'PY'

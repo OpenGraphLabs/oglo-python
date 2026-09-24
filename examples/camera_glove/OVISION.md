@@ -55,13 +55,22 @@ python examples/camera_glove/ovision.py \
 
 - Omit `--pair` for one glove. Use `--serial YOUR_GLOVE_SERIAL` to select it.
 - Use a new `--output` folder for every attempt.
-- `--camera-serial` adds an inventory label only. The device path selects the
-  camera; the label is not independently checked.
+- `--camera-serial` adds an inventory label only, saved as `usb_serial` in
+  `manifest.json`. The device path selects the camera; the label is not checked.
+
+The camera side is the SDK's own native OVISION worker (`oglo.studio_ovision`, the
+one OGLO Studio records with): it reads the calibration, keeps the stream connected,
+ends a recording whose capture dies or delivers no frame for five seconds, writes
+`finalization.json` and `timestamps.jsonl` and checks that every native file is there.
 
 The preview is a slow left-eye view, not a measure of recording rate. Keep hands
 and contact surfaces visible, and make visible fingertip taps near the start and
 end for timing checks. Let final file checks finish. `q` or Ctrl-C leaves an
 incomplete session.
+
+For many episodes in one sitting, `collect.py` ([README section 5](README.md#5-collect-many-episodes-collectpy))
+drives this same worker, kept live across episodes and reopened when the camera dies
+or is replugged; each episode folder holds the files listed below.
 
 ## 3. Files to send
 

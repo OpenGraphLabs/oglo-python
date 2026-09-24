@@ -92,6 +92,7 @@ class FakeSerial:
         tactile_seqs = [p.seq for p in initial if isinstance(p, w.TactilePacket)]
         self._next_tactile_seq = ((tactile_seqs[-1] + 1) & 0xFFFFFFFF) if tactile_seqs else 0
         self._next_refill: Optional[float] = None
+        self._sessions = 0
         self.commands: List[str] = []
         self.closed = False
         self._burst_tactile = 4
@@ -167,6 +168,11 @@ class FakeSerial:
         self._next_tactile_seq = (self._next_tactile_seq + n) & 0xFFFFFFFF
         return out
 
+    @property
+    def in_waiting(self) -> int:
+        """What a kernel would report as buffered; tests stuff ``_out`` to fake a backlog."""
+        return len(self._out)
+
     def reset_input_buffer(self) -> None:
         self._out.clear()
 
@@ -187,7 +193,14 @@ class FakeSerial:
             return
         if up == "STREAM TAG ON":
             self._streaming = True
-            self._out += self._stream
+            if self._sessions == 0 or not self._stream:
+                self._out += self._stream  # the canned first burst, bytes as given
+            else:
+                # A board that was stopped and restarted goes on counting. Replaying
+                # the canned burst here would restart at its first sequence numbers
+                # while refills continue past them: a gap the fake invented.
+                self._out += self._refill()
+            self._sessions += 1
             if self._burst_secs > 0:
                 # ``self._stream`` is the first produced burst; the next one is due
                 # one burst period later. Reset this on every new stream session.
