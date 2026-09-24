@@ -24,15 +24,15 @@ On macOS, Windows, and Linux, first check whether the device already supports ke
 
 ## Camera adapter contract
 
-`oglo.studio.Studio(root, camera_factory=...)` accepts a factory called with the selected camera index. Its instance supplies:
+`oglo.studio.Studio(root, camera_factory=...)` accepts a factory called with the selected camera index for standard capture. For an OVISION preview choice on macOS, the factory also receives `mode="ovision_left"` or `"ovision_right"` and the AVFoundation device `name`. The built-in native Linux path uses `NativeOvisionCameraWorker` with `mode="ovision_native_left"` or `"ovision_native_right"` and a `/dev/video*` node. A camera instance supplies:
 
-- `index`, `error`, and `native_device_timestamps` properties;
+- `index`, `error`, `native_device_timestamps`, and `postprocessing_capable` properties;
 - `preview() -> bytes | None` (JPEG), `live_status() -> {ready, age_ms, error}`, `begin(folder, stop_event)`, `finish() -> dict`, and `close()`;
 - exclusive camera reads while connected. `begin` receives the episode's `camera/` folder and shared stop event. Device failure sets the event and an error. `finish` waits for writers to close and returns metadata only after the video and timestamp sidecars are complete.
 
 The returned metadata names session-relative `video` and `timestamps` files; `frames_submitted`, `first_host_received_ns`, and `last_host_received_ns` are required. Keep a playable MP4 for the review UI. Each timestamp row needs consecutive `frame_index`, integer `host_received_ns`, and `device_timestamp`, `device_timestamp_unit`, `device_clock_domain`, and `device_timestamp_meaning`. Unknown native time must be JSON `null`. Set `native_device_timestamps = True` only when every recorded frame has actual camera time with unit/domain/meaning. Studio's annotation profile checks those fields and refuses a webcam that cannot provide them.
 
-Preserve additional native video, IMU, stereo, and calibration sidecars in the same episode folder; the source inventory and archive include them. Write camera identity, resolution, codec, calibration provenance, and any known intrinsics/eye order in adapter metadata. Do not derive a device clock from nominal FPS. The provided `CameraWorker` is an example of the host-timed webcam path; [`examples/camera_glove/ovision.py`](../examples/camera_glove/ovision.py) is a separate Linux reference for native stereo timing and calibration, but it is not yet wired into Studio.
+Preserve additional native video, IMU, stereo, and calibration sidecars in the same episode folder; the source inventory and archive include them. Write camera identity, resolution, codec, calibration provenance, and any known intrinsics/eye order in adapter metadata. Do not derive a device clock from nominal FPS. The provided `CameraWorker` saves packed OVISION stereo video on macOS but has host timing only; its `postprocessing_capable` is false. The native Linux worker uses the pinned SyncField adapter and sets `postprocessing_capable` true only for the path that writes packed stereo H.264, exposure/IMU sidecars, flash calibration, and a sync point. Studio validates those files before marking an episode's `og_center_postprocessing` sensor profile ready. The UI previews and reviews one eye without cropping the saved stereo source. [`examples/camera_glove/ovision.py`](../examples/camera_glove/ovision.py) remains the standalone reference.
 
 ## Verification before listing compatibility
 

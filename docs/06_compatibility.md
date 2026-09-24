@@ -6,9 +6,18 @@
 | Glove firmware | 0.9.10+ with CONFIG schema 6 |
 | USB | Supported tagged packets; recommended for recording |
 | BLE | Experimental; throughput varies |
-| OVISION example | Linux, Python 3.12+, pinned example dependencies |
+| Studio with a webcam | macOS, Windows, or Linux; install the `studio` extra |
+| Studio with OVISION on macOS | Packed stereo video with host timing; source archive only |
+| Studio with native OVISION on Linux | Python 3.12+, `v4l2-ctl`, `studio-ovision` extra (SyncField 0.8.14), valid flash calibration |
 
 The SDK rejects unsupported firmware and packet layouts.
+
+Only the native Linux OVISION path records camera exposure timing, IMU, and
+calibration for Studio's **OG Center sensor source** profile. The macOS path
+preserves both video eyes but cannot provide that native metadata. See the
+[Studio guide](10_studio.md) for setup and export choices. The Linux native
+Studio path has simulated-device tests; validate it on the actual camera and
+gloves before relying on a large collection.
 
 Software tests cover Python 3.10–3.14 on Linux, macOS, and Windows. They do not
 prove physical capture quality. The team reports successful firmware 0.9.16

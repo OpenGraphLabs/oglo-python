@@ -1,12 +1,13 @@
 # Documentation
 
-[Local collection page](10_studio.md) — calibrate, record camera and gloves with a USB button, review takes, and export source episodes.
-[Studio adapter guide](11_studio_adapters.md) — connect other USB switches and cameras through the local controller.
+Start with [OGLO Studio](10_studio.md) for a guided camera-and-glove recording, or use the [collection SDK](12_collection_sdk.md) from Python. The [adapter guide](11_studio_adapters.md) is for developers adding cameras or USB buttons.
 
 New to OGLO? Start with [installing and reading a glove](../README.md#install).
 
 | Task | Guide |
 | --- | --- |
+| Record two gloves with a camera and export a ZIP | [OGLO Studio](10_studio.md) |
+| Write a Python collection script | [Collection SDK](12_collection_sdk.md) |
 | Understand sensor values and units | [Data reference](02_data_reference.md) |
 | Calibrate or choose RAW/CLEAN mode | [Calibration](03_calibration.md) |
 | Save or replay data | [Recording and replay](04_recording.md) |

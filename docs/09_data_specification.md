@@ -172,13 +172,27 @@ ordinary dictionaries; they do not validate JSON at runtime.
 Completed sessions include `kind`, `video`, `timestamps`, `codec`, `requested_fps`,
 `host_timestamp_meaning`, `width`, `height`, `frames_submitted`, `frames_decoded`,
 `first_host_received_ns`, and `last_host_received_ns`. Frame counts must agree and
-be at least two. Width includes both eyes for OVISION.
+be at least two. Width includes both eyes for the native OVISION stereo adapter.
 
 Webcams also save `index`, `playback_fps`, `fps_request_accepted`, and `backend`.
 OVISION also saves `model`, `video_device`, optional `usb_serial`,
 `syncfield_version`, `native_stereo_metadata`, `calibration`, `eye_order`,
 `eye_width`, `eye_height`, and `native_artifacts`. Keep all
 [native OVISION files](../examples/camera_glove/OVISION.md#3-files-to-send).
+
+Studio's macOS UVC option uses `kind: "ovision_uvc_stereo_host_timed"` and saves
+the full 3840×1080 packed frame. The selected `eye` (`left` or `right`) controls
+preview and review only. Its camera metadata also records `name`, `mode`,
+`source_width`, `source_height`, `preview_width`, `preview_height`, and
+`source_eye_order: ["left", "right"]`. It uses host pipe-read timing and has no
+native exposure time, camera IMU, or calibration sidecars; it remains a source
+archive. Older Studio episodes with `kind: "ovision_uvc_eye"` contain only one eye.
+
+Studio's Linux native option uses `kind: "ovision_native_stereo"` and saves
+`camera/cam_ego.mp4` plus the native stereo/IMU/calibration sidecars and
+`camera/sync_point.json`. Its selected eye is likewise a preview choice; the
+original H.264 preserves both eyes. Native exposure time appears in the common
+timestamp file and in `cam_ego.stereo.jsonl`.
 
 ### Per-video-frame fields: `CameraFrameData`
 
@@ -188,11 +202,11 @@ Each line of `camera/timestamps.jsonl` contains:
 | --- | --- |
 | `frame_index` | Consecutive video-frame index, starting at zero |
 | `host_received_ns` | Integer host arrival time |
-| `host_read_started_ns` | Webcam read-start time; `null` for OVISION |
-| `device_timestamp` | Native camera time; `null` for a generic webcam |
-| `device_timestamp_unit` | `"ns"` for OVISION |
-| `device_clock_domain` | `"ovision_camera"` for OVISION |
-| `device_timestamp_meaning` | `"left_exposure_start"` for OVISION |
+| `host_read_started_ns` | OpenCV/FFmpeg read-start time; `null` for native OVISION |
+| `device_timestamp` | Native camera time; `null` for webcam or macOS UVC OVISION |
+| `device_timestamp_unit` | `"ns"` for native OVISION |
+| `device_clock_domain` | `"ovision_camera"` for native OVISION |
+| `device_timestamp_meaning` | `"left_exposure_start"` for native OVISION |
 
 Use `null` for unknown native timing. OVISION also includes `native_metadata` and
 `native_frame_number`. The native metadata path is relative to the timestamp file.

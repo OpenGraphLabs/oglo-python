@@ -33,6 +33,12 @@ User-facing changes by version. Version numbers follow
 
 ### Added
 
+- OGLO Studio for paired-glove and camera collection, calibration, review, and
+  checked source ZIP export.
+- `oglo.collection.Collection` for the same workflow from Python without the
+  web server, with separate `collection` and `studio` install extras.
+- Native Linux OVISION stereo, camera IMU, exposure timing, and calibration
+  capture for the OG Center sensor-source profile.
 - JSONL-only recording and replay using the `og-skill` sensor format and filenames.
 - Automatic calibration read-back, RAW preservation, and CLEAN derivation.
 - Exact sequence, loss, and timing metadata in each row's `oglo` object.
@@ -41,6 +47,9 @@ User-facing changes by version. Version numbers follow
 
 ### Changed
 
+- macOS OVISION recording now saves both eyes while previewing one selected eye.
+- Added user guides for Studio setup, collection scripts, delivery profiles,
+  and local troubleshooting.
 - Recording format is now schema 3; camera sessions use `oglo-camera-example.v2`.
   Earlier recording formats and the separate export step are no longer supported.
 - Simplified the quickstart, camera guides, reference pages, and contributor docs.

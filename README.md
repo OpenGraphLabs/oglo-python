@@ -38,9 +38,12 @@ For a packaged build, use the [download guide](docs/08_candidate_status.md#evalu
 
 Use Studio for a guided recording with **two USB OGLO gloves (left and right)** and
 one camera on the same computer. Plug them in with USB data cables and close any
-other app using the gloves or camera, including OGLO Viewer.
+other app using the gloves or camera, including OGLO Viewer. The
+[step-by-step Studio guide](docs/10_studio.md) covers camera choices, calibration,
+review, exports, and troubleshooting.
 
-From this repository, with the virtual environment activated:
+From this repository, with the virtual environment activated (use Python 3.12+ and
+`'.[studio,studio-ovision]'` for native OVISION on Linux):
 
 ```bash
 python -m pip install -e '.[studio]'
@@ -55,12 +58,14 @@ Open **http://127.0.0.1:8765/**. If that port is in use, start Studio with
 `http://127.0.0.1:8766/` instead. Studio is a Python app; no `npm run dev` is
 needed. Leave the terminal running while you record, then press Ctrl+C to stop it.
 
-Follow the five steps in the page:
+Follow the six steps in the page:
 
 1. **Connect and check.** Select the camera and each glove, then click **Connect
-   selected devices**. A USB camera such as OVISION may appear under a generic
-   UVC name. Confirm the correct view appears, both glove frame counters advance,
-   and a brief fingertip touch lights up each hand's taxels.
+   selected devices**. On macOS, choose **OVISION left eye** or **OVISION right
+   eye** when available. Studio shows the selected 1920×1080 eye and saves the
+   full packed 3840×1080 stereo video. Confirm the correct view appears, both
+   glove frame counters advance, and a brief fingertip touch lights up each
+   hand's taxels.
 2. **Calibrate.** Choose **Use saved calibration** if it still matches the glove
    fit, or run a fresh five-second sweep. For a fresh sweep, repeatedly open and
    close both hands without touching anything, including your own fingertips.
@@ -68,20 +73,23 @@ Follow the five steps in the page:
    spread and contact threshold. Check fingertip response before continuing.
 3. **Set up a button (optional).** Test a keyboard-style USB pedal and map its
    keys, or continue with the on-screen controls.
-4. **Record and review.** Enter a task description, click **Start recording**,
-   perform the task, and click **Stop**. Wait for validation, review the video,
-   then choose **Keep** or **Discard**. Repeat for another take if needed.
-5. **Export.** Click **Export kept takes**, then **Download dataset ZIP**. The ZIP
+4. **Record.** Enter a task description, click **Start recording**, perform the
+   task, and click **Stop**. Wait for Studio to check the files.
+5. **Review.** Select the take on the Review page, play its video, then choose
+   **Keep** or **Discard**. Return to Record for another take if needed.
+6. **Export.** Click **Export kept takes**, then **Download dataset ZIP**. The ZIP
    contains the video, camera timestamps, both gloves' sensor data, calibration,
    and checksums. The source episodes remain under `./captures/studio/`, and the
    exported ZIP is also saved in `./captures/studio/exports/`.
 
-Studio's built-in camera path records host-timed video, including when an
-OVISION camera is selected as a USB camera. This produces a **source archive**;
-native OVISION exposure timestamps and stereo metadata require the separate
-[OVISION capture path](examples/camera_glove/OVISION.md) on Linux with Python
-3.12+. See the [Studio guide](docs/10_studio.md) for pedal setup, data checks,
-and delivery limits.
+Mac OVISION capture keeps both eyes but only host timing, so it remains a
+**source archive**. For OG Center stereo+tactile post processing, run Studio on
+Linux, choose a **native OVISION** camera option, and select **OG Center sensor source**.
+That path saves native exposure timing, camera IMU, and calibration alongside
+both gloves. It still requires task-content review and a separate OG Center
+import. See the [Studio guide](docs/10_studio.md) for pedal setup, data checks,
+and delivery limits. Scripts can use the same workflow through the
+[collection SDK](docs/12_collection_sdk.md) without starting the web page.
 
 ## Read a glove
 
