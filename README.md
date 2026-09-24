@@ -40,7 +40,8 @@ Use Studio for a guided recording with **two USB OGLO gloves (left and right)** 
 one camera on the same computer. Plug them in with USB data cables and close any
 other app using the gloves or camera, including OGLO Viewer. The
 [step-by-step Studio guide](docs/10_studio.md) covers camera choices, calibration,
-review, exports, and troubleshooting.
+review, exports, and troubleshooting. Use the [localhost UI test checklist](docs/13_localhost_ui_test.md)
+for a repeatable device-to-ZIP test.
 
 From this repository, with the virtual environment activated (use Python 3.12+ and
 `'.[studio,studio-ovision]'` for native OVISION on Linux):

@@ -81,3 +81,5 @@ If no key appears, check the pedal's keyboard-emulation mode and your operating 
 | Export is disabled or has zero takes | Keep a complete take and choose a delivery profile that the take passed. |
 
 For scripted collection without the web page, use the [collection SDK guide](12_collection_sdk.md). For raw glove errors, see [troubleshooting](05_troubleshooting.md).
+
+For a repeatable physical test of this page and the exported ZIP, follow the [localhost UI test checklist](13_localhost_ui_test.md).
