@@ -4,4 +4,6 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 ensure_dialout "$ROOT/scripts/doctor.sh" "$@"
-exec "$(dirname "$PY")/oglo" doctor "$@"
+# Through the interpreter rather than a sibling `oglo` script: OGLO_PYTHON may name an
+# interpreter whose bin/ does not carry the console script (a bare venv python, uv run).
+exec "$PY" -c 'import sys; from oglo.cli import main; sys.exit(main(["doctor", *sys.argv[1:]]))' "$@"

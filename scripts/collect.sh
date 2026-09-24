@@ -2,7 +2,7 @@
 # Launch examples/camera_glove/collect.py with the interpreter and defaults of this workstation.
 #
 #   scripts/collect.sh --pair --task "pick up a cup"
-#   scripts/collect.sh --serial OGLO-R-00114 --task "smoke test"
+#   scripts/collect.sh --serial OGLO-R-00001 --task "smoke test"
 # In the window: g record, h save, x discard, z calibrate, q quit (the foot switch types these).
 #
 # Defaults added in front of your arguments (yours win): --camera $OGLO_CAMERA (part of the

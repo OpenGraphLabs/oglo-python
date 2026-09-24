@@ -49,7 +49,7 @@ User-facing changes by version. Version numbers follow
   switch control, per-task numbered sessions, discard and failure folders, and
   `dataset.py index` / `upload` for the episode index, dataset card and Hugging Face
   upload. `scripts/collect.sh`, `scripts/doctor.sh`, `scripts/hf_upload.sh` run them
-  from the `oglo` environment.
+  with the interpreter named in `scripts/workstation.env`.
 - `examples/05_taxel_map.py` / `scripts/taxel_map.sh`: live terminal taxel map in the
   OGLO Studio layout, for checking where a press lands.
 - `collect.py`: `g` is refused until every glove holds a valid sweep zero, since a
@@ -59,7 +59,7 @@ User-facing changes by version. Version numbers follow
   raw ADC without changing what is recorded.
 - `collect.py --camera` accepts part of the camera's V4L2 name (`SC233`) and resolves
   it to the capture node, since `/dev/video` numbers change across reboots;
-  `scripts/collect.sh` defaults to the stereo camera by name.
+  `scripts/collect.sh` passes the name from `scripts/workstation.env`.
 - `collect.py --camera-backend auto|opencv|ovision`: on an OVISION-EGO-V1 (SC233HGS
   with H.264/YCTC firmware) with SyncField 0.8.14 installed, episodes are recorded
   through the native backend of `ovision.py`, one live stream for the whole session:
@@ -81,7 +81,37 @@ User-facing changes by version. Version numbers follow
   scripts and defaults into `scripts/workstation.env` (`workstation.env.example`);
   `collect.py --codec` defaults to `mp4v`, `dataset.py upload` takes the repo from
   `--repo` or `OGLO_HF_REPO`. The camera CI job now runs `test_collect.py` and
-  `test_dataset.py` with its no-skip check; the timed capture test stops on a frame.
+  `test_dataset.py` with its no-skip check (and installs `ffmpeg` for the `--codec`
+  test); the timed capture test stops on a frame.
+- `ovision.py` records through the SDK's own `oglo.studio_ovision.NativeOvisionCameraWorker`
+  (what OGLO Studio uses) instead of driving the SyncField stream itself: the worker
+  keeps the stream connected between episodes, ends a recording whose capture dies or
+  delivers no frame for five seconds, and releases the camera when it fails to start.
+  `collect.py` reopens the camera after such a failure, or when it stops while idle,
+  waiting for a replug and resolving `--camera` by name again; a stop before the first
+  keyframe is a discard, not a failure. `--camera-serial` is now a manifest label only.
+- `collect.py` runs `align.py` in a separate low-priority process (in-process alignment
+  starved the glove serial ports and the camera during the next episode); Ctrl-C during
+  the final wait leaves the remaining episodes complete and unaligned, and the next run
+  aligns them first. Every shutdown step (devices, alignment, window, index) runs
+  whatever the previous one did. Episode numbers are never reused (`<task>/.next_session`),
+  long or symbol-only task names get a hash, a folder another collector created is
+  not filed as a failure, and the OpenCV camera's FPS request is made once, at open.
+- `capture.py` stops a glove whose recording failed instead of leaving it streaming
+  unread, opens the encoder before the timed loop, drains the frames the shared camera
+  buffered while the gloves were commanded, and keeps the window alive while the saved
+  video is decoded back. `align.py` publishes its file exclusively (a unique temporary,
+  fsync, hard link) so two processes cannot overwrite each other.
+- `dataset.py`: the publication gate checks every camera file the manifest names (the
+  OVISION IMU, calibration, clock anchor and report included) and `camera_imu` follows
+  the file; the upload sends only the indexed episodes and `gloves/` (`--include` per
+  episode), then the index in a second commit, requires `hf` 1.0+ and refuses an
+  existing public repo; hidden folders are not tasks, symbolic links and unreadable
+  manifests are held with their reason, a hand-written `README.md` is not overwritten,
+  and the root files are replaced atomically. The card states the measured frame rate
+  per camera kind, the OpenCV episodes' actual size and codec, the alignment tolerance
+  used, and reads gloves by side in its example. `z` leaves the glove in RAW (as OGLO
+  Studio does) and the help and README say so.
 
 ### Fixed
 

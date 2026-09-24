@@ -138,24 +138,28 @@ def probe_encoder(codec, quality=23, size=(256, 128)):
 
 
 def record_camera(camera, output, seconds, fps, stop, preview=False, codec="mp4v", quality=23):
-    writer = None
+    """Record ``camera`` into ``output/`` until ``seconds`` pass or ``stop`` is set.
+
+    The encoder is opened on one frame that is not recorded, before the timed loop:
+    an ffmpeg / NVENC start takes a few hundred milliseconds, during which the camera
+    would otherwise buffer frames that then get read back stale with fresh timestamps.
+    """
+    image, _ = read_camera(camera)
+    height, width = image.shape[:2]
+    if width % 2 or height % 2:
+        raise RuntimeError("Use even camera dimensions to avoid encoder cropping")
+    size = (width, height)
+    writer = open_writer(output / "video.mp4", fps, size, codec, quality)
     count = 0
     first = last = None
-    size = None
-    deadline = time.monotonic() + seconds
     try:
+        if not writer.isOpened():
+            raise RuntimeError(f"Could not open the {codec} video encoder")
+        deadline = time.monotonic() + seconds
         with (output / "timestamps.jsonl").open("x", encoding="utf-8") as sidecar:
             while time.monotonic() < deadline and not stop.is_set():
                 image, timing = read_camera(camera)
-                height, width = image.shape[:2]
-                if writer is None:
-                    size = (width, height)
-                    if width % 2 or height % 2:
-                        raise RuntimeError("Use even camera dimensions to avoid encoder cropping")
-                    writer = open_writer(output / "video.mp4", fps, size, codec, quality)
-                    if not writer.isOpened():
-                        raise RuntimeError(f"Could not open the {codec} video encoder")
-                if (width, height) != size:
+                if image.shape[1::-1] != size:
                     raise RuntimeError("Camera dimensions changed during capture")
                 writer.write(image)
                 row: CameraFrameData = {"frame_index": count, **timing}
@@ -170,8 +174,7 @@ def record_camera(camera, output, seconds, fps, stop, preview=False, codec="mp4v
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         raise RuntimeError("Capture stopped early from the preview")
     finally:
-        if writer is not None:
-            writer.release()
+        writer.release()
         if preview:
             cv2.destroyAllWindows()
     if getattr(writer, "error", None):
@@ -182,8 +185,12 @@ def record_camera(camera, output, seconds, fps, stop, preview=False, codec="mp4v
             "first_host_received_ns": first, "last_host_received_ns": last}
 
 
-def verify_video(path, expected_frames):
-    """Decode the saved video; VideoWriter.write() has no success return value."""
+def verify_video(path, expected_frames, progress=None):
+    """Decode the saved video; VideoWriter.write() has no success return value.
+
+    ``progress(decoded, expected)`` is called every 30 frames: a full decode of a long
+    episode takes seconds, and a window that is not redrawn meanwhile looks hung.
+    """
     decoder = cv2.VideoCapture(str(path))
     count = 0
     try:
@@ -191,6 +198,8 @@ def verify_video(path, expected_frames):
             raise RuntimeError(f"Cannot decode {path}")
         while decoder.read()[0]:
             count += 1
+            if progress is not None and count % 30 == 0:
+                progress(count, expected_frames)
     finally:
         decoder.release()
     if count != expected_frames:
@@ -227,6 +236,7 @@ class WebcamCapture:
         read_camera(self.camera)  # Check connection; discard this setup frame.
 
     def record(self, stop):
+        self.output.mkdir()  # The backend owns camera/; the native OVISION worker insists on creating it.
         return record_camera(self.camera, self.output, self.args.seconds,
                              self.args.fps, stop, self.args.preview, self.codec, self.quality)
 
@@ -236,16 +246,20 @@ class WebcamCapture:
 
 
 def record_glove(glove, output, seconds, start, stop, entry, root):
+    """One glove's episode on its own thread; the stream is stopped whichever way it ends.
+
+    ``oglo.record`` leaves the stream running when it returns, and resumes it before it
+    raises. A glove nobody reads must not be left like that: Linux buffers 4095 bytes
+    per tty (~85 ms of stream), then throttles the device, and the next command written
+    to it wedges the firmware until a replug. The peer glove finishing, the video check
+    and the caller's error handling all take longer than that, so the stop happens here.
+    """
     start.wait()
     try:
         calibration = json.loads((root / entry["calibration"]).read_text(encoding="utf-8"))
         episode = oglo.record(output, seconds=seconds, glove=glove, stop_event=stop,
                               calibration=calibration)
         entry["episode"] = episode.relative_to(root).as_posix()
-        # ``oglo.record`` leaves a fresh stream running that nobody reads while the
-        # peer glove finishes and the video is verified. A glove nobody reads must
-        # not be written to (the kernel throttles it after ~85 ms; see the SDK's
-        # backlog guard), so quiet it here, on its own thread, right away.
         glove.stop()
         return episode
     except BaseException as exc:
@@ -254,6 +268,10 @@ def record_glove(glove, output, seconds, start, stop, entry, root):
             entry["episode"] = Path(partial).relative_to(root).as_posix()
         entry["error"] = f"{type(exc).__name__}: {exc}"
         stop.set()  # Stop peer capture if USB fails.
+        try:
+            glove.stop()
+        except Exception:  # A port that is dead already; the recording error is the one to report.
+            pass
         raise
 
 
@@ -270,8 +288,7 @@ def capture(args, camera_factory=WebcamCapture, stop=None, gloves=None):
     stopped_early = False
     root = args.output
     root.mkdir(parents=True, exist_ok=False)  # Never mix sessions or overwrite files.
-    camera_dir = root / "camera"
-    camera_dir.mkdir()
+    camera_dir = root / "camera"  # Created by the camera backend when it starts recording.
     manifest: oglo.OGLData = {
         "schema": "oglo-camera-example.v2", "task_description": args.task,
         "sdk_version": oglo.__version__, "opencv_version": cv2.__version__,
@@ -331,7 +348,8 @@ def capture(args, camera_factory=WebcamCapture, stop=None, gloves=None):
 
         print("Checking saved video and glove files...", flush=True)
         manifest["camera"]["frames_decoded"] = verify_video(
-            root / manifest["camera"]["video"], manifest["camera"]["frames_submitted"]
+            root / manifest["camera"]["video"], manifest["camera"]["frames_submitted"],
+            progress=getattr(camera, "verify_progress", None),
         )
         starts = [manifest["camera"]["first_host_received_ns"]]
         ends = [manifest["camera"]["last_host_received_ns"]]

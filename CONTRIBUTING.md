@@ -27,11 +27,14 @@ Use Python 3.12+ to include simulated webcam and OVISION tests:
 
 ```bash
 python -m pip install -r examples/camera_glove/requirements-ovision.txt
-python -m pytest tests/test_camera_glove.py
+python -m pytest tests/test_camera_glove.py tests/test_collect.py tests/test_dataset.py
 ```
 
-These tests exercise simulated devices, real video encoding/decoding, and data
-alignment. The Linux camera CI job requires them to run without skips.
+These tests exercise simulated devices, real video encoding/decoding, data
+alignment, the multi-episode collector and the dataset index / upload commands.
+The `--codec` test needs the system `ffmpeg`; the OVISION tests run the SDK's native
+worker on a simulated stream and need Linux. The Linux camera CI job installs both
+and requires all three files to run without skips.
 
 ## Hardware tests
 

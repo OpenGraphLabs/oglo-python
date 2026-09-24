@@ -5,7 +5,10 @@ import argparse
 from bisect import bisect_left
 import json
 import math
+import os
 from pathlib import Path
+import sys
+from uuid import uuid4
 
 import oglo
 
@@ -29,6 +32,23 @@ def nearest_sample(times, sequences, camera_time, max_delta_ns):
         return None
     return {"row_index": row, "seq": int(sequences[row]),
             "host_received_ns": times[row], "delta_ns": delta}
+
+
+def publish(temporary, output):
+    """Make ``temporary`` appear as ``output`` in one step, and only if ``output`` is new.
+
+    A hard link is exclusive: two processes aligning the same episode (the collector's
+    background worker and a manual run) cannot overwrite each other, whoever finishes
+    second gets FileExistsError. A filesystem without hard links gets a plain rename.
+    """
+    try:
+        os.link(temporary, output)
+    except FileExistsError:
+        raise
+    except OSError:
+        if output.exists():
+            raise FileExistsError(f"{output} already exists")
+        os.replace(temporary, output)
 
 
 def align(session, output, max_delta_ms):
@@ -67,14 +87,14 @@ def align(session, output, max_delta_ms):
             streams[name] = (times, data["seq"])
         sources.append((entry, streams))
 
-    # The file appears only once every row is written: a crash or an error part way
-    # through leaves nothing behind, so its presence (with one row per frame) is the
-    # signal that the episode is aligned.
+    # The file appears only once every row is written and on disk: a crash or an error
+    # part way through leaves nothing behind (the temporary name is unique to this run),
+    # so its presence (with one row per frame) is the signal that the episode is aligned.
     if output.exists():
         raise FileExistsError(f"{output} already exists")
-    temporary = output.with_name(output.name + ".tmp")
+    temporary = output.with_name(f".{output.name}.{uuid4().hex}.tmp")
     try:
-        with temporary.open("w", encoding="utf-8") as destination:
+        with temporary.open("x", encoding="utf-8") as destination:
             for row in rows:
                 joined = {
                     "frame_index": row["frame_index"],
@@ -90,11 +110,27 @@ def align(session, output, max_delta_ms):
                            for name, (times, sequences) in streams.items()},
                     })
                 destination.write(json.dumps(joined) + "\n")
-        temporary.replace(output)
-    except BaseException:
+            destination.flush()
+            os.fsync(destination.fileno())
+        publish(temporary, output)
+    finally:
         temporary.unlink(missing_ok=True)
-        raise
     return len(rows)
+
+
+def hit_rates(preview_path):
+    """Fraction of camera frames with a tactile / imu neighbour, per glove side, and the row count."""
+    hits, total = {}, 0
+    with preview_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            row = json.loads(line)
+            total += 1
+            for glove in row["gloves"]:
+                entry = hits.setdefault(glove["side"], {"tactile": 0, "imu": 0})
+                for stream in ("tactile", "imu"):
+                    if glove[stream] is not None:
+                        entry[stream] += 1
+    return {side: {k: v / total for k, v in counts.items()} for side, counts in hits.items()}, total
 
 
 def main():
@@ -103,11 +139,18 @@ def main():
     parser.add_argument("--output", type=Path, help="new JSONL file; defaults to session/alignment.preview.jsonl")
     parser.add_argument("--max-delta-ms", type=float, default=50,
                         help="illustrative arrival-time tolerance, not a sync guarantee (default: 50)")
+    parser.add_argument("--json", action="store_true",
+                        help="print one JSON line with the frame count and per-side hit rates "
+                             "(what collect.py reads from its background alignment)")
     args = parser.parse_args()
     output = args.output or args.session / "alignment.preview.jsonl"
     count = align(args.session, output, args.max_delta_ms)
+    if args.json:
+        rates, _ = hit_rates(output)
+        print(json.dumps({"frames": count, "hit_rates": rates, "output": str(output)}), flush=True)
+        return
     print(f"Wrote {count} frame references to {output}; alignment still requires validation.")
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

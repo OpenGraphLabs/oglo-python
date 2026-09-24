@@ -178,8 +178,8 @@ be at least two. Width includes both eyes for the native OVISION stereo adapter.
 Webcams also save `index`, `playback_fps`, `fps_request_accepted`, `backend`, and
 `video_quality` (the CRF / CQ of an ffmpeg codec; `null` for `mp4v`).
 OVISION also saves `model`, `video_device`, optional `usb_serial`,
-`syncfield_version`, `native_stereo_metadata`, `calibration`, `imu`, `accel`,
-`gyro`, `mag`, `sync_point`, `finalization`, `eye_order`, `eye_width`,
+`syncfield_version`, `backend`, `native_stereo_metadata`, `calibration`, `imu`,
+`accel`, `gyro`, `mag`, `sync_point`, `finalization`, `eye_order`, `eye_width`,
 `eye_height`, and `native_artifacts`; the path fields name the session-relative
 files that hold the camera IMU, magnetometer, clock anchor and capture report. Keep all
 [native OVISION files](../examples/camera_glove/OVISION.md#3-files-to-send).

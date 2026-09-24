@@ -166,7 +166,7 @@ stable across reboots, the index is not:
 
 ```bash
 scripts/collect.sh --pair --task "pick up a cup"          # both hands
-scripts/collect.sh --serial OGLO-R-00114 --task "cup"     # one glove, by CONFIG serial
+scripts/collect.sh --serial OGLO-R-00001 --task "cup"     # one glove, by CONFIG serial
 ```
 
 | Key | Action |
@@ -174,14 +174,25 @@ scripts/collect.sh --serial OGLO-R-00114 --task "cup"     # one glove, by CONFIG
 | `g` | start an episode (the gloves stop their idle stream, read their zero table, then record). Refused while any glove has no valid sweep zero: press `z` first |
 | `h` | stop and save the episode |
 | `x` | stop and discard it (moved to `<task>/_discarded/`) |
-| `z` | run a zero sweep on every glove (`--sweep` seconds, `--countdown` before it) |
+| `z` | run a zero sweep on every glove (`--sweep` seconds, `--countdown` before it), then leave the glove in RAW as OGLO Studio does (the recorder keeps RAW and derives CLEAN); `--clean THR` switches it to CLEAN instead. Either mode persists on the glove for every client |
 | `c` | toggle the on-screen grids between counts above the zero (clamped at 0, like the CLEAN file; the sweep zero is an envelope, so a resting hand sits below it) and raw ADC (RAW stream only). Display only: a RAW-stream episode always saves both `tactile_<side>.raw.jsonl` and the derived CLEAN file |
 | `q` | quit; the dataset index and card are rewritten on the way out |
 
 The task folder is the ASCII letters and digits of `--task`; a task written in another
-script keeps its identity through a short hash of its text. One folder means one task:
-`collect.py` refuses to start when the folder already holds episodes recorded under a
-different wording, so the index and the card never merge two activities.
+script, one longer than 40 characters or one made of symbols keeps its identity through
+a short hash of its text. One folder means one task: `collect.py` refuses to start when
+the folder already holds episodes recorded under a different wording, so the index and
+the card never merge two activities. Episode numbers count past the highest one the
+task has used (`<task>/.next_session` remembers it), so an episode deleted locally after
+an upload is never overwritten on the Hub by a new one under its name.
+
+A saved episode is aligned by `align.py` running as a separate, low-priority process,
+so the next `g` never waits and alignment never competes with the glove readers or the
+camera for the interpreter (in-process it starved the serial port and dropped camera
+frames during the next episode). `q` waits for the queued alignments; Ctrl-C during
+that wait ends the child too and leaves those episodes complete but unaligned, which
+the next `collect.py` run aligns before anything else (`dataset.py index` names them
+until then). Ctrl-C during a recording moves that episode to `_failed/`.
 
 Output layout, one folder per task and one numbered session per episode:
 
@@ -195,27 +206,35 @@ captures/
 ```
 
 An episode is *publishable* when `dataset.py` finds nothing wrong with it: a complete
-manifest, the camera and glove files it names present, and `alignment.preview.jsonl`
-with exactly one row per decoded frame (`align.py` writes that file atomically, so a
-partial one never exists). That one test decides what `episodes.jsonl` lists and what
-may leave the machine: `dataset.py index --out captures` rebuilds the index from the
-publishable episodes and names every folder it held back; `scripts/hf_upload.sh`
-(`--dry-run` to list first) refuses while any folder under a task is not a publishable
-episode or while the files `hf` would send include anything outside the indexed
-episodes, then pushes the tree minus `_*` folders to the dataset repo named by
-`OGLO_HF_REPO` in `scripts/workstation.env` (or `--repo`). The logged-in token needs
-write access to that repo's organization.
+manifest, every camera file it names present (for OVISION episodes that includes the
+IMU, calibration, clock anchor and capture report), its glove folders present, and
+`alignment.preview.jsonl` with exactly one row per decoded frame (`align.py` publishes
+that file in one step, exclusively, so a partial or half-overwritten one never exists).
+That one test decides what `episodes.jsonl` lists and what may leave the machine:
+`dataset.py index --out captures` rebuilds the index from the publishable episodes and
+names every folder it held back; `scripts/hf_upload.sh` (`--dry-run` to list first)
+refuses while any folder under a task is not a publishable episode or any file under
+a task belongs to no indexed episode, then runs `hf upload` twice: first the indexed
+episodes and `gloves/` (an `--include` per episode, so a recording that starts
+meanwhile is not swept up), then `episodes.jsonl` and `README.md`, so the index on the
+Hub never lists an episode whose files are not there yet. The repo comes from
+`OGLO_HF_REPO` in `scripts/workstation.env` (or `--repo`) and must be private: `hf
+upload --private` only applies to a repo it creates, so an existing public repo is
+refused before anything is sent. Needs `hf` 1.0 or newer (older ones keep only the last
+`--include`); the logged-in token needs write access to that repo's organization.
+Files deleted locally stay on the Hub until removed there.
 
 ### Camera backend and the camera IMU
 
 `collect.py` records the camera through one of two backends, `--camera-backend`
 (default `auto`):
 
-- **ovision**, the native SyncField adapter from `ovision.py`, for an OVISION-EGO-V1
-  (the SC233HGS module with H.264/YCTC firmware). One stream stays live for the whole
-  session and every episode gets the same files as a single `ovision.py` run: the
-  original 3840x1080 H.264 (`camera/cam_ego.mp4`), the camera's own IMU and
-  magnetometer (`cam_ego.imu/accel/gyro/mag.jsonl`), per-eye exposure timing
+- **ovision**, the SDK's native OVISION worker (`oglo.studio_ovision`, what OGLO
+  Studio records with) through `ovision.py`, for an OVISION-EGO-V1 (the SC233HGS
+  module with H.264/YCTC firmware). One worker stays live for the whole session and
+  every episode gets the same files as a single `ovision.py` run: the original
+  3840x1080 H.264 (`camera/cam_ego.mp4`), the camera's own IMU and magnetometer
+  (`cam_ego.imu/accel/gyro/mag.jsonl`), per-eye exposure timing
   (`cam_ego.stereo.jsonl`), the unit's calibration (`cam_ego.calibration.*`),
   `sync_point.json`, `finalization.json` and the common `timestamps.jsonl`, as
   [OVISION.md](OVISION.md) describes them. Needs Linux and
@@ -223,8 +242,15 @@ write access to that repo's organization.
   `--codec`, `--video-quality` and `--fps` do not apply. The camera image in the window
   refreshes about once a second (the adapter decodes keyframes only) while the tactile
   grids keep their usual rate, and each episode's video starts at the first keyframe
-  after `g`, up to a second after the gloves.
-- **opencv**: any webcam through OpenCV, encoded with `--codec`; no camera IMU.
+  after `g`, up to a second after the gloves; `h` or `x` before that keyframe leaves
+  nothing to keep and counts as a discard. The worker's watchdog ends an episode whose
+  camera dies or delivers no frame for five seconds (it is recorded as failed, never
+  saved with a video shorter than its gloves), and a camera that stops while idle is
+  noticed within five seconds too; in both cases the camera is reopened, waiting for a
+  replug if needed (`--camera` given as a name is resolved again, since the device can
+  come back as another `/dev/video` number), while the gloves keep their idle readers.
+- **opencv**: any webcam through OpenCV, encoded with `--codec`; no camera IMU. The
+  idle window says so, with the reason `auto` fell back.
 
 `auto` takes `ovision` when SyncField 0.8.14 is installed and the camera answers the
 adapter's calibration read, and prints why when it falls back to OpenCV, so an
@@ -254,7 +280,8 @@ gloves are never left streaming unread:
   stopped, then commands are sent. `oglo.Glove.send()` is never called while a reader
   thread is alive.
 - **Recording**: `capture.py` owns the gloves; `oglo.record()` reads on its own thread
-  per glove and stops the stream as soon as it returns.
+  per glove and stops the stream as soon as it returns, whether it succeeded or
+  raised (the SDK resumes the stream before it raises).
 - **After the episode**: reader threads start again.
 
 ### When a glove stops answering

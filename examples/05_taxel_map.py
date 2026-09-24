@@ -14,7 +14,7 @@ per-taxel median of the first second (keep the hand still and unloaded at start)
 
     scripts/taxel_map.sh                 # the only glove, or the first found
     scripts/taxel_map.sh --side left     # pick by hand
-    scripts/taxel_map.sh --serial OGLO-L-00114
+    scripts/taxel_map.sh --serial OGLO-L-00001
     scripts/taxel_map.sh --oriented      # canonical thumb-first layout instead of wire
 """
 
@@ -119,7 +119,7 @@ def render(g: oglo.Glove, resid: np.ndarray, hz: float, dropped: int, source: st
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--serial", help="logical CONFIG serial, e.g. OGLO-L-00114")
+    ap.add_argument("--serial", help="logical CONFIG serial, e.g. OGLO-L-00001")
     ap.add_argument("--side", choices=("left", "right"), help="pick the glove by hand")
     ap.add_argument("--refresh", type=float, default=0.1, help="screen refresh period in s")
     ap.add_argument("--oriented", action="store_true",
