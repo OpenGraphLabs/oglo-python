@@ -66,6 +66,12 @@ class CameraData(TypedDict, total=False):
     eye_width: int
     eye_height: int
     native_artifacts: list[str]
+    imu: str  # camera/cam_ego.imu.jsonl: the camera's own accelerometer + gyroscope
+    accel: str
+    gyro: str
+    mag: str
+    sync_point: str  # camera/sync_point.json: host clock anchor of the recording
+    finalization: str  # camera/finalization.json: the adapter's capture report
 
 
 class _GloveData(TypedDict):

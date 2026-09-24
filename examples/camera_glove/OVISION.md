@@ -63,6 +63,10 @@ and contact surfaces visible, and make visible fingertip taps near the start and
 end for timing checks. Let final file checks finish. `q` or Ctrl-C leaves an
 incomplete session.
 
+For many episodes in one sitting, `collect.py` ([README section 5](README.md#5-collect-many-episodes-collectpy))
+drives this same backend with one stream kept live across episodes; each episode
+folder holds the files listed below.
+
 ## 3. Files to send
 
 Send the whole session folder, optionally zipped:

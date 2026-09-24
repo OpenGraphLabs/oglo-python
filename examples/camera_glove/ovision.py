@@ -3,11 +3,12 @@
 
 Requires Python 3.12+, SyncField 0.8.14, and OVISION H.264/YCTC firmware.
 See OVISION.md. Glove recording and the session format are shared with capture.py.
+``collect.py`` reuses :class:`OvisionCapture` with one stream kept live across episodes.
 """
 
 import argparse
 from dataclasses import asdict
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 import json
 from pathlib import Path
 import socket
@@ -18,6 +19,9 @@ import cv2
 from oglo.data import CameraData, CameraFrameData
 
 from capture import capture, positive_number, write_json
+
+SYNCFIELD_VERSION = "0.8.14"
+READY_SECONDS = 10  # wait for the first live frame with valid stereo/IMU metadata
 
 
 def make_join_timestamps(output, expected_frames):
@@ -58,17 +62,116 @@ def make_join_timestamps(output, expected_frames):
             "last_host_received_ns": last}
 
 
+# -- the SyncField stream ------------------------------------------------------------
+
+def problem(video_device):
+    """None when the native backend can record ``video_device`` here, else why not.
+
+    The adapter's calibration read is the identity check: only OVISION firmware answers
+    the UVC extension unit with a valid flash calibration, so a webcam, a metadata node,
+    or a camera without calibration is reported instead of failing at the first episode.
+    """
+    if sys.platform != "linux":
+        return "native OVISION capture requires Linux V4L2/UVC"
+    try:
+        installed = version("syncfield")
+    except PackageNotFoundError:
+        return "syncfield is not installed (pip install -r examples/camera_glove/requirements-ovision.txt)"
+    if installed != SYNCFIELD_VERSION:
+        return f"syncfield {installed} is installed; this example targets {SYNCFIELD_VERSION}"
+    from syncfield.adapters.ovision_calibration import read_ovision_calibration
+
+    try:
+        read_ovision_calibration(video_device)
+    except Exception as exc:  # OvisionCalibrationError, OSError: wrong node, unplugged, no permission
+        return f"{video_device} did not answer as an OVISION camera: {exc}"
+    return None
+
+
+def wait_ready(stream, seconds=READY_SECONDS):
+    deadline = time.monotonic() + seconds
+    while not stream.capture_ready():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"OVISION did not produce valid stereo/IMU metadata within {seconds} seconds")
+        time.sleep(0.05)
+
+
+def open_stream(video_device, camera_serial, output):
+    """A live ``OvisionCameraStream`` that will write under ``output`` once told to record.
+
+    Reads per-unit flash calibration and applies the adapter's verified
+    exposure/gain/bitrate profile. No OpenCV camera read/re-encode path. The stream
+    owns the V4L2 node until ``disconnect()``; nothing else can open the camera meanwhile.
+    """
+    if version("syncfield") != SYNCFIELD_VERSION:
+        raise RuntimeError(f"Install requirements-ovision.txt: this example targets SyncField {SYNCFIELD_VERSION}")
+    from syncfield.adapters.ovision_camera import OvisionCameraStream
+
+    stream = OvisionCameraStream(
+        "cam_ego", output, video_device=video_device, usb_serial=camera_serial,
+        width=3840, height=1080, fps=30,
+    )
+    stream.prepare()
+    stream.connect()
+    wait_ready(stream)
+    return stream
+
+
+def reconnect_stream(stream):
+    """Bring back a stream whose capture died: the adapter re-reads calibration and
+    reopens the node (``disconnect`` + ``connect``), then the same readiness wait."""
+    stream.reconnect()
+    wait_ready(stream)
+
+
+def retarget(stream, output):
+    """Point a connected stream at the next episode's ``camera/`` folder.
+
+    SyncField 0.8.14 fixes the output folder when the stream is built and moves it only
+    by segment rotation, which works mid-recording. Between recordings these two private
+    attributes are all ``start_recording`` reads (the adapter's own rotation sets the
+    same two); the exact version pin in :func:`open_stream` is what keeps this honest.
+    """
+    if stream._recording:
+        raise RuntimeError("OVISION stream is still recording; stop it before the next episode")
+    stream._output_dir = Path(output)
+    stream._file_path = stream._output_dir / f"{stream.id}.mp4"
+
+
+def session_clock():
+    """The SyncField clock every recording is anchored to; saved as sync_point.json."""
+    from syncfield.clock import SessionClock
+    from syncfield.types import SyncPoint
+
+    return SessionClock(SyncPoint.create_now(socket.gethostname()),
+                        recording_armed_ns=time.monotonic_ns())
+
+
 class OvisionCapture:
-    def __init__(self, args, output):
+    """capture.py camera backend on the native stream.
+
+    Without ``stream`` it opens the camera in ``prepare()`` and releases it in
+    ``close()``, one session per process. With ``stream`` (collect.py) the caller's
+    live stream is retargeted at this session's folder and left connected afterwards,
+    so the next episode starts without re-reading calibration or renegotiating video.
+    ``tick(frame)`` is called about every 50 ms while recording with the newest
+    left-eye preview frame (or None); collect.py draws its window and reads keys there.
+    """
+
+    def __init__(self, args, output, stream=None, tick=None):
         self.args, self.output = args, output
-        self.stream = None
+        self.stream, self.shared = stream, stream is not None
+        self.tick = tick
         self.recording = False
         self.metadata: CameraData = {
             "kind": "ovision", "model": "OVISION-EGO-V1", "video_device": str(args.video_device),
-            "usb_serial": args.camera_serial, "syncfield_version": "0.8.14",
+            "usb_serial": args.camera_serial, "syncfield_version": SYNCFIELD_VERSION,
             "video": "camera/cam_ego.mp4", "timestamps": "camera/timestamps.jsonl",
             "native_stereo_metadata": "camera/cam_ego.stereo.jsonl",
             "calibration": "camera/cam_ego.calibration.json",
+            "imu": "camera/cam_ego.imu.jsonl", "accel": "camera/cam_ego.accel.jsonl",
+            "gyro": "camera/cam_ego.gyro.jsonl", "mag": "camera/cam_ego.mag.jsonl",
+            "sync_point": "camera/sync_point.json", "finalization": "camera/finalization.json",
             "codec": "h264_passthrough", "width": 3840, "height": 1080,
             "eye_order": ["left", "right"], "eye_width": 1920, "eye_height": 1080,
             "requested_fps": 30,
@@ -76,23 +179,12 @@ class OvisionCapture:
         }
 
     def prepare(self):
-        if version("syncfield") != "0.8.14":
-            raise RuntimeError("Install requirements-ovision.txt: this example targets SyncField 0.8.14")
-        from syncfield.adapters.ovision_camera import OvisionCameraStream
-
-        self.stream = OvisionCameraStream(
-            "cam_ego", self.output, video_device=self.args.video_device,
-            usb_serial=self.args.camera_serial, width=3840, height=1080, fps=30,
-        )
-        # Reads per-unit flash calibration and applies the adapter's verified
-        # exposure/gain/bitrate profile. No OpenCV camera read/re-encode path.
-        self.stream.prepare()
-        self.stream.connect()
-        deadline = time.monotonic() + 10
-        while not self.stream.capture_ready():
-            if time.monotonic() >= deadline:
-                raise RuntimeError("OVISION did not produce valid stereo/IMU metadata within 10 seconds")
-            time.sleep(0.05)
+        if self.shared:
+            retarget(self.stream, self.output)
+            if not self.stream.capture_ready():
+                raise RuntimeError("OVISION stream is not live; reconnect it before recording")
+            return
+        self.stream = open_stream(self.args.video_device, self.args.camera_serial, self.output)
 
     def finish(self):
         self.recording = False
@@ -103,11 +195,7 @@ class OvisionCapture:
         return report
 
     def record(self, stop):
-        from syncfield.clock import SessionClock
-        from syncfield.types import SyncPoint
-
-        clock = SessionClock(SyncPoint.create_now(socket.gethostname()),
-                             recording_armed_ns=time.monotonic_ns())
+        clock = session_clock()
         write_json(self.output / "sync_point.json", clock.sync_point.to_dict())
         self.recording = True
         try:
@@ -120,6 +208,8 @@ class OvisionCapture:
                     cv2.imshow("OVISION left-eye preview (q stops capture)", self.stream.latest_frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         raise RuntimeError("Capture stopped early from the preview")
+                if self.tick is not None:
+                    self.tick(self.stream.latest_frame)
                 stop.wait(0.05)
         finally:
             report = self.finish()
@@ -137,11 +227,13 @@ class OvisionCapture:
         return make_join_timestamps(self.output, report.frame_count)
 
     def close(self):
-        if self.stream is not None:
-            try:
-                if self.recording:
-                    self.finish()
-            finally:
+        if self.stream is None:
+            return
+        try:
+            if self.recording:
+                self.finish()
+        finally:
+            if not self.shared:
                 self.stream.disconnect()
 
 

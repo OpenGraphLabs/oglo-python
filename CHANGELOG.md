@@ -60,6 +60,28 @@ User-facing changes by version. Version numbers follow
 - `collect.py --camera` accepts part of the camera's V4L2 name (`SC233`) and resolves
   it to the capture node, since `/dev/video` numbers change across reboots;
   `scripts/collect.sh` defaults to the stereo camera by name.
+- `collect.py --camera-backend auto|opencv|ovision`: on an OVISION-EGO-V1 (SC233HGS
+  with H.264/YCTC firmware) with SyncField 0.8.14 installed, episodes are recorded
+  through the native backend of `ovision.py`, one live stream for the whole session:
+  original 3840x1080 H.264, camera IMU and magnetometer, exposure timing and per-unit
+  calibration in every episode, carried through the manifest and the upload. `auto`
+  says why when it falls back to OpenCV. `episodes.jsonl` gains `camera_kind` and
+  `camera_imu`, and the dataset card describes the camera actually used.
+- One publication gate for the collection tree: `dataset.publishable` (complete
+  manifest, files present, `alignment.preview.jsonl` with one row per decoded frame)
+  decides what `collect.py` reports as saved, what `episodes.jsonl` lists and what
+  `dataset.py upload` may send; `align.py` writes its file atomically; the upload
+  refuses folders that are not publishable episodes and files outside the indexed
+  ones. The card has no timestamp and states the frame rate actually recorded.
+- `collect.py` task folders: tasks in another script get a hash suffix instead of
+  merging into `session/`, and a folder that already holds another wording of a task
+  is refused; a capture failure after `x` is recorded as failed, not discarded; the
+  alignment worker is shut down explicitly when collection ends.
+- Workstation choices (interpreter, camera name, GPU codec, Hub repo) moved from the
+  scripts and defaults into `scripts/workstation.env` (`workstation.env.example`);
+  `collect.py --codec` defaults to `mp4v`, `dataset.py upload` takes the repo from
+  `--repo` or `OGLO_HF_REPO`. The camera CI job now runs `test_collect.py` and
+  `test_dataset.py` with its no-skip check; the timed capture test stops on a frame.
 
 ### Fixed
 

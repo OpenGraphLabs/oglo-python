@@ -14,11 +14,17 @@ On quit ``dataset.py`` rewrites the root ``episodes.jsonl`` and ``README.md``.
 ``--seconds`` is only a safety cap; reaching it counts as save.
 
 Recording itself is ``capture.py``; this file adds the state machine around it and
-hands it a stop event. Video defaults to H.265 from the NVIDIA encoder (``--codec``).
+hands it a stop event. On an OVISION-EGO-V1 with SyncField 0.8.14 installed the camera
+goes through the native backend in ``ovision.py`` (original H.264, camera IMU, exposure
+timing, calibration); any other camera goes through OpenCV and ``--codec``.
+``--camera-backend`` forces either. An episode is published (indexed, uploaded) only
+once ``dataset.publishable`` accepts it: complete manifest, files present, alignment
+with one row per frame.
 Overlay text is ASCII because OpenCV's Hershey fonts have no CJK.
 """
 
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -47,8 +53,12 @@ def load_sibling(name):
 capture = load_sibling("capture")
 align = load_sibling("align")
 dataset = load_sibling("dataset")
+sys.modules.setdefault("capture", capture)  # ovision.py does ``from capture import``: share one copy.
+ovision = load_sibling("ovision")  # Imports SyncField only inside the functions that need it.
 
 WINDOW = "OGLO collect  (g record, h save, x discard, z calibrate, q quit)"
+BACKENDS = ("auto", "opencv", "ovision")
+OVISION_IDLE_PERIOD = 0.05  # seconds per idle window refresh when the OVISION stream feeds it
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 HEAT_SCALE = 1400.0  # counts above baseline that saturate a cell (OGLO Studio "Taxel" view scale)
 HEAT_GAMMA = 0.55  # same gamma as OGLO Studio: light touches still show
@@ -96,6 +106,13 @@ def put_lines(image, lines, origin=(10, 24), color=(255, 255, 255), scale=0.55):
         cv2.putText(image, line, (x, y), FONT, scale, color, 1, cv2.LINE_AA)
         y += int(26 * scale / 0.55)
     return y
+
+
+def placeholder(text, size=(720, 1280)):
+    """A dark frame carrying one message, shown while the camera has no image yet."""
+    image = np.full((*size, 3), 30, dtype=np.uint8)
+    put_lines(image, [text], origin=(20, size[0] // 2), color=(0, 220, 255), scale=0.7)
+    return image
 
 
 GRID_GAP = 6  # pixels between the five finger grids
@@ -226,6 +243,34 @@ class RecordingControl:
         self.stop.set()
 
 
+class RecordingOverlay:
+    """The REC window of one episode: draws the newest frame, routes its key to the control.
+
+    The camera backend calls ``show`` whenever it has a moment: the webcam proxy before
+    each read, the OVISION backend on every 50 ms tick with its latest preview frame
+    (None until a keyframe was decoded; the last one, or a placeholder, is drawn then so
+    the window keeps listening for h / x).
+    """
+
+    def __init__(self, display, control, label, task, cap_seconds, gloves=lambda: ()):
+        self._display, self._control = display, control
+        self._gloves = gloves  # () -> [(label, (5, 4, 4) values or None)]
+        self._label, self._task, self._cap = label, task, cap_seconds
+        self.last = None
+        self._started = None
+
+    def show(self, image=None):
+        if image is not None:
+            self.last = image
+        if self._started is None:
+            self._started = time.monotonic()
+        elapsed = time.monotonic() - self._started
+        frame = self.last if self.last is not None else placeholder("waiting for the first camera keyframe")
+        key = self._display.show(draw_recording(frame, elapsed, self._cap,
+                                                self._label, self._task, self._gloves()))
+        self._control.press(key)
+
+
 class _PreviewProxy:
     """Wrap ``cv2.VideoCapture`` so each ``read()`` first shows the previous frame.
 
@@ -235,23 +280,14 @@ class _PreviewProxy:
     ``show`` returns goes to the episode's ``RecordingControl``.
     """
 
-    def __init__(self, camera, display, control, label, task, cap_seconds, gloves=lambda: ()):
+    def __init__(self, camera, overlay):
         self._camera = camera
-        self._gloves = gloves  # () -> [(label, (5, 4, 4) values or None)]
-        self._display = display
-        self._control = control
-        self._label, self._task, self._cap = label, task, cap_seconds
+        self._overlay = overlay
         self._last = None
-        self._started = None
 
     def read(self):
         if self._last is not None:
-            if self._started is None:
-                self._started = time.monotonic()
-            elapsed = time.monotonic() - self._started
-            key = self._display.show(draw_recording(self._last, elapsed, self._cap,
-                                                    self._label, self._task, self._gloves()))
-            self._control.press(key)
+            self._overlay.show(self._last)
         ok, image = self._camera.read()
         if ok and image is not None:
             self._last = image
@@ -274,8 +310,8 @@ class OverlayCamera(capture.WebcamCapture):
 
     def __init__(self, args, output, display, control, label, camera=None, gloves=lambda: ()):
         super().__init__(args, output)
-        self._display, self._control, self._label = display, control, label
-        self._shared, self._gloves = camera, gloves
+        self._overlay = RecordingOverlay(display, control, label, args.task, args.seconds, gloves)
+        self._shared = camera
 
     def prepare(self):
         if self._shared is None:
@@ -284,12 +320,59 @@ class OverlayCamera(capture.WebcamCapture):
             self.camera = self._shared
             self.metadata["fps_request_accepted"] = bool(self.camera.set(cv2.CAP_PROP_FPS, self.args.fps))
             self.metadata["backend"] = self.camera.getBackendName()
-        self.camera = _PreviewProxy(self.camera, self._display, self._control, self._label,
-                                    self.args.task, self.args.seconds, self._gloves)
+        self.camera = _PreviewProxy(self.camera, self._overlay)
 
     def close(self):
         if self._shared is None:
             super().close()
+
+
+class OvisionIdleSource:
+    """``read()`` for the idle window from a live OVISION stream (the same ``read``
+    contract as ``cv2.VideoCapture``, so every idle loop stays as it is).
+
+    The adapter decodes a left-eye preview on keyframes only (about one per second on
+    this firmware), so ``latest_frame`` is a snapshot rather than a blocking read and
+    the window is paced here instead of by the camera. A stream whose capture thread
+    died reads as a failed camera, which ends the session like an unplugged webcam.
+    """
+
+    def __init__(self, stream, period=None):
+        self.stream = stream
+        self.period = OVISION_IDLE_PERIOD if period is None else period
+        self.last = None
+
+    def read(self):
+        time.sleep(self.period)
+        if not self.stream.capture_ready():
+            return False, None
+        frame = self.stream.latest_frame
+        if frame is not None:
+            self.last = frame
+        if self.last is None:
+            return True, placeholder("waiting for the first camera keyframe")
+        return True, self.last
+
+    def release(self):
+        self.stream.disconnect()
+
+
+def choose_backend(requested, camera_index):
+    """``--camera-backend`` resolved to ``(backend, reason)``.
+
+    ``auto`` takes the native OVISION backend when SyncField 0.8.14 is installed and the
+    camera answers the adapter's calibration read, otherwise OpenCV with ``reason`` saying
+    why, so that episodes without camera IMU never happen silently. Explicit ``ovision``
+    raises instead of falling back.
+    """
+    if requested == "opencv":
+        return "opencv", None
+    reason = ovision.problem(Path(f"/dev/video{camera_index}"))
+    if reason is None:
+        return "ovision", None
+    if requested == "ovision":
+        raise RuntimeError(f"--camera-backend ovision: {reason}")
+    return "opencv", reason
 
 
 class TactilePeek:
@@ -443,10 +526,40 @@ def gloves_sharing_camera_bus(camera_index, candidates):
 # -- session folders ---------------------------------------------------------------
 
 def task_slug(task):
-    slug = re.sub(r"[^a-z0-9]+", "_", task.lower()).strip("_")[:40]
+    """Folder name of a task: its ASCII letters and digits, plus a hash when that loses text.
+
+    Two wordings that differ only in case, spacing or punctuation share a folder. A
+    task written in another script (Korean, Chinese, ...) keeps its identity through
+    six hex digits of its text, so distinct tasks never merge into one ``session``
+    folder; :func:`check_task_folder` catches the remaining collisions.
+    """
+    text = task.strip()
+    slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")[:40]
+    if any(ch.isalnum() and not ch.isascii() for ch in text):
+        slug = f"{slug or 'task'}_{hashlib.sha1(text.encode('utf-8')).hexdigest()[:6]}"
     if slug in dataset.RESERVED:  # gloves/ is the per-glove folder; its episodes would never index.
         slug += "_task"
     return slug or "session"
+
+
+def check_task_folder(out, task):
+    """Refuse a task folder that already holds episodes recorded under another wording.
+
+    The manifests, not the folder name, carry the task text; one folder must mean one
+    task or the dataset card and index would merge two activities.
+    """
+    folder = out / task_slug(task)
+    if not folder.is_dir():
+        return
+    for manifest in sorted(folder.glob("*/manifest.json")) + sorted(folder.glob("_*/*/manifest.json")):
+        try:
+            recorded = json.loads(manifest.read_text(encoding="utf-8")).get("task_description")
+        except (OSError, ValueError):
+            continue
+        if recorded is not None and recorded.strip() != task.strip():
+            raise RuntimeError(f"task folder {folder} already holds episodes of {recorded!r}; "
+                               f"use that exact wording for --task, or another --out")
+        return  # One manifest is enough: every episode in the folder passed this check.
 
 
 def next_session_dir(out, task):
@@ -483,7 +596,8 @@ class Collector:
         self.args = args
         self.display = display or WindowDisplay()
         self.gloves = ()
-        self.camera = None
+        self.camera = None    # cv2.VideoCapture, or OvisionIdleSource over ``stream``
+        self.stream = None    # the live OVISION stream when the backend is ovision
         self.baselines = {}   # serial -> np.ndarray(80) or None
         self.last_calibration = {}  # serial -> GET ZERO recipe from the last sweep
         self.episodes = []    # dicts: session, complete, outcome (saved / discarded / failed)
@@ -516,10 +630,19 @@ class Collector:
             pair = True
         self.args.pair = pair  # capture.py sees the same decision in its manifest.
         self.open_gloves()
+        if self.args.camera_backend == "ovision":
+            # One live stream for the whole session: idle preview and every episode.
+            self.stream = ovision.open_stream(self.video_device, None, self.args.out)
+            self.camera = OvisionIdleSource(self.stream)
+            return
         self.camera = cv2.VideoCapture(self.args.camera)
         if not self.camera.isOpened():
             raise RuntimeError("Cannot open camera; check --camera and OS camera permission")
         capture.read_camera(self.camera)  # Check connection; discard this setup frame.
+
+    @property
+    def video_device(self):
+        return Path(f"/dev/video{self.args.camera}")
 
     def open_gloves(self):
         pair = self.args.pair
@@ -565,8 +688,21 @@ class Collector:
     def close_devices(self):
         self.close_gloves()
         if self.camera is not None:
-            self.camera.release()
+            self.camera.release()  # For the OVISION source this disconnects the stream.
             self.camera = None
+            self.stream = None
+
+    def recover_camera(self):
+        """After a failed episode: an OVISION stream whose capture died is reconnected.
+
+        ``capture_ready()`` stays false after a camera-side error until the adapter
+        reconnects, and true when a glove was the cause, so this only reopens the camera
+        when the camera failed. The OpenCV camera needs nothing here; its failure
+        resurfaces on the next idle read. Raises when the camera does not come back.
+        """
+        if self.stream is not None and not self.stream.capture_ready():
+            print("camera stopped during the episode; reconnecting it", file=sys.stderr, flush=True)
+            ovision.reconnect_stream(self.stream)
 
     def reconnect_gloves(self):
         """Fresh glove handles after a failed episode; wait for a replug if they are dead.
@@ -794,8 +930,19 @@ class Collector:
             fps=self.args.fps, task=self.args.task, serial=self.args.serial,
             pair=self.args.pair, preview=False, codec=self.args.codec,
             video_quality=self.args.video_quality,
+            video_device=self.video_device, camera_serial=None,
         )
         control = RecordingControl(on_view=self.toggle_view)
+        if self.stream is not None:
+            overlay = RecordingOverlay(self.display, control, session.name, self.args.task,
+                                       self.args.seconds, self.glove_grids)
+
+            def camera_factory(args, output):
+                return ovision.OvisionCapture(args, output, stream=self.stream, tick=overlay.show)
+        else:
+            def camera_factory(args, output):
+                return OverlayCamera(args, output, self.display, control, session.name,
+                                     camera=self.camera, gloves=self.glove_grids)
         print(f"Recording {session.name}: h = save, x = discard, c = view, cap {self.args.seconds:g} s",
               flush=True)
         failure = None
@@ -806,22 +953,21 @@ class Collector:
             self.stop_streams()
             # The idle camera and gloves stay open: reopening them costs ~3 s per episode.
             capture.capture(namespace, stop=control.stop, gloves=self.gloves,
-                            camera_factory=lambda args, output: OverlayCamera(
-                                args, output, self.display, control, session.name,
-                                camera=self.camera, gloves=self.glove_grids))
+                            camera_factory=camera_factory)
         except KeyboardInterrupt:  # Ends the session; the partial episode is kept aside.
             self.fail(session, "interrupted with Ctrl-C")
             raise
         except Exception as exc:
             failure = exc
-        if control.outcome == "discard":
-            self.discard(session)
-        elif failure is not None:
+        if failure is not None:  # Before the discard: an x followed by a crash is still a failure.
             self.fail(session, failure)
+        elif control.outcome == "discard":
+            self.discard(session)
         else:
             self.status = f"{session.name} aligning..."
             self._jobs.put(session)
-        if failure is not None:  # A glove may be the cause; start over with fresh handles.
+        if failure is not None:  # The camera or a glove may be the cause; start over with fresh handles.
+            self.recover_camera()
             return self.reconnect_gloves()
         self.start_readers()
         return True
@@ -850,8 +996,11 @@ class Collector:
 
     def postprocess(self, session):
         manifest = json.loads((session / "manifest.json").read_text(encoding="utf-8"))
-        preview = session / "alignment.preview.jsonl"
+        preview = session / dataset.ALIGNMENT
         frames = align.align(session, preview, self.args.max_delta_ms)
+        reason = dataset.publishable(session, manifest)  # The same gate the index and upload apply.
+        if reason is not None:
+            raise RuntimeError(f"not publishable after alignment: {reason}")
         rates, _ = alignment_hit_rates(preview)
         overlap = manifest["overlap_host_received_ns"]
         parts = [f"{session.name}: {frames} frames, overlap {(overlap[1] - overlap[0]) / 1e9:.1f} s, "
@@ -871,6 +1020,9 @@ class Collector:
     def _drain_jobs(self):
         while True:
             session = self._jobs.get()
+            if session is None:  # run() is over: leave after the queue is drained.
+                self._jobs.task_done()
+                return
             try:
                 self.postprocess(session)
             except Exception as exc:
@@ -885,6 +1037,7 @@ class Collector:
     # main loop -------------------------------------------------------------
 
     def run(self):
+        check_task_folder(self.args.out, self.args.task)
         self._worker = threading.Thread(target=self._drain_jobs, name="postprocess", daemon=True)
         self._worker.start()
         try:
@@ -917,7 +1070,9 @@ class Collector:
             pending = self._jobs.unfinished_tasks
             if pending:
                 print(f"Waiting for {pending} session(s) to finish aligning...", flush=True)
+            self._jobs.put(None)  # Explicit shutdown: the worker exits once everything queued is done.
             self._jobs.join()
+            self._worker.join(timeout=5)
             self.display.close()
             self.write_index()
         return self.episodes
@@ -942,13 +1097,20 @@ def build_parser():
     parser.add_argument("--camera", default="0",
                         help="OpenCV device index, or part of the camera's V4L2 name such as "
                              "SC233 (stable across reboots; the index is not). Default: 0")
+    parser.add_argument("--camera-backend", choices=BACKENDS, default="auto",
+                        help="ovision = the native OVISION-EGO-V1 backend (ovision.py): original "
+                             "H.264, camera IMU, exposure timing and calibration per episode; "
+                             "opencv = any webcam through OpenCV, no camera IMU. auto (default) "
+                             "takes ovision when SyncField 0.8.14 is installed and the camera "
+                             "answers as an OVISION, and says so when it falls back")
     parser.add_argument("--seconds", type=capture.positive_number, default=600,
                         help="maximum episode length; h or x stop earlier (default: 600)")
     parser.add_argument("--fps", type=capture.positive_number, default=30,
                         help="requested camera FPS and MP4 playback FPS (default: 30)")
-    parser.add_argument("--codec", choices=capture.CODECS, default="hevc_nvenc",
-                        help="video encoder: hevc_nvenc = H.265 on the NVIDIA GPU via ffmpeg, "
-                             "libx265 = H.265 on the CPU, mp4v = OpenCV's writer (default: hevc_nvenc)")
+    parser.add_argument("--codec", choices=capture.CODECS, default="mp4v",
+                        help="video encoder for the OpenCV backend: mp4v = OpenCV's writer, "
+                             "hevc_nvenc = H.265 on an NVIDIA GPU via ffmpeg, libx265 = H.265 on the "
+                             "CPU (default: mp4v; scripts/workstation.env sets the workstation's choice)")
     parser.add_argument("--video-quality", type=int, default=23, metavar="N",
                         help="CRF / CQ for the ffmpeg codecs, lower = larger file; 23 keeps sensor "
                              "noise, 28 is about half the size (default: 23)")
@@ -984,11 +1146,22 @@ def main(argv=None):
     PREVIEW_WIDTH = args.preview_width
     if not 0 <= args.video_quality <= 51:
         raise SystemExit("--video-quality must be 0..51")
-    problem = capture.probe_encoder(args.codec, args.video_quality)
-    if problem:
-        print(f"--codec {args.codec} does not work here: {problem}\n"
-              "Try --codec libx265 (CPU) or --codec mp4v.", file=sys.stderr, flush=True)
+    try:
+        args.camera_backend, reason = choose_backend(args.camera_backend, args.camera)
+    except RuntimeError as exc:
+        print(f"{exc}", file=sys.stderr, flush=True)
         return 2
+    if args.camera_backend == "ovision":
+        print("camera backend: native OVISION (H.264 passthrough at 3840x1080, 30 fps, camera IMU); "
+              "--codec, --video-quality and --fps do not apply", flush=True)
+    else:
+        if reason:
+            print(f"camera backend: OpenCV, camera IMU is not recorded: {reason}", flush=True)
+        problem = capture.probe_encoder(args.codec, args.video_quality)
+        if problem:
+            print(f"--codec {args.codec} does not work here: {problem}\n"
+                  "Try --codec libx265 (CPU) or --codec mp4v.", file=sys.stderr, flush=True)
+            return 2
     if not args.skip_doctor:
         report = doctor(seconds=3.0)
         print(report, flush=True)

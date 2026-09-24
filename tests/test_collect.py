@@ -64,7 +64,7 @@ class ScriptedDisplay:
 
 
 def make_args(tmp_path, pair=True, **overrides):
-    values = dict(out=tmp_path / "captures", task=TASK, camera=0, seconds=0.5,
+    values = dict(out=tmp_path / "captures", task=TASK, camera=0, camera_backend="opencv", seconds=0.5,
                   fps=30, serial=None, pair=pair, sweep=1, clean=None, countdown=0,
                   max_delta_ms=50, skip_doctor=True, codec="mp4v", video_quality=23,
                   allow_shared_usb=False)
@@ -193,9 +193,9 @@ def test_recording_control_takes_the_first_decision_only():
     assert control.outcome == "discard" and control.stop.is_set()
 
 
-def test_parser_defaults_to_gpu_h265_and_a_long_cap():
+def test_parser_defaults_to_a_portable_codec_and_a_long_cap():
     args = collect.build_parser().parse_args(["--out", "x", "--task", "t"])
-    assert (args.codec, args.video_quality, args.seconds) == ("hevc_nvenc", 23, 600)
+    assert (args.codec, args.video_quality, args.seconds) == ("mp4v", 23, 600)  # GPU codecs: workstation.env
     with pytest.raises(SystemExit):  # Packing is gone with the per-task layout.
         collect.build_parser().parse_args(["--out", "x", "--task", "t", "--no-pack"])
 
@@ -211,6 +211,60 @@ def test_sessions_are_numbered_per_task_and_never_reused(tmp_path):
     assert collect.next_session_dir(out, "Other task") == out / "other_task" / "other_task_001"
     assert collect.task_slug("!!!") == "session"
     assert collect.task_slug("Gloves") == "gloves_task"  # gloves/ is reserved for per-glove files
+    # Tasks in another script keep their identity through a hash instead of merging into "session".
+    cup, bottle = collect.task_slug("컵 들기"), collect.task_slug("병 들기")
+    assert cup != bottle and cup.startswith("task_") and len(cup) == len("task_") + 6
+    assert collect.task_slug("컵 들기 ") == cup and collect.task_slug("cup 컵") != collect.task_slug("cup 병")
+
+
+def test_a_task_folder_belongs_to_one_wording(tmp_path):
+    out = tmp_path / "captures"
+    collect.check_task_folder(out, "Pick up a cup!")  # Nothing there yet.
+    session = out / "pick_up_a_cup" / "_failed" / "pick_up_a_cup_001"
+    session.mkdir(parents=True)
+    (session / "manifest.json").write_text(json.dumps({"task_description": "Pick up a cup!", "complete": False}))
+    collect.check_task_folder(out, "Pick up a cup!")
+    collect.check_task_folder(out, "Pick up a cup!  ")
+    with pytest.raises(RuntimeError, match="already holds episodes of 'Pick up a cup!'"):
+        collect.check_task_folder(out, "pick-up a CUP")  # Same folder, another activity name.
+    with pytest.raises(RuntimeError):
+        collect.Collector(make_args(tmp_path, task="pick up a cup"), display=ScriptedDisplay("")).run()
+
+
+def test_a_failure_after_x_is_a_failure_not_a_discard(tmp_path, monkeypatch):
+    patch_devices(monkeypatch)
+
+    class DiscardingControl(collect.RecordingControl):
+        def __init__(self, on_view=None):
+            super().__init__(on_view)
+            self.press(collect.KEY_DISCARD)  # x was pressed; then the capture dies.
+
+    monkeypatch.setattr(collect, "RecordingControl", DiscardingControl)
+    monkeypatch.setattr(collect.capture, "capture", failing_capture(oglo.DeviceError("port vanished after x")))
+    collector = collect.Collector(make_args(tmp_path), display=ScriptedDisplay("g"))
+    episodes = collector.run()
+    out = tmp_path / "captures"
+    assert [(e["outcome"], e["session"]) for e in episodes] == [("failed", out / SLUG / "_failed" / f"{SLUG}_001")]
+    assert not (out / SLUG / "_discarded").exists()
+
+
+def test_alignment_worker_shuts_down_and_the_publish_gate_holds_a_short_alignment(tmp_path, monkeypatch):
+    patch_devices(monkeypatch)
+    real_align = collect.align.align
+
+    def short_align(session, output, max_delta_ms):
+        real_align(session, output, max_delta_ms)
+        output.write_text(output.read_text().splitlines()[0] + "\n")  # One row for many frames.
+        return 1
+
+    monkeypatch.setattr(collect.align, "align", short_align)
+    collector = collect.Collector(make_args(tmp_path), display=ScriptedDisplay("g"))
+    episodes = collector.run()
+    out = tmp_path / "captures"
+    assert [(e["outcome"], e["session"]) for e in episodes] == [("failed", out / SLUG / "_failed" / f"{SLUG}_001")]
+    assert "not publishable after alignment: alignment has 1 rows" in collector.status
+    assert index_rows(out) == []
+    assert not collector._worker.is_alive()  # Explicit shutdown, not a daemon left behind.
 
 
 def failing_capture(error):
@@ -620,3 +674,174 @@ def test_camera_is_resolved_by_v4l2_name_to_its_capture_node(tmp_path):
         collect.resolve_camera("OVISION", sysfs, capture)
     with pytest.raises(SystemExit):
         collect.resolve_camera("-1", sysfs, capture)
+
+
+# -- the native OVISION backend ------------------------------------------------------
+
+def patch_ovision(monkeypatch, **stream_kwargs):
+    """collect.py's OVISION backend on FakeOvisionStream; returns the streams it opened."""
+    from fake_ovision import FakeOvisionStream, fake_clock
+
+    streams = []
+
+    def open_stream(video_device, camera_serial, output):
+        stream = FakeOvisionStream("cam_ego", output, video_device=video_device,
+                                   usb_serial=camera_serial, **stream_kwargs)
+        stream.prepare()
+        stream.connect()
+        streams.append(stream)
+        return stream
+
+    monkeypatch.setattr(collect.ovision, "open_stream", open_stream)
+    monkeypatch.setattr(collect.ovision, "session_clock", fake_clock)
+    monkeypatch.setattr(collect, "OVISION_IDLE_PERIOD", 0.01)
+    return streams
+
+
+def test_ovision_backend_keeps_one_stream_and_saves_the_camera_imu_per_episode(tmp_path, monkeypatch):
+    patch_devices(monkeypatch)
+    streams = patch_ovision(monkeypatch)
+    keys = (["g"] + [None] * 15 + ["h"] + ["g"] + [None] * 15 + ["x"] + ["g"] + [None] * 15 + ["h"])
+    display = ScriptedDisplay(keys)
+    collector = collect.Collector(make_args(tmp_path, seconds=5, camera_backend="ovision"), display=display)
+    episodes = collector.run()
+    assert [e["outcome"] for e in episodes] == ["saved", "discarded", "saved"]
+
+    (stream,) = streams  # Opened once; every episode retargets it and leaves it live.
+    assert stream.connects == 1 and stream.disconnects == 1 and not stream.connected  # Closed on quit.
+    assert stream.video_device == Path("/dev/video0") and stream.usb_serial is None
+    out = tmp_path / "captures"
+    saved = [out / SLUG / f"{SLUG}_001", out / SLUG / f"{SLUG}_003"]
+    discarded = out / SLUG / "_discarded" / f"{SLUG}_002"
+    assert len(stream.recordings) == 3 and len(set(stream.recordings)) == 3
+    assert (discarded / "camera" / "cam_ego.mp4").is_file()
+    for session in saved:
+        manifest = json.loads((session / "manifest.json").read_text())
+        camera = manifest["camera"]
+        assert manifest["complete"] is True and camera["kind"] == "ovision"
+        assert (camera["codec"], camera["width"], camera["height"]) == ("h264_passthrough", 3840, 1080)
+        assert camera["video_device"] == "/dev/video0"
+        for key in ("video", "timestamps", "native_stereo_metadata", "calibration", "imu", "accel",
+                    "gyro", "mag", "sync_point", "finalization"):
+            assert (session / camera[key]).is_file(), key
+        assert all((session / path).is_file() for path in camera["native_artifacts"])
+        frames = camera["frames_decoded"]
+        assert frames >= 2
+        assert len((session / "camera/timestamps.jsonl").read_text().splitlines()) == frames
+        assert len((session / "camera/cam_ego.stereo.jsonl").read_text().splitlines()) == frames
+        assert len((session / "camera/cam_ego.imu.jsonl").read_text().splitlines()) == frames
+        assert len((session / "alignment.preview.jsonl").read_text().splitlines()) == frames
+        assert json.loads((session / "camera/finalization.json").read_text())["status"] == "completed"
+    rows = index_rows(out)
+    assert [(r["session"], r["camera_kind"], r["camera_imu"], r["fps"], r["codec"], r["width"]) for r in rows] == [
+        (f"{SLUG}_001", "ovision", True, 30, "h264_passthrough", 3840),
+        (f"{SLUG}_003", "ovision", True, 30, "h264_passthrough", 3840)]
+    card = (out / "README.md").read_text()
+    assert "through its native backend" in card and "camera/cam_ego.imu.jsonl" in card
+    assert "3200x1200" not in card
+    assert "camera/video.mp4" not in card  # An OVISION-only dataset describes only what it holds.
+
+
+def test_ovision_camera_failure_moves_the_episode_aside_and_reconnects_the_stream(tmp_path, monkeypatch):
+    patch_devices(monkeypatch, pair=False)
+    streams = patch_ovision(monkeypatch, fail_after=5)  # The "USB device" vanishes 5 frames in.
+    keys = ["g"] + [None] * 40 + ["g"] + [None] * 15 + ["h"]
+    display = ScriptedDisplay(keys)
+    collector = collect.Collector(make_args(tmp_path, pair=False, seconds=5, camera_backend="ovision"),
+                                  display=display)
+    episodes = collector.run()
+    assert [e["outcome"] for e in episodes] == ["failed", "saved"]
+    (stream,) = streams
+    assert stream.connects == 2  # Reconnected once, before the gloves were.
+    out = tmp_path / "captures"
+    failed = out / SLUG / "_failed" / f"{SLUG}_001"
+    manifest = json.loads((failed / "manifest.json").read_text())
+    assert manifest["complete"] is False and "OVISION capture failed" in manifest["error"]
+    report = json.loads((failed / "camera/finalization.json").read_text())
+    assert report["status"] == "failed" and "vanished" in report["error"]
+    saved = json.loads((out / SLUG / f"{SLUG}_002" / "manifest.json").read_text())
+    assert saved["complete"] is True and saved["camera"]["frames_decoded"] >= 2
+    assert [r["session"] for r in index_rows(out)] == [f"{SLUG}_002"]
+
+
+def test_ovision_idle_source_paces_the_window_and_reports_a_dead_stream(monkeypatch):
+    from fake_ovision import FakeOvisionStream
+
+    stream = FakeOvisionStream("cam_ego", Path("/nonexistent"))
+    source = collect.OvisionIdleSource(stream, period=0.001)
+    assert source.read() == (False, None)  # Not connected: reads like an unplugged camera.
+    stream.connect()
+    ok, image = source.read()
+    assert ok and image.shape == (1080, 1920, 3)
+    stream.error = "vanished"
+    assert source.read() == (False, None)
+    source.release()
+    assert not stream.connected
+    stream.error = None
+    stream.connect()
+    ok, image = source.read()
+    assert ok and image.shape == (1080, 1920, 3)  # The last frame stays up while none is newer.
+    stream._frame = None  # A fresh session before the first keyframe: a placeholder keeps the window alive.
+    ok, image = collect.OvisionIdleSource(stream, period=0.001).read()
+    assert ok and image.shape == (720, 1280, 3)
+    stream.disconnect()
+
+
+def test_recording_overlay_draws_the_last_frame_or_a_placeholder_and_routes_keys():
+    display = ScriptedDisplay([None, "c", "h"])
+    views = []
+    control = collect.RecordingControl(on_view=lambda: views.append(1))
+    overlay = collect.RecordingOverlay(display, control, "s_001", "task", 5)
+    overlay.show(None)  # No frame yet: still shown, still listening.
+    overlay.show(np.zeros((48, 64, 3), np.uint8))
+    overlay.show(None)  # Keeps the last real frame.
+    assert display.shown == 3 and views == [1] and control.outcome == "save" and control.stop.is_set()
+
+
+def test_camera_backend_is_chosen_from_syncfield_and_the_camera(monkeypatch):
+    real_problem = collect.ovision.problem
+    monkeypatch.setattr(collect.ovision, "problem", lambda device: f"{device} is a webcam")
+    assert collect.choose_backend("opencv", 0) == ("opencv", None)
+    assert collect.choose_backend("auto", 3) == ("opencv", "/dev/video3 is a webcam")
+    with pytest.raises(RuntimeError, match="webcam"):
+        collect.choose_backend("ovision", 3)
+    monkeypatch.setattr(collect.ovision, "problem", lambda device: None)
+    assert collect.choose_backend("auto", 0) == ("ovision", None)
+    # ovision.problem: the SyncField pin is checked before the camera is touched.
+    monkeypatch.setattr(collect.ovision, "version", lambda name: "0.9.0")
+    assert "targets 0.8.14" in real_problem(Path("/dev/video0"))
+
+    def missing(name):
+        raise collect.ovision.PackageNotFoundError(name)
+
+    monkeypatch.setattr(collect.ovision, "version", missing)
+    assert "requirements-ovision.txt" in real_problem(Path("/dev/video0"))
+
+
+def test_main_resolves_the_backend_before_any_device_is_opened(tmp_path, monkeypatch, capsys):
+    seen = {}
+
+    class StubCollector:
+        def __init__(self, args):
+            seen["args"] = args
+
+        def run(self):
+            return []
+
+    monkeypatch.setattr(collect, "Collector", StubCollector)
+    monkeypatch.setattr(collect.capture, "probe_encoder",
+                        lambda *a: pytest.fail("the OVISION backend never probes an encoder"))
+    monkeypatch.setattr(collect.ovision, "problem", lambda device: None)
+    argv = ["--out", str(tmp_path), "--task", "t", "--camera", "4", "--skip-doctor"]
+    assert collect.main(argv) == 0
+    assert seen["args"].camera_backend == "ovision" and seen["args"].camera == 4
+    assert "native OVISION" in capsys.readouterr().out
+
+    monkeypatch.setattr(collect.ovision, "problem", lambda device: "/dev/video4 is not an OVISION")
+    assert collect.main(argv + ["--camera-backend", "ovision"]) == 2
+    assert "not an OVISION" in capsys.readouterr().err
+    monkeypatch.setattr(collect.capture, "probe_encoder", lambda *a: None)
+    assert collect.main(argv) == 0
+    assert seen["args"].camera_backend == "opencv"
+    assert "camera IMU is not recorded: /dev/video4 is not an OVISION" in capsys.readouterr().out
+    assert collect.build_parser().parse_args(["--out", "x", "--task", "t"]).camera_backend == "auto"

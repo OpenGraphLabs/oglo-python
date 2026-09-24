@@ -1,7 +1,21 @@
 # Sourced by collect.sh / doctor.sh; not meant to be run on its own.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PY="${OGLO_PYTHON:-$HOME/miniforge3/envs/oglo/bin/python}"
-[ -x "$PY" ] || { echo "python not found: $PY  (set OGLO_PYTHON)" >&2; exit 1; }
+# Workstation choices (interpreter, camera, codec, Hub repo) live in scripts/workstation.env,
+# which git ignores; scripts/workstation.env.example documents the variables. Anything
+# already set in the environment wins over the file.
+WORKSTATION="${OGLO_WORKSTATION:-$ROOT/scripts/workstation.env}"
+if [ -f "$WORKSTATION" ]; then
+    _shell_python="${OGLO_PYTHON:-}"; _shell_camera="${OGLO_CAMERA:-}"
+    _shell_codec="${OGLO_CODEC:-}"; _shell_repo="${OGLO_HF_REPO:-}"
+    source "$WORKSTATION"
+    if [ -n "$_shell_python" ]; then OGLO_PYTHON="$_shell_python"; fi
+    if [ -n "$_shell_camera" ]; then OGLO_CAMERA="$_shell_camera"; fi
+    if [ -n "$_shell_codec" ]; then OGLO_CODEC="$_shell_codec"; fi
+    if [ -n "$_shell_repo" ]; then OGLO_HF_REPO="$_shell_repo"; fi
+fi
+export OGLO_PYTHON OGLO_CAMERA OGLO_CODEC OGLO_HF_REPO
+PY="${OGLO_PYTHON:-$(command -v python3 || true)}"
+[ -n "$PY" ] && [ -x "$PY" ] || { echo "python not found: '${PY}'  (set OGLO_PYTHON in $WORKSTATION)" >&2; exit 1; }
 
 # POSIX single-quote each argument so `sg -c` (which runs /bin/sh) sees it unchanged.
 sh_quote() {

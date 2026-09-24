@@ -67,22 +67,33 @@ def align(session, output, max_delta_ms):
             streams[name] = (times, data["seq"])
         sources.append((entry, streams))
 
-    with output.open("x", encoding="utf-8") as destination:
-        for row in rows:
-            joined = {
-                "frame_index": row["frame_index"],
-                "camera_host_received_ns": row["host_received_ns"],
-                "method": "nearest_host_received_ns", "max_delta_ms": max_delta_ms,
-                "alignment_validated": False, "gloves": [],
-            }
-            for entry, streams in sources:
-                joined["gloves"].append({
-                    "serial": entry["serial"], "side": entry["side"], "episode": entry["episode"],
-                    **{name: nearest_sample(times, sequences, row["host_received_ns"],
-                                            int(max_delta_ms * 1_000_000))
-                       for name, (times, sequences) in streams.items()},
-                })
-            destination.write(json.dumps(joined) + "\n")
+    # The file appears only once every row is written: a crash or an error part way
+    # through leaves nothing behind, so its presence (with one row per frame) is the
+    # signal that the episode is aligned.
+    if output.exists():
+        raise FileExistsError(f"{output} already exists")
+    temporary = output.with_name(output.name + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as destination:
+            for row in rows:
+                joined = {
+                    "frame_index": row["frame_index"],
+                    "camera_host_received_ns": row["host_received_ns"],
+                    "method": "nearest_host_received_ns", "max_delta_ms": max_delta_ms,
+                    "alignment_validated": False, "gloves": [],
+                }
+                for entry, streams in sources:
+                    joined["gloves"].append({
+                        "serial": entry["serial"], "side": entry["side"], "episode": entry["episode"],
+                        **{name: nearest_sample(times, sequences, row["host_received_ns"],
+                                                int(max_delta_ms * 1_000_000))
+                           for name, (times, sequences) in streams.items()},
+                    })
+                destination.write(json.dumps(joined) + "\n")
+        temporary.replace(output)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     return len(rows)
 
 

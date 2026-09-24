@@ -51,12 +51,31 @@ def test_index_lists_saved_episodes_only(tmp_path, monkeypatch):
     assert "`OGLO-R-00126`" in (out / "README.md").read_text()
 
 
+def write_episode(session, manifest, frames, aligned_rows="frames"):
+    """A publishable-looking episode: manifest, the camera files it names, an alignment
+    with one row per frame (``aligned_rows`` overrides that count; ``None`` writes none)."""
+    session.mkdir(parents=True, exist_ok=True)
+    (session / "manifest.json").write_text(json.dumps(manifest))
+    for key in ("video", "timestamps"):
+        path = session / manifest["camera"][key]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x")
+    rows = frames if aligned_rows == "frames" else aligned_rows
+    if rows is not None:
+        (session / "alignment.preview.jsonl").write_text("{}\n" * rows)
+
+
+def webcam_manifest(frames=1):
+    return {"task_description": "Pick", "complete": True,
+            "camera": {"kind": "usb_webcam", "video": "camera/video.mp4", "timestamps": "camera/timestamps.jsonl",
+                       "frames_decoded": frames, "playback_fps": 30, "codec": "mp4v"},
+            "gloves": []}
+
+
 def minimal_tree(out):
     """A hand-made tree with every kind of folder the upload must and must not send."""
+    write_episode(out / "pick" / "pick_001", webcam_manifest(), frames=1)
     for path, text in {
-        "pick/pick_001/manifest.json": json.dumps({"task_description": "Pick", "complete": True,
-                                                    "camera": {}, "gloves": []}),
-        "pick/pick_001/camera/video.mp4": "x",
         "pick/pick_001/derived/keypoints.jsonl": "{}",
         "pick/_discarded/pick_002/manifest.json": "{}",
         "pick/_failed/pick_003/manifest.json": "{}",
@@ -75,10 +94,11 @@ def test_upload_sends_everything_but_local_only_folders(tmp_path, monkeypatch):
     assert dataset.upload(out, "me/test", dry_run=True) == 0
     sent = {p.relative_to(out).as_posix() for p in dataset.upload_files(out)}
     assert sent == {"README.md", "episodes.jsonl", "pick/pick_001/manifest.json",
-                    "pick/pick_001/camera/video.mp4", "pick/pick_001/derived/keypoints.jsonl",
+                    "pick/pick_001/camera/video.mp4", "pick/pick_001/camera/timestamps.jsonl",
+                    "pick/pick_001/alignment.preview.jsonl", "pick/pick_001/derived/keypoints.jsonl",
                     "gloves/OGLO-R-1/keypoint_map.json"}
     rows = [json.loads(line) for line in (out / "episodes.jsonl").read_text().splitlines()]
-    assert [(r["session"], r["duration_s"], r["frames"]) for r in rows] == [("pick_001", None, None)]
+    assert [(r["session"], r["duration_s"], r["frames"], r["aligned"]) for r in rows] == [("pick_001", None, 1, True)]
 
     calls = []
     monkeypatch.setattr(dataset.subprocess, "run",
@@ -101,12 +121,52 @@ def test_incomplete_episodes_are_left_out_and_block_the_upload(tmp_path, monkeyp
     (stray / "manifest.json").write_text(json.dumps({"task_description": "Pick", "complete": False}))
     rows = dataset.write_index(out)
     assert [r["session"] for r in rows] == ["pick_001"]
-    assert "pick/pick_004" in capsys.readouterr().err
+    assert "pick/pick_004: manifest is not complete" in capsys.readouterr().err
     monkeypatch.setattr(dataset.subprocess, "run", lambda *a, **k: pytest.fail("must not upload"))
     assert dataset.upload(out, "me/test") == 1
     assert "refusing to upload" in capsys.readouterr().err
     stray.rename(out / "pick" / "_failed" / "pick_004")
     assert dataset.upload(out, "me/test", dry_run=True) == 0
+
+
+def test_one_gate_decides_indexing_and_upload(tmp_path, monkeypatch, capsys):
+    """Unaligned, short-aligned, file-less and manifest-less folders are held back from both."""
+    out = tmp_path / "captures"
+    minimal_tree(out)
+    monkeypatch.setattr(dataset.subprocess, "run", lambda *a, **k: pytest.fail("must not upload"))
+    cases = {
+        "pick_011": ("not aligned yet", lambda s: write_episode(s, webcam_manifest(100), 100, aligned_rows=None)),
+        "pick_013": ("alignment has 1 rows for 100 decoded frames",
+                     lambda s: write_episode(s, webcam_manifest(100), 100, aligned_rows=1)),
+        "pick_015": ("camera video file missing", lambda s: (
+            write_episode(s, webcam_manifest(), 1), (s / "camera" / "video.mp4").unlink())),
+        "pick_016": ("no manifest.json", lambda s: (
+            (s / "camera").mkdir(parents=True), (s / "camera" / "video.mp4").write_text("partial"))),
+        "pick_017": ("right episode folder missing", lambda s: write_episode(s, {
+            **webcam_manifest(), "gloves": [{"side": "right", "episode": "gloves/right/ep_0001"}]}, 1)),
+    }
+    for name, (_, make) in cases.items():
+        make(out / "pick" / name)
+    rows = dataset.write_index(out)
+    assert [r["session"] for r in rows] == ["pick_001"]
+    err = capsys.readouterr().err
+    for name, (reason, _) in cases.items():
+        assert f"pick/{name}: {reason}" in err
+    assert dataset.upload(out, "me/test") == 1
+    assert "not publishable episodes" in capsys.readouterr().err
+    for name in cases:
+        (out / "pick" / name).rename(out / "pick" / "_failed" / name)
+    assert dataset.upload(out, "me/test", dry_run=True) == 0
+
+    # A stray file where only episodes may live is caught even though it is no folder.
+    (out / "pick" / "leftover.mp4").write_text("partial")
+    assert dataset.upload(out, "me/test", dry_run=True) == 1
+    assert "pick/leftover.mp4" in capsys.readouterr().err
+    (out / "pick" / "leftover.mp4").unlink()
+    assert dataset.upload(out, "me/test", dry_run=True) == 0
+    sent = {p.relative_to(out).as_posix() for p in dataset.upload_files(out)}
+    assert not dataset.stray_files(out, rows, dataset.upload_files(out))
+    assert all(f.startswith(("pick/pick_001/", "gloves/")) or f in ("README.md", "episodes.jsonl") for f in sent)
 
 
 def test_cli_index_and_missing_root(tmp_path, capsys):
@@ -115,5 +175,47 @@ def test_cli_index_and_missing_root(tmp_path, capsys):
     assert dataset.main(["index", "--out", str(out)]) == 0
     assert "1 episodes indexed" in capsys.readouterr().out
     assert dataset.main(["index", "--out", str(tmp_path / "nowhere")]) == 2
-    assert dataset.main(["upload", "--out", str(out), "--dry-run"]) == 0
-    assert dataset.DEFAULT_REPO in capsys.readouterr().out
+    monkeypatch_repo = dataset.DEFAULT_REPO
+    dataset.DEFAULT_REPO = None
+    try:
+        assert dataset.upload(out, None, dry_run=True) == 2  # No workstation repo, no --repo.
+        assert "OGLO_HF_REPO" in capsys.readouterr().err
+    finally:
+        dataset.DEFAULT_REPO = monkeypatch_repo
+    assert dataset.main(["upload", "--out", str(out), "--dry-run", "--repo", "me/test"]) == 0
+    assert "me/test" in capsys.readouterr().out
+
+
+def ovision_manifest():
+    return {"task_description": "Pick", "complete": True, "started_wall_time_ns": 1_700_000_000_000_000_000,
+            "camera": {"kind": "ovision", "codec": "h264_passthrough", "width": 3840, "height": 1080,
+                       "requested_fps": 30, "frames_decoded": 90, "first_host_received_ns": 1_000_000_000,
+                       "last_host_received_ns": 4_000_000_000, "imu": "camera/cam_ego.imu.jsonl",
+                       "video": "camera/cam_ego.mp4", "timestamps": "camera/timestamps.jsonl"},
+            "gloves": []}
+
+
+def test_index_and_card_describe_the_camera_actually_used(tmp_path):
+    out = tmp_path / "captures"
+    minimal_tree(out)  # pick_001: an OpenCV episode (no camera IMU)
+    rows = dataset.write_index(out)
+    card = dataset.dataset_card(out, rows)
+    assert "camera IMU is not recorded" in card and "camera/video.mp4" in card
+    assert "camera/cam_ego.mp4" not in card and "3200x1200" not in card
+    assert card == dataset.dataset_card(out, rows)  # No timestamp: the same tree gives the same card.
+    assert "Generated from the episode manifests" in card
+
+    write_episode(out / "pick" / "pick_002", ovision_manifest(), frames=90)
+    rows = dataset.write_index(out)
+    assert [(r["session"], r["camera_kind"], r["camera_imu"], r["fps"], r["codec"], r["duration_s"]) for r in rows] == [
+        ("pick_001", "usb_webcam", False, 30, "mp4v", None), ("pick_002", "ovision", True, 30, "h264_passthrough", 3.0)]
+    card = (out / "README.md").read_text()
+    assert "or, per episode," in card and "`camera_kind` and `camera_imu`" in card
+    assert "camera/cam_ego.imu.jsonl" in card and "camera/video.mp4" in card
+    assert "at 30.0 fps" in card  # 90 frames over 3.0 s: the rate actually recorded, not a constant.
+    assert "camera_kind" in card and "camera_imu" in card  # Listed with the other fields.
+
+    write_episode(out / "pick" / "pick_001", ovision_manifest(), frames=90)
+    card = dataset.dataset_card(out, dataset.write_index(out))
+    assert "through its native backend" in card and "camera/cam_ego.mp4" in card
+    assert "camera/video.mp4" not in card and "or, per episode," not in card

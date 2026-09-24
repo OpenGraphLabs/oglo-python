@@ -146,17 +146,21 @@ The webcam video uses lossy MP4 encoding.
 `--codec hevc_nvenc` (NVIDIA GPU), `h264_nvenc`, `libx265` or `libx264` pipe every frame
 to the system `ffmpeg` instead, and `--video-quality N` is that encoder's CRF / CQ value
 (default 23; lower means a larger file). The script checks the encoder before it opens
-any device. On a 3200x1200 stereo camera at 30 fps, `mp4v` writes about 325 MB per
-30 s, `hevc_nvenc` at 23 about 93 MB and at 28 about 50 MB. The manifest records
-`codec` and `video_quality`; the frame count check and OpenCV playback work the same
-for every codec.
+any device. On the SC233 stereo camera through OpenCV (its default 3200x1200 mode at
+30 fps), `mp4v` writes about 325 MB per 30 s, `hevc_nvenc` at 23 about 93 MB and at 28
+about 50 MB. The manifest records `codec` and `video_quality`; the frame count check
+and OpenCV playback work the same for every codec. None of this applies to the native
+OVISION backend, which keeps the camera's own H.264 (see [OVISION.md](OVISION.md)).
 
 ## 5. Collect many episodes: `collect.py`
 
 `capture.py` records one session. `collect.py` keeps the camera and the gloves open
 and records episode after episode into one dataset tree, driven by the keyboard or a
-foot switch that types the same keys. `scripts/collect.sh` runs it from the `oglo`
-conda environment with the workstation defaults (`--camera SC233`, `--out captures/`).
+foot switch that types the same keys. `scripts/collect.sh` runs it with this
+workstation's interpreter and defaults: copy `scripts/workstation.env.example` to
+`scripts/workstation.env` (ignored by git) and set the interpreter, the camera name,
+the codec for the OpenCV backend and the Hugging Face repo there; the script adds
+`--camera`, `--codec` and `--out captures/` from it (your arguments win).
 `--camera` takes an OpenCV index or part of the camera's V4L2 name; the name is
 stable across reboots, the index is not:
 
@@ -174,6 +178,11 @@ scripts/collect.sh --serial OGLO-R-00114 --task "cup"     # one glove, by CONFIG
 | `c` | toggle the on-screen grids between counts above the zero (clamped at 0, like the CLEAN file; the sweep zero is an envelope, so a resting hand sits below it) and raw ADC (RAW stream only). Display only: a RAW-stream episode always saves both `tactile_<side>.raw.jsonl` and the derived CLEAN file |
 | `q` | quit; the dataset index and card are rewritten on the way out |
 
+The task folder is the ASCII letters and digits of `--task`; a task written in another
+script keeps its identity through a short hash of its text. One folder means one task:
+`collect.py` refuses to start when the folder already holds episodes recorded under a
+different wording, so the index and the card never merge two activities.
+
 Output layout, one folder per task and one numbered session per episode:
 
 ```
@@ -185,10 +194,43 @@ captures/
   gloves/<serial>/                   reserved for per-glove files that come back later
 ```
 
-`dataset.py index --out captures` rebuilds the index; `scripts/hf_upload.sh`
-(`--dry-run` to list first) indexes and pushes the tree to the private Hugging Face
-dataset `ntumars-opengraph/oglo-tactile-ego` with the `hf` CLI, skipping `_*`
-folders. The logged-in token needs write access to that organization.
+An episode is *publishable* when `dataset.py` finds nothing wrong with it: a complete
+manifest, the camera and glove files it names present, and `alignment.preview.jsonl`
+with exactly one row per decoded frame (`align.py` writes that file atomically, so a
+partial one never exists). That one test decides what `episodes.jsonl` lists and what
+may leave the machine: `dataset.py index --out captures` rebuilds the index from the
+publishable episodes and names every folder it held back; `scripts/hf_upload.sh`
+(`--dry-run` to list first) refuses while any folder under a task is not a publishable
+episode or while the files `hf` would send include anything outside the indexed
+episodes, then pushes the tree minus `_*` folders to the dataset repo named by
+`OGLO_HF_REPO` in `scripts/workstation.env` (or `--repo`). The logged-in token needs
+write access to that repo's organization.
+
+### Camera backend and the camera IMU
+
+`collect.py` records the camera through one of two backends, `--camera-backend`
+(default `auto`):
+
+- **ovision**, the native SyncField adapter from `ovision.py`, for an OVISION-EGO-V1
+  (the SC233HGS module with H.264/YCTC firmware). One stream stays live for the whole
+  session and every episode gets the same files as a single `ovision.py` run: the
+  original 3840x1080 H.264 (`camera/cam_ego.mp4`), the camera's own IMU and
+  magnetometer (`cam_ego.imu/accel/gyro/mag.jsonl`), per-eye exposure timing
+  (`cam_ego.stereo.jsonl`), the unit's calibration (`cam_ego.calibration.*`),
+  `sync_point.json`, `finalization.json` and the common `timestamps.jsonl`, as
+  [OVISION.md](OVISION.md) describes them. Needs Linux and
+  `pip install -r examples/camera_glove/requirements-ovision.txt` (SyncField 0.8.14).
+  `--codec`, `--video-quality` and `--fps` do not apply. The camera image in the window
+  refreshes about once a second (the adapter decodes keyframes only) while the tactile
+  grids keep their usual rate, and each episode's video starts at the first keyframe
+  after `g`, up to a second after the gloves.
+- **opencv**: any webcam through OpenCV, encoded with `--codec`; no camera IMU.
+
+`auto` takes `ovision` when SyncField 0.8.14 is installed and the camera answers the
+adapter's calibration read, and prints why when it falls back to OpenCV, so an
+episode without camera IMU never happens silently. `episodes.jsonl` records
+`camera_kind` and `camera_imu` per episode, and the dataset card describes the camera
+actually used.
 
 ### Checking the taxel layout
 
