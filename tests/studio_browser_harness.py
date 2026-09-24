@@ -20,11 +20,22 @@ def main() -> None:
     original = cv2.VideoCapture
     camera = Camera()
     cv2.VideoCapture = lambda source: camera if isinstance(source, int) else original(source)
+    class EyeCamera(Camera):
+        def __init__(self, name, eye):
+            super().__init__()
+            self.name = name
+            self.eye = eye
+
+    studio_module.FFmpegEyeCapture = EyeCamera
     oglo.connect_pair = lambda: (simulated_studio_glove("left"),
                                  simulated_studio_glove("right"))
     studio_module._camera_choices = lambda: [
-        {"index": 0, "label": "Built-in camera"},
-        {"index": 1, "label": "OVISION USB camera"},
+        {"index": 0, "mode": "default", "label": "Built-in camera · standard view"},
+        {"index": 1, "mode": "ovision_left", "name": "OVISION USB camera",
+         "label": "OVISION USB camera · left preview · saves both eyes"},
+        {"index": 1, "mode": "ovision_right", "name": "OVISION USB camera",
+         "label": "OVISION USB camera · right preview · saves both eyes"},
+        {"index": 1, "mode": "default", "label": "OVISION USB camera · standard view"},
     ]
     studio_module.list_candidates = lambda: [
         SimpleNamespace(device="/dev/oglo-left", product="OGLO"),
