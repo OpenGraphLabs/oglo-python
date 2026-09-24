@@ -88,18 +88,20 @@ This mirrors `oglo.studio_ovision.NativeOvisionCameraWorker`, which Studio,
   librealsense trims HID timestamps to 32 bits to match UVC). Every stream is
   unwrapped against one worker-wide reference, so saved values only increase within
   a session (`device_clock_unwrapped: true`).
-- **`begin(folder, stop)`:** create `camera/`, open the video writer (`writer_factory`
-  if given, else OpenCV `mp4v`, as Studio's webcam worker does), and start one writer
-  thread. The thread drains the color queue into the video and `timestamps.jsonl`, and
-  flushes the IMU buffers to their JSONL files.
+- **`begin(folder, stop)`:** create `camera/`, write `realsense.calibration.json` (so
+  even a failed take keeps it), and start one writer thread. On the first frame the
+  thread opens the video writer (`writer_factory` if given, else OpenCV `mp4v`, as
+  Studio's webcam worker does); it drains the color queue into the video and
+  `timestamps.jsonl`, and flushes the IMU buffers to their JSONL files.
 - **Watchdog:** if no color frame arrives for 5 s while recording, set `error` and set
   `stop`, as Studio's camera contract requires. `live_status()` reports the age of the
   last frame the whole time.
 - **`finish()`:**
   1. Stop routing frames to the episode, join the writer thread, and close the files.
-  2. Write `realsense.calibration.json`.
-  3. Run the completeness checks below.
-  4. Return metadata: file paths, counts, first/last host ns, `native_frames_dropped`.
+     A writer that does not finish marks the worker failed, so it gets replaced.
+  2. Run the completeness checks below. Fewer than two color frames raises
+     `TooFewFrames`, which `collect.py` treats as a discard, as for OVISION.
+  3. Return metadata: file paths, counts, first/last host ns, `native_frames_dropped`.
 
   Raise on any check failure.
 - **`close()`:** stop the pipeline. If a recording is still running, it is stopped
