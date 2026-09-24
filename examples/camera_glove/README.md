@@ -160,13 +160,37 @@ foot switch that types the same keys. `scripts/collect.sh` runs it with this
 workstation's interpreter and defaults: copy `scripts/workstation.env.example` to
 `scripts/workstation.env` (ignored by git) and set the interpreter, the camera name,
 the codec for the OpenCV backend and the Hugging Face repo there; the script adds
-`--camera`, `--codec` and `--out captures/` from it (your arguments win).
+`--camera`, `--codec` and `--out` from it (your arguments win).
 `--camera` takes an OpenCV index or part of the camera's V4L2 name; the name is
 stable across reboots, the index is not:
 
 ```bash
 scripts/collect.sh --pair --task "pick up a cup"          # both hands
 scripts/collect.sh --serial OGLO-R-00001 --task "cup"     # one glove, by CONFIG serial
+```
+
+The dataset lives beside the checkouts, never inside one. The folder that holds the
+main checkout is the project folder; its `hf-data/` is the one local copy of the Hub
+repo, shared by every worktree. `collect.sh` records into it, `hf_upload.sh` sends it
+and `hf_download.sh` fills it, so a worktree can be removed without losing data:
+
+```
+<project>/
+  oglo-python/      main checkout
+  my-task/          worktrees, beside it
+  hf-data/          $OGLO_DATA: recordings, and the Hub repo's local copy
+```
+
+`OGLO_DATA` in `scripts/workstation.env` (or the shell) moves it elsewhere.
+
+The scripts also put the checkout's own `src/` first on `PYTHONPATH`, so one
+environment serves every checkout and worktree, whichever of them it was installed
+from with `pip install -e`. A new worktree needs only its ignored file:
+
+```bash
+git worktree add ../my-task -b my-task
+cp scripts/workstation.env ../my-task/scripts/    # from a checkout that already has one
+../my-task/scripts/doctor.sh
 ```
 
 | Key | Action |
@@ -197,7 +221,7 @@ until then). Ctrl-C during a recording moves that episode to `_failed/`.
 Output layout, one folder per task and one numbered session per episode:
 
 ```
-captures/
+hf-data/
   README.md, episodes.jsonl          rebuilt by dataset.py on every quit / upload
   <task>/<task>_001/                 exactly what capture.py writes, unchanged
   <task>/<task>_001/derived/         reserved for per-episode files that come back later
@@ -211,7 +235,7 @@ IMU, calibration, clock anchor and capture report), its glove folders present, a
 `alignment.preview.jsonl` with exactly one row per decoded frame (`align.py` publishes
 that file in one step, exclusively, so a partial or half-overwritten one never exists).
 That one test decides what `episodes.jsonl` lists and what may leave the machine:
-`dataset.py index --out captures` rebuilds the index from the publishable episodes and
+`dataset.py index --out ../hf-data` rebuilds the index from the publishable episodes and
 names every folder it held back; `scripts/hf_upload.sh` (`--dry-run` to list first)
 refuses while any folder under a task is not a publishable episode or any file under
 a task belongs to no indexed episode, then runs `hf upload` twice: first the indexed
@@ -223,6 +247,12 @@ upload --private` only applies to a repo it creates, so an existing public repo 
 refused before anything is sent. Needs `hf` 1.0 or newer (older ones keep only the last
 `--include`); the logged-in token needs write access to that repo's organization.
 Files deleted locally stay on the Hub until removed there.
+
+`scripts/hf_download.sh` pulls the repo into the same folder, on a new machine or
+after another one uploaded; `hf download` options such as `--include "<task>/*"` pass
+through. It skips `episodes.jsonl` and `README.md`, which `dataset.py` derives from the
+manifests (run `dataset.py index` or the next upload to rebuild them), and overwrites
+local files that differ from the Hub, so upload first on a machine that records.
 
 ### Camera backend and the camera IMU
 

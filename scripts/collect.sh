@@ -7,9 +7,9 @@
 #
 # Defaults added in front of your arguments (yours win): --camera $OGLO_CAMERA (part of the
 # camera's V4L2 name, because /dev/video numbers change across reboots), --codec $OGLO_CODEC
-# for the OpenCV backend, --out <repo>/captures. Both variables come from scripts/workstation.env
-# (see workstation.env.example); without them the camera is index 0 and the codec collect.py's default.
-# The default captures/ gets a `*` .gitignore so recordings never show up in git status.
+# for the OpenCV backend, --out $OGLO_DATA (default <project>/hf-data, beside the checkouts; see
+# _env.sh). The variables come from scripts/workstation.env (see workstation.env.example); without
+# them the camera is index 0 and the codec collect.py's default.
 # If dialout was added with usermod but you have not re-logged in, this re-runs itself
 # under `sg dialout` so the glove port opens anyway.
 set -euo pipefail
@@ -19,9 +19,8 @@ ensure_dialout "$ROOT/scripts/collect.sh" "$@"
 extra=(--camera "${OGLO_CAMERA:-0}")
 [ -n "${OGLO_CODEC:-}" ] && extra+=(--codec "$OGLO_CODEC")
 if ! printf '%s\n' "$@" | grep -qE '^--out(=|$)'; then
-    mkdir -p "$ROOT/captures"
-    [ -e "$ROOT/captures/.gitignore" ] || echo '*' > "$ROOT/captures/.gitignore"
-    extra+=(--out "$ROOT/captures")
+    mkdir -p "$OGLO_DATA"
+    extra+=(--out "$OGLO_DATA")
 fi
 
 exec "$PY" "$ROOT/examples/camera_glove/collect.py" "${extra[@]}" "$@"

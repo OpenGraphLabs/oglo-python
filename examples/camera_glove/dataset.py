@@ -53,7 +53,7 @@ import urllib.request
 from uuid import uuid4
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_OUT = HERE.parent.parent / "captures"
+DEFAULT_OUT = Path(os.environ.get("OGLO_DATA") or HERE.parent.parent / "captures")  # scripts/_env.sh sets it
 DEFAULT_REPO = os.environ.get("OGLO_HF_REPO")  # workstation configuration; --repo overrides
 INDEX = "episodes.jsonl"
 CARD = "README.md"
