@@ -71,7 +71,8 @@ jobs:
         run: |
           python tools/check_installed.py
           python -m pytest -o pythonpath=tests --import-mode=importlib \
-            tests/test_camera_glove.py tests/test_collect.py tests/test_dataset.py --junitxml=camera-results.xml
+            tests/test_camera_glove.py tests/test_collect.py tests/test_dataset.py tests/test_realsense.py \
+            --junitxml=camera-results.xml
       - name: Require camera tests to run without skips
         run: |
           python - <<'PY'
