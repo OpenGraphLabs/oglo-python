@@ -33,9 +33,11 @@ class FakeOvisionStream:
     """What ``syncfield.adapters.ovision_camera.OvisionCameraStream`` (0.8.14) does, without a device.
 
     Like the adapter: ``connect`` starts a capture thread and ``capture_ready()`` turns true
-    only once that thread has seen a first packet, not at ``connect``; the left-eye
-    ``latest_frame`` is a fresh array on every keyframe, one keyframe every
-    ``keyframe_every`` ticks (about one per second on the real firmware); a recording
+    only once that thread has seen a first packet, not at ``connect``; every packet goes
+    through ``_queue_preview`` (recording or not), which a ``StereoPreview`` replaces per
+    instance; the class's own makes the left-eye ``latest_frame`` a fresh array on every
+    keyframe, one keyframe every ``keyframe_every`` ticks (about one per second on the
+    real firmware), so it stops changing while a preview holds the hook; a recording
     writes nothing until the first keyframe after ``start_recording``, then a real mp4
     (capture.py decodes it back) plus native-looking sidecars under ``_output_dir`` /
     ``_file_path``, the two attributes the SDK worker retargets; ``_last_at`` and
@@ -157,9 +159,8 @@ class FakeOvisionStream:
                 self.ready = True  # The first live packet carried valid metadata.
                 stalled = self.stall_after is not None and self.frames >= self.stall_after
                 keyframe = self._ticks % self.keyframe_every == 0 and not stalled
-                if keyframe:  # A fresh array each time, as the adapter's decoder hands one out.
-                    self._frame = np.full(self._shape, 90 + self.keyframes % 100, dtype=np.uint8)
-                    self.keyframes += 1
+                if not stalled:
+                    self._queue_preview(b"packet", keyframe)
                 if not self._recording or self._sinks is None or stalled:
                     continue
                 if self.fail_after is not None and self.frames >= self.fail_after:
@@ -170,6 +171,12 @@ class FakeOvisionStream:
                         continue
                     self._started_on_keyframe = True
                 self._write_frame()
+
+    def _queue_preview(self, encoded, is_keyframe):
+        """The adapter's own preview: keyframes only, a fresh array each, as its decoder hands one out."""
+        if is_keyframe:
+            self._frame = np.full(self._shape, 90 + self.keyframes % 100, dtype=np.uint8)
+            self.keyframes += 1
 
     def _write_frame(self):
         writer, files = self._sinks
@@ -195,6 +202,58 @@ class FakeOvisionStream:
             self.first = now
         self.last = self._last_at = now
         self.frames += 1
+
+
+class FakeStereoPreview:
+    """What ``stereo_preview.StereoPreview`` offers collect.py, without H.264 or a decoder
+    process: like the real one it takes over the stream's per-packet ``_queue_preview``,
+    and every packet the stream reads becomes a fresh both-eye frame of ``size`` (w, h),
+    so a stream that stops sending stops the preview too. With ``decoding`` False the
+    decoder takes packets and returns nothing (wedged); ``fail`` is the real one giving
+    up on it or finding it dead: the stream's own keyframe preview takes over again."""
+
+    def __init__(self, stream, size):
+        self.size = size
+        self.stream = stream
+        self.error = None
+        self.closed = False
+        self.frames = 0
+        self.decoding = True
+        self.offered_at = None
+        self.superseded_frame = stream.latest_frame
+        self._latest = None
+        self._fresh = threading.Event()
+        stream._queue_preview = self._offer
+
+    @property
+    def running(self):
+        return self.error is None and not self.closed
+
+    @property
+    def latest_frame(self):
+        return self._latest
+
+    def _offer(self, encoded, is_keyframe):
+        self.offered_at = time.monotonic()
+        if not self.running or not self.decoding:
+            return
+        width, height = self.size
+        self._latest = np.full((height, width, 3), self.frames % 256, dtype=np.uint8)
+        self.frames += 1
+        self._fresh.set()
+
+    def wait(self, timeout):
+        fresh = self._fresh.wait(timeout)
+        self._fresh.clear()
+        return fresh
+
+    def fail(self, reason="preview decoder exited (fake)"):
+        self.error = reason
+        self.stream.__dict__.pop("_queue_preview", None)
+
+    def close(self):
+        self.closed = True
+        self.stream.__dict__.pop("_queue_preview", None)
 
 
 def fake_stream_class(streams, **defaults):

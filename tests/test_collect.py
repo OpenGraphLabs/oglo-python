@@ -539,10 +539,144 @@ def test_preview_is_shrunk_but_the_recording_keeps_full_size(tmp_path, monkeypat
     manifest = json.loads((tmp_path / "captures" / SLUG / f"{SLUG}_001" / "manifest.json").read_text())
     assert (manifest["camera"]["width"], manifest["camera"]["height"]) == (64, 48)
     assert collect.fit_preview(np.zeros((48, 64, 3), np.uint8)).shape == (24, 32, 3)
-    monkeypatch.setattr(collect, "PREVIEW_WIDTH", 1280)
+    monkeypatch.setattr(collect, "PREVIEW_WIDTH", 1920)
     assert collect.fit_preview(np.zeros((48, 64, 3), np.uint8)).shape == (48, 64, 3)  # Never enlarged.
     args = collect.build_parser().parse_args(["--out", "x", "--task", "t"])
-    assert args.preview_width == 1280
+    assert args.preview_width == 1920  # OVISION: 960 px per eye, both eyes across a 1080p screen.
+    assert args.preview_height == 720
+
+
+def test_preview_fits_a_1080p_screen_whatever_the_camera_shape():
+    """The width bound alone would show a 16:9 image (the OVISION left-eye fallback, a
+    1080p webcam) at 1920x1080, taller than a 1080p screen: the height bound keeps it at
+    1280x720 while both OVISION eyes still get 960 px each."""
+    assert collect.fit_preview(np.zeros((1080, 3840, 3), np.uint8)).shape == (540, 1920, 3)
+    assert collect.fit_preview(np.zeros((1080, 1920, 3), np.uint8)).shape == (720, 1280, 3)
+    assert collect.fit_preview(np.zeros((480, 640, 3), np.uint8)).shape == (480, 640, 3)
+    assert collect.preview_shape(3840, 1080) == (540, 1920)
+
+
+def test_last_status_is_coloured_by_what_happened_whatever_the_task_is_called(tmp_path):
+    """The colour is chosen where the status is set, never read back from its text, which
+    carries the task name and the --out folder."""
+    collector = collect.Collector(make_args(tmp_path, task="failed grasp", out=tmp_path / "failed_runs"),
+                                  display=ScriptedDisplay(""))
+    assert (collector.status, collector.status_color) == ("ready", collect.WHITE)
+    session = tmp_path / "failed_runs" / "failed_grasp" / "failed_grasp_003"
+    collector.discard(session)
+    assert collector.status == "failed_grasp_003 discarded" and collector.status_color == collect.YELLOW
+    collector.fail(session, "DisconnectedError")
+    assert collector.status_color == collect.RED
+    collector.set_status("failed_grasp_003 aligning...")
+    assert collector.status_color == collect.WHITE
+
+
+def test_a_saved_episode_of_a_task_named_failed_is_green(tmp_path, monkeypatch):
+    patch_devices(monkeypatch)
+    collector = collect.Collector(make_args(tmp_path, task="failed grasp"), display=ScriptedDisplay("zg"))
+    assert [e["outcome"] for e in collector.run()] == ["saved"]
+    assert collector.status == "failed_grasp_001 ok" and collector.status_color == collect.GREEN
+
+
+def test_overlay_text_sits_on_a_band_with_the_keys_in_their_column():
+    scale = 0.55
+    image = np.full((100, 800, 3), 200, np.uint8)
+    lines = [[("IDLE", collect.WHITE, True), ("keys", collect.WHITE, True, 300)], "second line"]
+    assert collect.put_lines(image, lines, origin=(34, 24), band_left=8) == 24 + 2 * 26
+    band = int(200 * collect.BACKDROP)
+    assert image[5, 2].tolist() == [band] * 3  # The band reaches left under the state dot.
+    tag_end = 34 + cv2.getTextSize("IDLE", collect.FONT, scale, 2)[0][0] + 3
+    assert (image[5:30, tag_end:299] == band).all()  # Nothing drawn between the tag and the column...
+    assert (image[5:30, 300:340] != band).any()  # ...the keys start there.
+    assert image[50, 790].tolist() == [200] * 3 and image[90, 20].tolist() == [200] * 3  # Outside the band: untouched.
+    assert collect.key_column(6000) > collect.key_column(60)  # A longer timer pushes the keys right.
+
+
+def test_a_segment_that_would_run_off_a_narrow_image_starts_a_row_of_its_own():
+    """On a 640 px webcam image the key hints no longer fit beside the timer: they wrap
+    to their own row at the text column instead of being cut off at the edge."""
+    keys = "g = record   z = calibrate   c = raw/cal view   q = quit"
+    line = [("IDLE", collect.WHITE, False), (keys, collect.BLUE, False, collect.key_column(600))]
+    wide = np.full((540, 1920, 3), 200, np.uint8)
+    assert collect.put_lines(wide, [line, "task"], origin=(34, 24)) == 24 + 2 * 26
+    narrow = np.full((480, 640, 3), 200, np.uint8)
+    assert collect.put_lines(narrow, [line, "task"], origin=(34, 24)) == 24 + 3 * 26
+    width = cv2.getTextSize(keys, collect.FONT, 0.55, 1)[0][0]
+    assert 34 + width < 640 - 8  # The wrapped row fits,
+    assert (narrow[24 + 26 - 12:24 + 26 + 4, 34:34 + width] != int(200 * collect.BACKDROP)).any()  # and is drawn.
+
+
+def blue_columns(frame, top=6, bottom=30):
+    """Columns in the first text row where the blue key hints are drawn."""
+    band = frame[top:bottom].astype(int)
+    blue = (band[..., 0] > 150) & (band[..., 0] - band[..., 2] > 60)
+    return np.flatnonzero(blue.any(axis=0))
+
+
+def test_idle_and_rec_screens_put_the_keys_in_the_same_column():
+    image = np.full((540, 1920, 3), 90, np.uint8)
+    idle_self = SimpleNamespace(args=SimpleNamespace(seconds=600, task="t"), gloves=(), glove_grids=lambda: [],
+                                _jobs=SimpleNamespace(unfinished_tasks=0), status="ready",
+                                status_color=collect.WHITE, camera_note="camera: test")
+    idle = collect.Collector.draw_idle(idle_self, image, Path("t_001"))
+    rec = collect.draw_recording(image, 12.3, 600, "t_001", "t")
+    idle_keys, rec_keys = blue_columns(idle), blue_columns(rec)
+    assert len(idle_keys) and len(rec_keys)
+    assert abs(int(idle_keys[0]) - int(rec_keys[0])) <= 2
+    assert abs(int(idle_keys[0]) - collect.key_column(600)) <= 3
+
+
+def test_on_a_narrow_image_the_right_grid_sits_above_the_left_one():
+    """Two blocks need about 790 px side by side; on a 640 px webcam image the right
+    glove's block would cover part of the left one's and show its pressure as the left
+    hand's."""
+    hot, cold = np.full((5, 4, 4), 500.0), np.zeros((5, 4, 4))
+    both = np.zeros((480, 640, 3), np.uint8)
+    collect.draw_gloves(both, [("LEFT cal", cold, 0), ("RIGHT cal", hot, 0)])
+    left_only = np.zeros((480, 640, 3), np.uint8)
+    collect.draw_gloves(left_only, [("LEFT cal", cold, 0)])
+    bottom = 480 - collect.GRID_H - 10
+    left = (slice(bottom, bottom + collect.GRID_H), slice(10, 10 + collect.GRID_W))
+    assert (both[left] == left_only[left]).all()  # Every left cell shows the left glove.
+    above = bottom - collect.GRID_H - collect.GRID_LABEL - 10
+    right_x = 640 - collect.GRID_W - 10
+    assert (both[above + 5, right_x + 5] == collect.finger_grids(hot)[5, 5]).all()
+    wide = np.zeros((480, 1000, 3), np.uint8)  # Room for both: each on its own side, one row.
+    collect.draw_gloves(wide, [("LEFT cal", cold, 0), ("RIGHT cal", hot, 0)])
+    assert wide[bottom + 5, 1000 - collect.GRID_W - 10 + 5].any() and not wide[above + 5].any()
+
+
+def test_stereo_frames_get_a_middle_line_and_other_frames_are_left_alone():
+    stereo = np.zeros((54, 192, 3), np.uint8)  # 3840x1080 at a twentieth
+    collect.draw_eyes(stereo)
+    assert stereo[5:30, 96].min() > 100  # The line between the eyes (antialiased at its ends).
+    assert stereo[:, :60].sum() == 0 and stereo[:, 130:].sum() == 0  # L and R sit right next to it.
+    for shape in ((108, 192, 3), (120, 320, 3), (48, 64, 3)):  # One eye, the OpenCV stereo mode, a webcam
+        other = np.zeros(shape, np.uint8)
+        collect.draw_eyes(other)
+        assert not other.any()
+
+
+def test_each_glove_grid_sits_on_its_own_side():
+    values = np.full((5, 4, 4), 500.0)
+    y = 300 - collect.GRID_H - 10 + 5  # inside the first row of cells
+    right_x = 1000 - collect.GRID_W - 10 + 5
+    frame = np.zeros((300, 1000, 3), np.uint8)
+    collect.draw_gloves(frame, [("RIGHT cal", values, 0)])
+    assert frame[y, right_x].any() and not frame[y, 15].any()
+    frame = np.zeros((300, 1000, 3), np.uint8)
+    collect.draw_gloves(frame, [("LEFT cal", values, 0), ("RIGHT cal", None, 0)])  # right: no frame yet
+    assert frame[y, 15].any() and not frame[y, right_x].any()
+    tiny = np.zeros((48, 64, 3), np.uint8)  # Too small for a grid: nothing pasted, nothing raised.
+    collect.draw_gloves(tiny, [("LEFT cal", values, 0), ("RIGHT cal", values, 0)])
+
+
+def test_rec_screen_keeps_the_frame_size_and_shows_the_red_dot():
+    image = np.full((1080, 3840, 3), 120, np.uint8)
+    frame = collect.draw_recording(image, 12.3, 600, "s_004", "task", note="checking the saved video: 1 / 2 frames")
+    assert frame.shape == (540, 1920, 3) and image.max() == 120  # Drawn on a copy, preview-sized.
+    assert frame[collect.DOT[1], collect.DOT[0]].tolist() == [0, 0, 255]
+    assert frame[500, 1920 // 2].min() > 120  # The eye divider.
 
 
 class BigCamera(Camera):
@@ -846,9 +980,11 @@ def test_camera_is_resolved_by_v4l2_name_to_its_capture_node(tmp_path):
 
 # -- the native OVISION backend ------------------------------------------------------
 
-def patch_ovision(monkeypatch, **stream_kwargs):
+def patch_ovision(monkeypatch, previews=None, **stream_kwargs):
     """collect.py's OVISION backend on FakeOvisionStream, under the SDK's real worker;
-    returns the streams the worker built (one per camera open)."""
+    returns the streams the worker built (one per camera open). The window shows the
+    fake's left-eye keyframes, unless ``previews`` is a list: then every camera open gets
+    a FakeStereoPreview, appended to it."""
     if sys.platform != "linux":
         pytest.skip("the SDK's native OVISION worker is Linux only")
     native = pytest.importorskip("syncfield.adapters.ovision_camera")
@@ -858,6 +994,15 @@ def patch_ovision(monkeypatch, **stream_kwargs):
     monkeypatch.setattr(native, "OvisionCameraStream", fake_stream_class(streams, **stream_kwargs))
     monkeypatch.setattr(collect.ovision, "problem", lambda device: None)
     monkeypatch.setattr(collect, "OVISION_IDLE_PERIOD", 0.01)
+    if previews is None:
+        monkeypatch.setattr(collect, "start_preview", lambda stream: None)
+    else:
+        from fake_ovision import FakeStereoPreview
+
+        def start(stream):
+            previews.append(FakeStereoPreview(stream, collect.preview_shape(*collect.OVISION_SIZE)[::-1]))
+            return previews[-1]
+        monkeypatch.setattr(collect, "start_preview", start)
     return streams
 
 
@@ -905,6 +1050,52 @@ def test_ovision_backend_keeps_one_worker_and_saves_the_camera_imu_per_episode(t
     assert "through its native backend" in card and "camera/cam_ego.imu.jsonl" in card
     assert "3200x1200" not in card
     assert "camera/video.mp4" not in card  # An OVISION-only dataset describes only what it holds.
+
+
+def test_ovision_stereo_preview_shows_both_eyes_and_leaves_the_episode_as_it_was(tmp_path, monkeypatch):
+    """The window gets the preview's both-eye frames, idle and while recording; the saved
+    episode holds exactly the files and manifest a run without the preview writes."""
+    def run(root, previews):
+        patch_devices(monkeypatch)
+        streams = patch_ovision(monkeypatch, previews=previews)
+        shapes = []
+
+        class ShapeDisplay(ScriptedDisplay):
+            def show(self, image, listen=True):
+                shapes.append(image.shape[:2])
+                # The fake preview refreshes far faster than the stream's keyframes, and a stop
+                # before the first one is a discard: h waits until the camera wrote frames.
+                if listen and self.keys[:1] == ["h"] and streams[-1]._recording and streams[-1].frames < 3:
+                    return -1
+                return super().show(image, listen)
+
+        display = ShapeDisplay([None] * 5 + ["g"] + [None] * 15 + ["h"])
+        collector = collect.Collector(make_args(root, pair=False, seconds=5, camera_backend="ovision"),
+                                      display=display)
+        assert [e["outcome"] for e in collector.run()] == ["saved"]
+        session = root / "captures" / SLUG / f"{SLUG}_001"
+        files = sorted(str(p.relative_to(session)) for p in session.rglob("*") if p.is_file())
+        manifest = json.loads((session / "manifest.json").read_text())
+        return shapes, files, manifest
+
+    previews = []
+    shapes, files, manifest = run(tmp_path / "stereo", previews)
+    (preview,) = previews  # One camera open, one preview; closed with the camera on quit.
+    assert preview.closed and preview.frames > 0 and preview.size == (1920, 540)
+    assert shapes.count((540, 1920)) >= 15  # Idle and REC frames alike: both eyes, 960 px each.
+    assert set(shapes) == {(540, 1920)}  # Placeholders too: the window never changes size.
+
+    monkeypatch.undo()
+    _, plain_files, plain = run(tmp_path / "plain", None)
+    assert files == plain_files
+    def shape(value):  # Same keys and value types all the way down; times and counts differ.
+        if isinstance(value, dict):
+            return {key: shape(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [shape(item) for item in value[:1]]
+        return type(value).__name__
+    assert shape(manifest) == shape(plain)
+    assert manifest["camera"]["width"] == plain["camera"]["width"] == 3840
 
 
 def test_ovision_camera_failure_moves_the_episode_aside_and_reopens_the_camera(tmp_path, monkeypatch):
@@ -975,6 +1166,97 @@ def test_ovision_camera_that_stops_while_idle_is_reopened(tmp_path, monkeypatch,
     assert len(streams) == 2 and streams[0].disconnects == 1 and streams[1].disconnects == 1
     assert "no keyframe from the camera for 0.3 s" in capsys.readouterr().err
     assert collector.status == "camera reconnected on /dev/video0"
+
+
+def test_ovision_camera_that_stops_while_idle_is_reopened_with_the_preview_running(tmp_path, monkeypatch,
+                                                                                  capsys):
+    patch_devices(monkeypatch, pair=False)
+    previews = []
+    streams = patch_ovision(monkeypatch, previews=previews)
+    monkeypatch.setattr(collect, "OVISION_STALL_SECONDS", 0.3)
+
+    class StallingDisplay(ScriptedDisplay):
+        def show(self, image, listen=True):
+            if listen and self.shown == 30:
+                streams[0].stall_after = 0  # From now on the camera sends nothing, so nothing is decoded.
+            return super().show(image, listen)
+
+    collector = collect.Collector(make_args(tmp_path, pair=False, camera_backend="ovision"),
+                                  display=StallingDisplay([None] * 120))
+    collector.reconnect_pause = 0
+    assert collector.run() == []
+    assert len(streams) == 2 and streams[0].disconnects == 1
+    assert len(previews) == 2 and previews[0].closed  # The reopened camera got a preview of its own.
+    assert "no video from the camera for 0.3 s" in capsys.readouterr().err
+
+
+def test_ovision_preview_decoder_that_dies_while_idle_leaves_the_camera_alone(tmp_path, monkeypatch, capsys):
+    """The window falls back to the adapter's keyframes; the camera, still delivering, is
+    not taken for a dead one and reopened."""
+    patch_devices(monkeypatch, pair=False)
+    previews = []
+    streams = patch_ovision(monkeypatch, previews=previews)
+    monkeypatch.setattr(collect, "OVISION_STALL_SECONDS", 0.5)
+    shapes = []
+
+    class DyingDecoderDisplay(ScriptedDisplay):
+        def show(self, image, listen=True):
+            shapes.append(image.shape[:2])
+            if listen and self.shown == 20:
+                previews[0].fail()
+            return super().show(image, listen)
+
+    collector = collect.Collector(make_args(tmp_path, pair=False, camera_backend="ovision"),
+                                  display=DyingDecoderDisplay([None] * 200))  # About 2 s after the failure.
+    collector.reconnect_pause = 0
+    assert collector.run() == []
+    assert len(streams) == 1 and len(previews) == 1
+    assert "reconnecting" not in capsys.readouterr().err
+    assert shapes[0] == (540, 1920) and shapes[-1] == (720, 1280)  # Both eyes, then the left eye's keyframes.
+
+
+def test_ovision_preview_decoder_that_dies_late_in_an_episode_leaves_the_camera_alone(tmp_path, monkeypatch,
+                                                                                    capsys):
+    """No idle read happens during the episode: the first one after it must not count the
+    whole episode as camera silence, nor show the adapter's frame from before the preview
+    (measured on the real camera: the adapter decodes nothing while the preview runs, and
+    its next keyframe comes up to a second after the decoder died)."""
+    patch_devices(monkeypatch, pair=False)
+    previews = []
+    streams = patch_ovision(monkeypatch, previews=previews)
+    monkeypatch.setattr(collect, "OVISION_STALL_SECONDS", 1.0)
+    monkeypatch.setattr(collect, "WATCH_STEP", 0.1)
+    start = collect.start_preview
+
+    def start_after_a_keyframe(stream):  # The adapter decoded a frame before the preview took over.
+        deadline = time.monotonic() + 5
+        while stream.latest_frame is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return start(stream)
+
+    monkeypatch.setattr(collect, "start_preview", start_after_a_keyframe)
+    after = []
+
+    class LateDeathDisplay(ScriptedDisplay):
+        def show(self, image, listen=True):
+            stream = streams[-1]
+            if listen and stream._recording and previews[0].running and stream.frames >= 60:
+                previews[0].fail()  # 1.2 s into the episode, longer than the stall allowance,
+                stream.keyframe_every = 10 ** 6  # before the adapter's next keyframe,
+                self.keys.insert(0, "h")  # and the operator stops right away.
+            elif listen and not stream._recording and not previews[0].running and not after:
+                after.append(image.shape[:2])  # The first idle frame after the episode.
+                stream.keyframe_every = 10  # The adapter's keyframe arrives.
+            return super().show(image, listen)
+
+    collector = collect.Collector(make_args(tmp_path, pair=False, seconds=5, camera_backend="ovision"),
+                                  display=LateDeathDisplay([None] * 10 + ["g"] + [None] * 400))
+    collector.reconnect_pause = 0
+    assert [e["outcome"] for e in collector.run()] == ["saved"]
+    assert len(streams) == 1 and len(previews) == 1
+    assert "reconnecting" not in capsys.readouterr().err
+    assert previews[0].superseded_frame is not None
+    assert after == [(540, 1920)]  # The last preview frame, not the left eye from before the episode.
 
 
 def test_ovision_stop_before_the_first_keyframe_is_a_discard_not_a_failure(tmp_path, monkeypatch):
@@ -1065,6 +1347,136 @@ def test_ovision_idle_source_paces_the_window_and_reports_a_dead_stream():
     assert source.read() == (False, None) and "no keyframe" in source.reason
     source.release()
     assert not stream.connected
+
+
+def idle_source_over_a_live_stream(preview=False, **stream_kwargs):
+    from fake_ovision import FakeOvisionStream, FakeStereoPreview
+
+    stream = FakeOvisionStream("cam_ego", Path("/nonexistent"), **{"keyframe_every": 5, "frame_hz": 100,
+                                                                   **stream_kwargs})
+    stream.connect()
+    deadline = time.monotonic() + 5
+    while stream.latest_frame is None and time.monotonic() < deadline:  # The adapter's first keyframe.
+        time.sleep(0.01)
+    assert stream.latest_frame is not None
+    fake = FakeStereoPreview(stream, (192, 54)) if preview else None
+    worker = SimpleNamespace(stream=stream, error=None, close=stream.disconnect)
+    return stream, fake, collect.OvisionIdleSource(worker, period=0.01, stall_seconds=0.3, preview=fake)
+
+
+def read_for(source, seconds):
+    """Every read in ``seconds``; stops at the first failed one."""
+    results = []
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        results.append(source.read())
+        if not results[-1][0]:
+            break
+    return results
+
+
+def test_ovision_idle_source_counts_only_the_time_it_watched(monkeypatch):
+    """No idle read happens while an episode records; the first one after it must not
+    take the whole episode for camera silence (it would reopen a healthy camera)."""
+    monkeypatch.setattr(collect, "WATCH_STEP", 0.05)
+    stream, _, source = idle_source_over_a_live_stream()
+    stream.stall_after = 0  # One keyframe so far, and no more.
+    try:
+        assert source.read()[0]
+        time.sleep(0.6)  # An episode twice the stall allowance long.
+        assert source.read()[0]  # Counted as one short gap, not 0.6 s of silence.
+        results = read_for(source, 1.0)  # Watching now: the silence is a stall after 0.3 s.
+        assert results[-1] == (False, None) and source.reason == "no keyframe from the camera for 0.3 s"
+    finally:
+        source.release()
+
+
+def test_ovision_idle_source_with_the_preview_tells_a_dead_decoder_from_a_dead_camera():
+    stream, preview, source = idle_source_over_a_live_stream(preview=True)
+    try:
+        results = read_for(source, 0.3)
+        assert all(ok for ok, _ in results) and results[-1][1].shape == (54, 192, 3)  # Both eyes.
+        stale = stream.latest_frame
+        assert stale is preview.superseded_frame  # The adapter decodes nothing while the preview runs.
+        preview.fail()  # Decoder gone; the camera still sends.
+        results = read_for(source, 1.0)  # Over three stall allowances.
+        assert all(ok for ok, _ in results)  # Nothing to reopen: the keyframes took over.
+        assert results[-1][1].shape == (1080, 1920, 3) and results[-1][1] is not stale
+        assert not any(image is stale for _, image in results)  # The frame from before the preview is never live.
+        stream.stall_after = 0  # Now the camera itself goes silent.
+        results = read_for(source, 1.0)
+        assert results[-1] == (False, None) and "no keyframe" in source.reason
+    finally:
+        source.release()
+
+
+def test_ovision_idle_source_with_the_preview_reports_a_silent_camera():
+    stream, _, source = idle_source_over_a_live_stream(preview=True)
+    try:
+        assert all(ok for ok, _ in read_for(source, 0.2))
+        stream.stall_after = 0  # No packets: the preview gets nothing to decode.
+        results = read_for(source, 1.0)
+        assert results[-1] == (False, None) and source.reason == "no video from the camera for 0.3 s"
+    finally:
+        source.release()
+
+
+def test_ovision_idle_source_never_blames_the_camera_for_a_decoder_that_returns_nothing():
+    """Packets keep arriving but no frame comes back (a decoder stuck from the start):
+    the camera is alive. Giving the preview up is the preview's watchdog's call."""
+    stream, preview, source = idle_source_over_a_live_stream(preview=True)
+    try:
+        preview.decoding = False
+        assert all(ok for ok, _ in read_for(source, 1.0))  # Over three stall allowances.
+        stream.stall_after = 0  # Now no packets either.
+        results = read_for(source, 1.0)
+        assert results[-1] == (False, None) and source.reason == "no video from the camera for 0.3 s"
+    finally:
+        source.release()
+
+
+def test_ovision_idle_placeholder_has_the_size_of_the_frames_around_it():
+    from fake_ovision import FakeOvisionStream, FakeStereoPreview
+
+    stream = FakeOvisionStream("cam_ego", Path("/nonexistent"), stall_after=0)  # Live, but no packet yet.
+    stream.connect()
+    preview = FakeStereoPreview(stream, (1920, 540))
+    worker = SimpleNamespace(stream=stream, error=None, close=stream.disconnect)
+    source = collect.OvisionIdleSource(worker, period=0.001, preview=preview)
+    try:
+        deadline = time.monotonic() + 5
+        while not stream.capture_ready() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        ok, image = source.read()
+        assert ok and image.shape == (540, 1920, 3)  # As big as the preview frames will be.
+        preview.fail()
+        ok, image = source.read()
+        assert ok and image.shape == (720, 1280, 3)  # The left eye, fitted to the window.
+    finally:
+        source.release()
+
+
+def test_wait_frame_returns_at_once_when_tick_already_stopped_the_episode():
+    """h or x pressed in ``tick`` sets ``stop``; waiting for one more preview frame after
+    it would record one more camera frame than the gloves."""
+    stop = collect.threading.Event()
+    stop.set()
+    preview = SimpleNamespace(running=True, wait=lambda timeout: time.sleep(timeout))
+    started = time.monotonic()
+    collect.ovision.wait_frame(stop, preview, 5.0)
+    assert time.monotonic() - started < 0.1
+
+
+def test_live_frame_never_shows_the_adapter_frame_from_before_the_preview():
+    old, new, previewed = object(), object(), object()
+    stream = SimpleNamespace(latest_frame=old)
+    preview = SimpleNamespace(running=True, latest_frame=previewed, superseded_frame=old)
+    assert collect.ovision.live_frame(stream, preview) is previewed
+    preview.running = False
+    assert collect.ovision.live_frame(stream, preview) is None  # Stale: the adapter decoded nothing since.
+    stream.latest_frame = new
+    assert collect.ovision.live_frame(stream, preview) is new
+    assert collect.ovision.live_frame(stream) is new
 
 
 def test_recording_overlay_draws_the_last_frame_or_a_placeholder_and_routes_keys():
