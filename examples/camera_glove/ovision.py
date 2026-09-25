@@ -25,7 +25,7 @@ from oglo.data import CameraData
 from capture import capture, positive_number
 
 SYNCFIELD_VERSION = "0.8.14"
-MODE = "ovision_native_left"  # The eye the worker decodes for its preview; both eyes are recorded.
+MODE = "ovision_native_left"  # The eye the worker's own keyframe preview shows; both eyes are recorded.
 
 
 class TooFewFrames(RuntimeError):
@@ -77,6 +77,22 @@ def open_worker(video_device, root, index=0):
     return NativeOvisionCameraWorker(index, mode=MODE, name=str(video_device), root=Path(root))
 
 
+def live_frame(stream, preview=None):
+    """The newest frame to show: from ``preview`` (both eyes, every frame) while it runs,
+    else the adapter's own left-eye keyframe."""
+    if preview is not None and preview.running:
+        return preview.latest_frame
+    return stream.latest_frame
+
+
+def wait_frame(stop, preview, timeout):
+    """Until the preview has a new frame, ``stop`` is set, or ``timeout`` passed."""
+    if preview is not None and preview.running:
+        preview.wait(timeout)
+    else:
+        stop.wait(timeout)
+
+
 def camera_report(folder):
     """``finalization.json`` as the worker wrote it, or None."""
     try:
@@ -92,15 +108,18 @@ class OvisionCapture:
     ``close()``, one session per process. With ``worker`` (collect.py) the caller's
     live worker records this session under ``output`` and stays connected afterwards,
     so the next episode starts without re-reading calibration or renegotiating video.
-    ``tick(frame)`` is called about every 50 ms while recording with the newest
-    left-eye preview frame (or None); collect.py draws its window and reads keys there.
-    ``progress(decoded, expected)`` is called while the saved video is decoded back.
+    ``tick(frame)`` is called while recording with the newest preview frame (or None):
+    every frame, both eyes, when ``preview`` is collect.py's running ``StereoPreview``,
+    otherwise the worker's left-eye keyframe about every 50 ms; collect.py draws its
+    window and reads keys there. ``progress(decoded, expected)`` is called while the
+    saved video is decoded back.
     """
 
-    def __init__(self, args, output, worker=None, tick=None, progress=None):
+    def __init__(self, args, output, worker=None, tick=None, progress=None, preview=None):
         self.args, self.output = args, output
         self.worker, self.shared = worker, worker is not None
         self.tick = tick
+        self.preview = preview
         self.verify_progress = progress
         self.metadata: CameraData = {
             "kind": "ovision", "model": "OVISION-EGO-V1", "video_device": str(args.video_device),
@@ -131,14 +150,14 @@ class OvisionCapture:
         try:
             deadline = time.monotonic() + self.args.seconds
             while time.monotonic() < deadline and not stop.is_set():
-                frame = self.worker.stream.latest_frame
+                frame = live_frame(self.worker.stream, self.preview)
                 if self.args.preview and frame is not None:
                     cv2.imshow("OVISION left-eye preview (q stops capture)", frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         raise RuntimeError("Capture stopped early from the preview")
                 if self.tick is not None:
                     self.tick(frame)
-                stop.wait(0.05)
+                wait_frame(stop, self.preview, 0.05)
         except BaseException:
             self._finish(quiet=True)  # The loop's own error (Ctrl-C, preview q) is the one to report.
             raise

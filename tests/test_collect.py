@@ -539,10 +539,68 @@ def test_preview_is_shrunk_but_the_recording_keeps_full_size(tmp_path, monkeypat
     manifest = json.loads((tmp_path / "captures" / SLUG / f"{SLUG}_001" / "manifest.json").read_text())
     assert (manifest["camera"]["width"], manifest["camera"]["height"]) == (64, 48)
     assert collect.fit_preview(np.zeros((48, 64, 3), np.uint8)).shape == (24, 32, 3)
-    monkeypatch.setattr(collect, "PREVIEW_WIDTH", 1280)
+    monkeypatch.setattr(collect, "PREVIEW_WIDTH", 1920)
     assert collect.fit_preview(np.zeros((48, 64, 3), np.uint8)).shape == (48, 64, 3)  # Never enlarged.
     args = collect.build_parser().parse_args(["--out", "x", "--task", "t"])
-    assert args.preview_width == 1280
+    assert args.preview_width == 1920  # OVISION: 960 px per eye, both eyes across a 1080p screen.
+
+
+def test_last_status_is_coloured_by_what_happened():
+    colour = collect.status_color
+    assert colour("s_003 ok") == colour("calibrated left + right") == collect.GREEN
+    assert colour("s_003 discarded") == colour("s_003 discarded: 1 camera frame(s) before the stop") == collect.YELLOW
+    assert colour("s_003 exists already (another collector writing to out?)") == collect.YELLOW
+    assert colour("s_003 capture FAILED: DisconnectedError") == colour("s_003 align FAILED: x") == collect.RED
+    assert colour("left zero failed: timeout") == colour("refused: no zero on L -- press z first") == collect.RED
+    assert colour("ready") == colour("s_003 aligning...") == colour("camera reconnected on /dev/video0") == collect.WHITE
+
+
+def test_overlay_text_sits_on_a_band_with_the_keys_in_their_column():
+    scale = 0.55
+    image = np.full((100, 800, 3), 200, np.uint8)
+    lines = [[("IDLE", collect.WHITE, True), ("keys", collect.WHITE, True, 300)], "second line"]
+    assert collect.put_lines(image, lines, origin=(34, 24), band_left=8) == 24 + 2 * 26
+    band = int(200 * collect.BACKDROP)
+    assert image[5, 2].tolist() == [band] * 3  # The band reaches left under the state dot.
+    tag_end = 34 + cv2.getTextSize("IDLE", collect.FONT, scale, 2)[0][0] + 3
+    assert (image[5:30, tag_end:299] == band).all()  # Nothing drawn between the tag and the column...
+    assert (image[5:30, 300:340] != band).any()  # ...the keys start there.
+    assert image[50, 790].tolist() == [200] * 3 and image[90, 20].tolist() == [200] * 3  # Outside the band: untouched.
+    assert collect.key_column(600) == collect.key_column(600)  # Same column on both screens.
+    assert collect.key_column(6000) > collect.key_column(60)  # A longer timer pushes the keys right.
+
+
+def test_stereo_frames_get_a_middle_line_and_other_frames_are_left_alone():
+    stereo = np.zeros((54, 192, 3), np.uint8)  # 3840x1080 at a twentieth
+    collect.draw_eyes(stereo)
+    assert stereo[5:30, 96].min() > 100  # The line between the eyes (antialiased at its ends).
+    assert stereo[:, :60].sum() == 0 and stereo[:, 130:].sum() == 0  # L and R sit right next to it.
+    for shape in ((108, 192, 3), (120, 320, 3), (48, 64, 3)):  # One eye, the OpenCV stereo mode, a webcam
+        other = np.zeros(shape, np.uint8)
+        collect.draw_eyes(other)
+        assert not other.any()
+
+
+def test_each_glove_grid_sits_on_its_own_side():
+    values = np.full((5, 4, 4), 500.0)
+    y = 300 - collect.GRID_H - 10 + 5  # inside the first row of cells
+    right_x = 1000 - collect.GRID_W - 10 + 5
+    frame = np.zeros((300, 1000, 3), np.uint8)
+    collect.draw_gloves(frame, [("RIGHT cal", values, 0)])
+    assert frame[y, right_x].any() and not frame[y, 15].any()
+    frame = np.zeros((300, 1000, 3), np.uint8)
+    collect.draw_gloves(frame, [("LEFT cal", values, 0), ("RIGHT cal", None, 0)])  # right: no frame yet
+    assert frame[y, 15].any() and not frame[y, right_x].any()
+    tiny = np.zeros((48, 64, 3), np.uint8)  # Too small for a grid: nothing pasted, nothing raised.
+    collect.draw_gloves(tiny, [("LEFT cal", values, 0), ("RIGHT cal", values, 0)])
+
+
+def test_rec_screen_keeps_the_frame_size_and_shows_the_red_dot():
+    image = np.full((1080, 3840, 3), 120, np.uint8)
+    frame = collect.draw_recording(image, 12.3, 600, "s_004", "task", note="checking the saved video: 1 / 2 frames")
+    assert frame.shape == (540, 1920, 3) and image.max() == 120  # Drawn on a copy, preview-sized.
+    assert frame[collect.DOT[1], collect.DOT[0]].tolist() == [0, 0, 255]
+    assert frame[500, 1920 // 2].min() > 120  # The eye divider.
 
 
 class BigCamera(Camera):
@@ -846,9 +904,11 @@ def test_camera_is_resolved_by_v4l2_name_to_its_capture_node(tmp_path):
 
 # -- the native OVISION backend ------------------------------------------------------
 
-def patch_ovision(monkeypatch, **stream_kwargs):
+def patch_ovision(monkeypatch, previews=None, **stream_kwargs):
     """collect.py's OVISION backend on FakeOvisionStream, under the SDK's real worker;
-    returns the streams the worker built (one per camera open)."""
+    returns the streams the worker built (one per camera open). The window shows the
+    fake's left-eye keyframes, unless ``previews`` is a list: then every camera open gets
+    a FakeStereoPreview, appended to it."""
     if sys.platform != "linux":
         pytest.skip("the SDK's native OVISION worker is Linux only")
     native = pytest.importorskip("syncfield.adapters.ovision_camera")
@@ -858,6 +918,15 @@ def patch_ovision(monkeypatch, **stream_kwargs):
     monkeypatch.setattr(native, "OvisionCameraStream", fake_stream_class(streams, **stream_kwargs))
     monkeypatch.setattr(collect.ovision, "problem", lambda device: None)
     monkeypatch.setattr(collect, "OVISION_IDLE_PERIOD", 0.01)
+    if previews is None:
+        monkeypatch.setattr(collect, "start_preview", lambda stream: None)
+    else:
+        from fake_ovision import FakeStereoPreview
+
+        def start(stream):
+            previews.append(FakeStereoPreview(stream, collect.OVISION_SIZE, collect.PREVIEW_WIDTH))
+            return previews[-1]
+        monkeypatch.setattr(collect, "start_preview", start)
     return streams
 
 
@@ -905,6 +974,47 @@ def test_ovision_backend_keeps_one_worker_and_saves_the_camera_imu_per_episode(t
     assert "through its native backend" in card and "camera/cam_ego.imu.jsonl" in card
     assert "3200x1200" not in card
     assert "camera/video.mp4" not in card  # An OVISION-only dataset describes only what it holds.
+
+
+def test_ovision_stereo_preview_shows_both_eyes_and_leaves_the_episode_as_it_was(tmp_path, monkeypatch):
+    """The window gets the preview's both-eye frames, idle and while recording; the saved
+    episode holds exactly the files and manifest a run without the preview writes."""
+    def run(root, previews):
+        patch_devices(monkeypatch)
+        patch_ovision(monkeypatch, previews=previews)
+        shapes = []
+
+        class ShapeDisplay(ScriptedDisplay):
+            def show(self, image, listen=True):
+                shapes.append(image.shape[:2])
+                return super().show(image, listen)
+
+        display = ShapeDisplay([None] * 5 + ["g"] + [None] * 15 + ["h"])
+        collector = collect.Collector(make_args(root, pair=False, seconds=5, camera_backend="ovision"),
+                                      display=display)
+        assert [e["outcome"] for e in collector.run()] == ["saved"]
+        session = root / "captures" / SLUG / f"{SLUG}_001"
+        files = sorted(str(p.relative_to(session)) for p in session.rglob("*") if p.is_file())
+        manifest = json.loads((session / "manifest.json").read_text())
+        return shapes, files, manifest
+
+    previews = []
+    shapes, files, manifest = run(tmp_path / "stereo", previews)
+    (preview,) = previews  # One camera open, one preview; closed with the camera on quit.
+    assert preview.closed and preview.frames > 0 and preview.size == (1920, 540)
+    assert shapes.count((540, 1920)) >= 15  # Idle and REC frames alike: both eyes, 960 px each.
+
+    monkeypatch.undo()
+    _, plain_files, plain = run(tmp_path / "plain", None)
+    assert files == plain_files
+    def shape(value):  # Same keys and value types all the way down; times and counts differ.
+        if isinstance(value, dict):
+            return {key: shape(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [shape(item) for item in value[:1]]
+        return type(value).__name__
+    assert shape(manifest) == shape(plain)
+    assert manifest["camera"]["width"] == plain["camera"]["width"] == 3840
 
 
 def test_ovision_camera_failure_moves_the_episode_aside_and_reopens_the_camera(tmp_path, monkeypatch):

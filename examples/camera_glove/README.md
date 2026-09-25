@@ -269,9 +269,15 @@ local files that differ from the Hub, so upload first on a machine that records.
   `sync_point.json`, `finalization.json` and the common `timestamps.jsonl`, as
   [OVISION.md](OVISION.md) describes them. Needs Linux and
   `pip install -r examples/camera_glove/requirements-ovision.txt` (SyncField 0.8.14).
-  `--codec`, `--video-quality` and `--fps` do not apply. The camera image in the window
-  refreshes about once a second (the adapter decodes keyframes only) while the tactile
-  grids keep their usual rate, and each episode's video starts at the first keyframe
+  `--codec`, `--video-quality` and `--fps` do not apply. The window shows what the
+  episode records: both eyes side by side, every frame, at 30 fps, scaled to
+  `--preview-width` (default 1920, so 960 px per eye), so a take with a bad view can be
+  discarded on the spot. `stereo_preview.py` decodes the very H.264 packets the
+  adapter writes, in a separate niced process (about half a core), so neither the
+  recorded files nor the glove readers are affected; if that process cannot keep up it
+  skips to the next keyframe, and if it dies the window falls back to the adapter's own
+  left-eye preview (about once a second) and recording carries on. Each episode's
+  video starts at the first keyframe
   after `g`, up to a second after the gloves; `h` or `x` before that keyframe leaves
   nothing to keep and counts as a discard. The worker's watchdog ends an episode whose
   camera dies or delivers no frame for five seconds (it is recorded as failed, never

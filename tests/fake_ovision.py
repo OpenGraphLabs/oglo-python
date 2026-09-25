@@ -197,6 +197,40 @@ class FakeOvisionStream:
         self.frames += 1
 
 
+class FakeStereoPreview:
+    """What ``stereo_preview.StereoPreview`` offers collect.py, without H.264 or a decoder
+    process: while the stream is live, every ``wait`` hands out a fresh both-eye frame of
+    ``size`` (the real one decodes each packet the adapter reads)."""
+
+    def __init__(self, stream, source_size, width):
+        self.size = (width, round(source_size[1] * width / source_size[0]))
+        self.stream = stream
+        self.error = None
+        self.closed = False
+        self.frames = 0
+        self._latest = None
+
+    @property
+    def running(self):
+        return self.error is None and not self.closed
+
+    @property
+    def latest_frame(self):
+        return self._latest
+
+    def wait(self, timeout):
+        time.sleep(min(timeout, 1 / 200))
+        if not self.stream.capture_ready():
+            return False
+        width, height = self.size
+        self._latest = np.full((height, width, 3), self.frames % 256, dtype=np.uint8)
+        self.frames += 1
+        return True
+
+    def close(self):
+        self.closed = True
+
+
 def fake_stream_class(streams, **defaults):
     """A subclass the SDK worker can derive from (it subclasses ``OvisionCameraStream``);
     every instance gets ``defaults`` and is appended to ``streams``."""
