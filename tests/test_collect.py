@@ -981,12 +981,16 @@ def test_ovision_stereo_preview_shows_both_eyes_and_leaves_the_episode_as_it_was
     episode holds exactly the files and manifest a run without the preview writes."""
     def run(root, previews):
         patch_devices(monkeypatch)
-        patch_ovision(monkeypatch, previews=previews)
+        streams = patch_ovision(monkeypatch, previews=previews)
         shapes = []
 
         class ShapeDisplay(ScriptedDisplay):
             def show(self, image, listen=True):
                 shapes.append(image.shape[:2])
+                # The fake preview refreshes far faster than the stream's keyframes, and a stop
+                # before the first one is a discard: h waits until the camera wrote frames.
+                if listen and self.keys[:1] == ["h"] and streams[-1]._recording and streams[-1].frames < 3:
+                    return -1
                 return super().show(image, listen)
 
         display = ShapeDisplay([None] * 5 + ["g"] + [None] * 15 + ["h"])
