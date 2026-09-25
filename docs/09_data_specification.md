@@ -177,6 +177,17 @@ be at least two. Width includes both eyes for the native OVISION stereo adapter.
 
 Webcams also save `index`, `playback_fps`, `fps_request_accepted`, `backend`, and
 `video_quality` (the CRF / CQ of an ffmpeg codec; `null` for `mp4v`).
+A RealSense D455 (`kind: "realsense"`) also saves `firmware_version`,
+`recommended_firmware_version`, `usb_type`, `physical_port`,
+`pyrealsense2_version`, `accel_hz`, `gyro_hz`, `accel_unit`, `gyro_unit`,
+`accel_samples`, `gyro_samples`, `accel_expected_samples`, `gyro_expected_samples`,
+`accel_max_gap_us`, `gyro_max_gap_us`, `native_frames_dropped`, `device_clock_domain`,
+and `device_clock_unwrapped` (the camera's 32-bit microsecond clock, which wraps every
+71.6 minutes, is saved unwrapped, so its values only increase within a session); the
+path fields name the session-relative
+`realsense.accel.jsonl`, `realsense.gyro.jsonl`, and
+`realsense.calibration.json` files. Keep all
+[RealSense files](../examples/camera_glove/REALSENSE.md#7-files-to-send).
 OVISION also saves `model`, `video_device`, optional `usb_serial`,
 `syncfield_version`, `backend`, `native_stereo_metadata`, `calibration`, `imu`,
 `accel`, `gyro`, `mag`, `sync_point`, `finalization`, `eye_order`, `eye_width`,
@@ -208,12 +219,15 @@ Each line of `camera/timestamps.jsonl` contains:
 | `host_received_ns` | Integer host arrival time |
 | `host_read_started_ns` | OpenCV/FFmpeg read-start time; `null` for native OVISION |
 | `device_timestamp` | Native camera time; `null` for webcam or macOS UVC OVISION |
-| `device_timestamp_unit` | `"ns"` for native OVISION |
-| `device_clock_domain` | `"ovision_camera"` for native OVISION |
-| `device_timestamp_meaning` | `"left_exposure_start"` for native OVISION |
+| `device_timestamp_unit` | `"ns"` for native OVISION; `"us"` for RealSense |
+| `device_clock_domain` | `"ovision_camera"` for native OVISION; `"realsense_hw_clock"` for RealSense |
+| `device_timestamp_meaning` | `"left_exposure_start"` for native OVISION; `"sensor_timestamp"` or `"frame_timestamp"` for RealSense |
 
 Use `null` for unknown native timing. OVISION also includes `native_metadata` and
 `native_frame_number`. The native metadata path is relative to the timestamp file.
+RealSense also includes `native_frame_number`; a RealSense frame with neither
+`sensor_timestamp` nor a hardware-clock `frame_timestamp` gets a `null`
+`device_timestamp`, which fails that episode's completeness check.
 
 ## Read a session
 

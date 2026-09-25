@@ -71,8 +71,10 @@ FIELDS = {
     "fps": "video playback rate (the encoder's, or the requested rate of the OVISION passthrough)",
     "measured_fps": "frames minus one over the first-to-last frame time: the rate actually recorded",
     "width": "video width", "height": "video height", "codec": "video encoder", "video_quality": "CRF / CQ",
-    "camera_kind": "usb_webcam = any camera through OpenCV; ovision = OVISION-EGO-V1 through its native backend",
-    "camera_imu": "true when the episode holds the camera's own IMU file (camera/cam_ego.imu.jsonl)",
+    "camera_kind": "usb_webcam = any camera through OpenCV; ovision = OVISION-EGO-V1 through its native backend; "
+                   "realsense = RealSense D455 through pyrealsense2",
+    "camera_imu": "true when the episode holds the camera's own IMU files (OVISION camera/cam_ego.imu.jsonl; "
+                  "RealSense camera/realsense.accel.jsonl + realsense.gyro.jsonl)",
     "gloves": "per glove: serial, side, fw_rev, stream_clean, tactile / imu / mag rows, hz, dropped",
     "aligned": "alignment.preview.jsonl has one row per frame (always true here)",
     "alignment_max_delta_ms": "the tolerance align.py matched glove rows to frames with",
@@ -264,7 +266,8 @@ def index_row(out, session, manifest):
         "codec": camera.get("codec"),
         "video_quality": camera.get("video_quality"),
         "camera_kind": camera.get("kind"),
-        "camera_imu": bool(camera.get("imu")),  # publishable() saw the file it names
+        # publishable() saw every file these name; RealSense keeps accel and gyro apart.
+        "camera_imu": bool(camera.get("imu") or (camera.get("accel") and camera.get("gyro"))),
         "gloves": [glove_row(entry) for entry in manifest.get("gloves") or []],
         "aligned": True,
         "alignment_max_delta_ms": alignment_tolerance(session),
@@ -341,6 +344,9 @@ CAMERA_SENTENCE = {
                 "the original 3840x1080 H.264 stream at {fps} fps (left | right eye, 1920x1080 each), "
                 "the camera's own IMU (500 Hz accelerometer + gyroscope) and magnetometer, per-eye "
                 "exposure timing and the unit's stereo / IMU calibration"),
+    "realsense": ("an Intel RealSense D455 recorded through pyrealsense2: color video ({size}, {codec} at "
+                  "{fps} fps), the camera's own accelerometer and gyroscope on the camera clock, and the "
+                  "unit's factory color / IMU calibration"),
     "usb_webcam": ("a camera recorded through OpenCV ({size}, {codec} at {fps} fps); "
                    "camera IMU is not recorded on these episodes"),
 }
@@ -353,6 +359,13 @@ CAMERA_LAYOUT = {
         "  camera/cam_ego.calibration.*   this unit's stereo / IMU calibration (json, yaml, raw flash blob)",
         "  camera/timestamps.jsonl        one row per frame: frame_index, host_received_ns, device_timestamp",
         "  camera/sync_point.json, finalization.json   host clock anchor and the capture report",
+    ],
+    "realsense": [
+        "  camera/video.mp4               RealSense color as the encoder named in `codec` wrote it",
+        "  camera/timestamps.jsonl        one row per frame: host_received_ns and device_timestamp (camera clock, us)",
+        "  camera/realsense.accel.jsonl   camera accelerometer (m/s^2) per sample, host + camera time",
+        "  camera/realsense.gyro.jsonl    camera gyroscope (rad/s) per sample, host + camera time",
+        "  camera/realsense.calibration.json   color intrinsics, color-to-IMU extrinsics, firmware",
     ],
     "usb_webcam": [
         "  camera/video.mp4         the video as the encoder named in `codec` wrote it",

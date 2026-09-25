@@ -9,8 +9,11 @@ OGLO Studio is a local web page for recording **two USB OGLO gloves and one came
 | USB webcam on macOS, Windows, or Linux | Video, host timing, both gloves | **Portable source archive** |
 | OVISION on macOS | Both eyes in one video; host timing; both gloves | **Portable source archive** |
 | Native OVISION on Linux | Original stereo video, camera exposure timing, camera IMU, calibration, both gloves | **OG Center sensor source** (experimental) |
+| RealSense D455 on Linux | Video, camera-clock timing, camera IMU, calibration, both gloves | **Portable source archive** or **Annotation handoff**; not **OG Center sensor source** |
 
 For OVISION, **left/right eye selects the preview and review view**. New recordings keep both eyes in the source video. macOS capture cannot save OVISION's native exposure/IMU metadata, so it cannot use the OG Center sensor profile. The Linux native path needs the camera's valid flash calibration and stereo metadata. Its code has simulated-device tests; physical Linux capture is still awaiting validation.
+
+The RealSense D455 path is not yet tested on hardware; its code has simulated-device tests only. Its color frames carry real camera-clock timing, so **Annotation handoff** is available, but it is not an OVISION stereo source, so **OG Center sensor source** stays unavailable for it.
 
 ## Prepare and start
 
@@ -26,7 +29,7 @@ For OVISION, **left/right eye selects the preview and review view**. New recordi
    oglo studio --output ./captures/studio
    ```
 
-   On Windows PowerShell, use `py -3 -m venv .venv`, then activate with `.venv\Scripts\Activate.ps1`. For **native OVISION on Linux**, create the environment with Python 3.12 or newer (for example, `python3.12 -m venv .venv`), install `v4l2-ctl` (`v4l-utils`), and install `'.[studio,studio-ovision]'` in place of `'.[studio]'`.
+   On Windows PowerShell, use `py -3 -m venv .venv`, then activate with `.venv\Scripts\Activate.ps1`. For **native OVISION on Linux**, create the environment with Python 3.12 or newer (for example, `python3.12 -m venv .venv`), install `v4l2-ctl` (`v4l-utils`), and install `'.[studio,studio-ovision]'` in place of `'.[studio]'`. For a **RealSense D455 on Linux** (not yet tested on hardware), install `'.[studio,studio-realsense]'` in place of `'.[studio]'` and complete the udev rules step in the [RealSense guide's install section](../examples/camera_glove/REALSENSE.md#2-install) before connecting the camera.
 
 4. Open **http://127.0.0.1:8765/** in your browser. Keep the terminal running while you collect data.
 
