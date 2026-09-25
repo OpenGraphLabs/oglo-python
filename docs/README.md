@@ -17,6 +17,8 @@ New to OGLO? Start with [installing and reading a glove](../README.md#install).
 | Solve a problem | [Troubleshooting](05_troubleshooting.md) |
 | Check supported versions | [Compatibility](06_compatibility.md) |
 | Test physical gloves | [Acceptance checks](07_acceptance.md) |
+| See completed long recordings and remaining firmware checks | [Firmware status](08_candidate_status.md#firmware-status) |
+| Prepare gloves used by og-skill or SyncField | [Separate collector preparation](10_managed_firmware.md#using-og-skill-syncfield-or-another-collector) |
 | Download and evaluate a candidate build | [Candidate status](08_candidate_status.md) |
 | Look up exact file fields | [Data specification](09_data_specification.md) |
 | Develop or test the SDK | [Contributing](../CONTRIBUTING.md) |
