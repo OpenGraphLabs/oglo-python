@@ -79,14 +79,22 @@ def open_worker(video_device, root, index=0):
 
 def live_frame(stream, preview=None):
     """The newest frame to show: from ``preview`` (both eyes, every frame) while it runs,
-    else the adapter's own left-eye keyframe."""
-    if preview is not None and preview.running:
+    else the adapter's own left-eye keyframe. After the preview failed, the frame the
+    adapter held when the preview took over is stale (its decoder sat idle meanwhile):
+    None until the adapter decodes a new one."""
+    if preview is None:
+        return stream.latest_frame
+    if preview.running:
         return preview.latest_frame
-    return stream.latest_frame
+    frame = stream.latest_frame
+    return None if frame is preview.superseded_frame else frame
 
 
 def wait_frame(stop, preview, timeout):
-    """Until the preview has a new frame, ``stop`` is set, or ``timeout`` passed."""
+    """Until the preview has a new frame, ``stop`` is set, or ``timeout`` passed; at once
+    when ``stop`` is set already (``tick`` just pressed h or x)."""
+    if stop.is_set():
+        return
     if preview is not None and preview.running:
         preview.wait(timeout)
     else:

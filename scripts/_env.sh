@@ -14,16 +14,15 @@ if [ -f "$WORKSTATION" ]; then
     if [ -n "$_shell_repo" ]; then OGLO_HF_REPO="$_shell_repo"; fi
     if [ -n "$_shell_data" ]; then OGLO_DATA="$_shell_data"; fi
 fi
-# The dataset lives beside the checkouts, not inside one: <project>/hf-data, where <project> is
-# the folder that holds the main checkout, so every worktree records into, and uploads and
-# downloads from, the same tree.
-if [ -z "${OGLO_DATA:-}" ]; then
-    _git_common="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-    OGLO_DATA="$(dirname "$(dirname "${_git_common:-$ROOT/.git}")")/hf-data"
-fi
-export OGLO_PYTHON OGLO_CAMERA OGLO_CODEC OGLO_HF_REPO OGLO_DATA
 PY="${OGLO_PYTHON:-$(command -v python3 || true)}"
 [ -n "$PY" ] && [ -x "$PY" ] || { echo "python not found: '${PY}'  (set OGLO_PYTHON in $WORKSTATION)" >&2; exit 1; }
+# The dataset lives beside the checkouts, not inside one: <project>/hf-data, where <project> is
+# the folder that holds the main checkout, so every worktree records into, and uploads and
+# downloads from, the same tree. dataset.py works it out (`dataset.py data-dir`), for itself too.
+if [ -z "${OGLO_DATA:-}" ]; then
+    OGLO_DATA="$("$PY" "$ROOT/examples/camera_glove/dataset.py" data-dir)"
+fi
+export OGLO_PYTHON OGLO_CAMERA OGLO_CODEC OGLO_HF_REPO OGLO_DATA
 # Import oglo from this checkout's src/ even when OGLO_PYTHON's environment has the package
 # installed (editable) from another checkout or worktree, so one environment serves them all.
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"

@@ -12,7 +12,8 @@ readers (align.py is a separate process for the same reason). The recorded packe
 the MP4 and every sidecar are exactly what they were.
 
 When the decoder cannot keep up, packets are dropped up to the next keyframe (an
-H.264 frame needs the ones before it); when it dies, the adapter's own left-eye
+H.264 frame needs the ones before it); when it dies, or takes video for
+``DECODER_STALL_SECONDS`` without returning a frame, the adapter's own left-eye
 keyframe preview takes over again and recording carries on.
 
 Run as a script it is that decoder: length-prefixed Annex B packets on stdin, the
@@ -29,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 import numpy as np
 
@@ -37,28 +39,39 @@ SLOTS = 4  # frames in shared memory; the collector copies the newest before the
 QUEUED_PACKETS = 30  # about a second of video waiting for the decoder before packets are dropped
 NICE = 10  # below the collector and the camera, like align.py
 SHM = "/dev/shm"
+DECODER_STALL_SECONDS = 3.0  # video queued this long with no frame back: the decoder is wedged
+DECODER_START_SECONDS = 10.0  # the same before its first frame, which waits for Python and PyAV to load
 
 
-def preview_size(source, width):
-    """``source`` (w, h) shrunk to ``width`` (never enlarged), aspect kept."""
+def preview_size(source, width, height=None):
+    """``source`` (w, h) shrunk to fit ``width`` x ``height`` (never enlarged), aspect kept."""
     source_w, source_h = source
-    width = min(width, source_w)
-    return width, max(1, round(source_h * width / source_w))
+    scale = min(1.0, width / source_w, (height / source_h) if height else 1.0)
+    if scale >= 1.0:
+        return source_w, source_h
+    return max(1, round(source_w * scale)), max(1, round(source_h * scale))
 
 
 class StereoPreview:
     """Full-rate stereo preview of one ``OvisionCameraStream`` (SyncField 0.8.14).
 
-    ``latest_frame`` is the newest decoded frame, both eyes side by side at ``size``, a
-    fresh array each time (None until the first keyframe); ``wait(timeout)`` returns once
-    a new one is there. ``running`` turns False for good when the decoder failed
-    (``error`` says why); the stream's own preview is back in place by then.
+    ``latest_frame`` is the newest decoded frame, both eyes side by side at ``size``
+    (w, h; ``preview_size`` gives it), a fresh array each time (None until the first
+    keyframe); ``wait(timeout)`` returns once a new one is there. ``decoded`` counts
+    every frame the decoder returned, including those a newer one replaced before it
+    was copied; ``offered_at`` is when the adapter last handed over a packet, the
+    camera's own sign of life whatever the decoder does. ``running`` turns False for
+    good when the decoder failed (``error`` says why); the stream's own preview is back
+    in place by then, and ``superseded_frame`` is the frame that preview held when this
+    one took over: stale from then on, never to be shown as live.
     """
 
-    def __init__(self, stream, source_size, width):
-        self.size = preview_size(source_size, width)
-        w, h = self.size
+    def __init__(self, stream, size):
+        self.size = w, h = size
         self.error = None
+        self.decoded = 0
+        self.offered_at = None
+        self.superseded_frame = stream.latest_frame
         self._stream = stream
         self._frame_bytes = w * h * 3
         self._latest = None
@@ -67,6 +80,7 @@ class StereoPreview:
         self._lock = threading.Lock()
         self._packets = queue.Queue(maxsize=QUEUED_PACKETS)
         self._need_keyframe = True  # H.264 decoding starts at a keyframe, and resumes at one after a drop.
+        self._waiting_since = None  # when the oldest packet queued since the last frame back was queued
         # An unnamed file in RAM, shared by descriptor: nothing to clean up after a crash.
         with tempfile.TemporaryFile(dir=SHM if os.path.isdir(SHM) else None) as memory:
             fd = memory.fileno()
@@ -95,22 +109,37 @@ class StereoPreview:
             return self._latest
 
     def wait(self, timeout):
-        """Block until a frame newer than the last ``wait`` arrived, or ``timeout`` passed."""
+        """Block until a frame newer than the last ``wait`` arrived, or ``timeout`` passed.
+
+        Also the decoder's watchdog: a decoder that is alive but returns nothing for the
+        video it was given (stopped, stuck in libavcodec, starved of CPU) fails the
+        preview here, so the window goes back to the adapter's keyframes instead of
+        freezing, and a camera that still delivers is never taken for a dead one.
+        """
         fresh = self._fresh.wait(timeout)
         self._fresh.clear()
+        since = self._waiting_since
+        limit = DECODER_STALL_SECONDS if self.decoded else DECODER_START_SECONDS
+        if self.running and since is not None and time.monotonic() - since > limit:
+            self._fail(f"preview decoder returned no frame for {limit:g} s of video")
+            self._process.kill()  # Unblocks the feeder; close() reaps it.
         return fresh
 
     def _offer(self, encoded, is_keyframe):
         """Capture thread: queue the packet, never block, never raise."""
+        self.offered_at = time.monotonic()
         if not self.running:
             return
         if self._need_keyframe and not is_keyframe:
             return
         try:
             self._packets.put_nowait(encoded)
-            self._need_keyframe = False
         except queue.Full:
             self._need_keyframe = True
+        else:
+            self._need_keyframe = False
+            if self._waiting_since is None:
+                self._waiting_since = time.monotonic()
 
     def _feed(self):
         """The only writer of the decoder's stdin, and the one that closes it."""
@@ -157,6 +186,8 @@ class StereoPreview:
             frame = self._slots[slot].copy()
             with self._lock:
                 self._latest = frame
+            self.decoded += usable // HEADER.size
+            self._waiting_since = None
             self._fresh.set()
 
     def _fail(self, reason):

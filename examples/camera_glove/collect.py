@@ -74,6 +74,7 @@ WINDOW = "OGLO collect  (g record, h save, x discard, z calibrate, q quit)"
 BACKENDS = ("auto", "opencv", "ovision", "realsense")
 OVISION_IDLE_PERIOD = 0.05  # longest idle wait for a new OVISION preview frame before redrawing anyway
 OVISION_STALL_SECONDS = 5.0  # idle: no new preview frame for this long means the camera stopped
+WATCH_STEP = 1.0  # a stall counts only time spent watching: longer gaps between idle reads count this much
 OVISION_SIZE = (3840, 1080)  # both eyes side by side, the only mode the adapter records
 REALSENSE_IDLE_PERIOD = 0.03  # seconds per idle window refresh from the RealSense worker
 REALSENSE_STALL_SECONDS = 5.0  # idle: no color frame for this long means the camera stopped
@@ -85,7 +86,8 @@ CELL = 18  # pixels per taxel; 3 digits fit, 4 digits shrink
 DISCARDED = "_discarded"  # under <out>/<task>/: episodes ended with x
 FAILED = "_failed"  # under <out>/<task>/: episodes that did not complete or align
 COUNTER = ".next_session"  # under <out>/<task>/: the highest episode number handed out
-PREVIEW_WIDTH = 1920  # on-screen width (OVISION: 960 px per eye); --preview-width; never touches the recording
+PREVIEW_WIDTH = 1920  # on-screen width at most (OVISION: 960 px per eye); --preview-width; never touches the recording
+PREVIEW_HEIGHT = 720  # on-screen height at most: a 16:9 image shows at 1280x720, below a 1080p screen's height
 KEY_START, KEY_SAVE, KEY_DISCARD, KEY_ZERO, KEY_QUIT, KEY_VIEW = (ord(k) for k in "ghxzqc")
 RAW_FULL = 4095.0  # a raw ADC cell saturates at the converter limit (Studio RAW view)
 TEXT_X = 34  # overlay text column on the idle and REC screens; the state dot sits left of it
@@ -119,13 +121,20 @@ class WindowDisplay:
         cv2.destroyAllWindows()
 
 
+def preview_shape(width, height):
+    """``(h, w)`` of a ``width`` x ``height`` camera image in the window."""
+    w, h = stereo_preview.preview_size((width, height), PREVIEW_WIDTH, PREVIEW_HEIGHT)
+    return h, w
+
+
 def fit_preview(image):
-    """A copy of the frame shrunk to PREVIEW_WIDTH for the window (never enlarged)."""
+    """A copy of the frame shrunk to fit PREVIEW_WIDTH x PREVIEW_HEIGHT for the window
+    (never enlarged)."""
     height, width = image.shape[:2]
-    if width <= PREVIEW_WIDTH:
+    shape = preview_shape(width, height)
+    if shape == (height, width):
         return image.copy()
-    size = (PREVIEW_WIDTH, max(1, round(height * PREVIEW_WIDTH / width)))
-    return cv2.resize(image, size, interpolation=cv2.INTER_AREA)
+    return cv2.resize(image, shape[::-1], interpolation=cv2.INTER_AREA)
 
 
 def darken(image, left, top, right, bottom):
@@ -142,29 +151,39 @@ def put_lines(image, lines, origin=(10, 24), color=(255, 255, 255), scale=0.55, 
     A line is a string drawn in ``color``, or a list of segments ``(text, color, bold)``
     drawn one after another; a fourth item ``x`` starts that segment at column ``x`` of
     the image (never over the segment before it), which is how the key hints of the
-    idle and REC screens line up. ``band_left`` extends the band leftwards (the state dot).
+    idle and REC screens line up. A later segment that would run past the right edge
+    starts a row of its own at ``origin``'s column instead (a narrow camera image).
+    ``band_left`` extends the band leftwards (the state dot).
     """
     x0, y0 = origin
     step = int(26 * scale / 0.55)
+    limit = image.shape[1] - 8  # the band's padding still on the image
     placed = []  # (text, colour, thickness, x, y) of every segment
     right = x0
-    for index, line in enumerate(lines):
-        y = y0 + index * step
+    row = -1
+    for line in lines:
+        row += 1
         x = x0
         for text, colour, bold, *column in ([(line, color, False)] if isinstance(line, str) else line):
-            if column:
-                x = max(x + (SEGMENT_GAP if x > x0 else 0), column[0])
             thickness = 2 if bold else 1
-            placed.append((text, colour, thickness, x, y))
-            x += cv2.getTextSize(text, FONT, scale, thickness)[0][0]
-        right = max(right, x)
+            start = max(x + (SEGMENT_GAP if x > x0 else 0), column[0]) if column else x
+            width = cv2.getTextSize(text, FONT, scale, thickness)[0][0]
+            if start > x0 and start + width > limit:
+                row += 1
+                text = text.lstrip()
+                width = cv2.getTextSize(text, FONT, scale, thickness)[0][0]
+                start = x0
+            placed.append((text, colour, thickness, start, y0 + row * step))
+            x = start + width
+            right = max(right, x)
+    rows = row + 1
     if placed:
         darken(image, (x0 if band_left is None else band_left) - 8, y0 - 0.8 * step,
-               right + 8, y0 + (len(lines) - 1) * step + 0.4 * step)
+               right + 8, y0 + (rows - 1) * step + 0.4 * step)
     for text, colour, thickness, x, y in placed:
         cv2.putText(image, text, (x + 1, y + 1), FONT, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
         cv2.putText(image, text, (x, y), FONT, scale, colour, thickness, cv2.LINE_AA)
-    return y0 + len(lines) * step
+    return y0 + rows * step
 
 
 def key_column(cap_seconds, scale=0.55):
@@ -172,19 +191,6 @@ def key_column(cap_seconds, scale=0.55):
     the widest REC timer this session can show."""
     timer = f"REC {cap_seconds:6.1f} s / {cap_seconds:g} s"
     return TEXT_X + cv2.getTextSize(timer, FONT, scale, 1)[0][0] + 3 * SEGMENT_GAP
-
-
-def status_color(status):
-    """``last:`` in the colour of what happened: red failed or refused, yellow discarded
-    (or a number another collector took), green saved or calibrated, white otherwise."""
-    lowered = status.lower()
-    if "failed" in lowered or lowered.startswith("refused"):
-        return RED
-    if "discarded" in lowered or "exists already" in lowered:
-        return YELLOW
-    if lowered.endswith(" ok") or lowered.startswith("calibrated"):
-        return GREEN
-    return WHITE
 
 
 def draw_state_dot(frame, recording):
@@ -210,8 +216,11 @@ def draw_eyes(frame):
     return frame
 
 
-def placeholder(text, size=(720, 1280)):
-    """A dark frame carrying one message, shown while the camera has no image yet."""
+def placeholder(text, size=None):
+    """A dark frame carrying one message, shown while the camera has no image yet.
+    ``size`` is ``(h, w)``, the size of the camera frames around it so the window
+    keeps its size (default 720x1280)."""
+    size = size or (720, 1280)
     image = np.full((*size, 3), 30, dtype=np.uint8)
     put_lines(image, [text], origin=(20, size[0] // 2), color=(0, 220, 255), scale=0.7)
     return image
@@ -220,6 +229,7 @@ def placeholder(text, size=(720, 1280)):
 GRID_GAP = 6  # pixels between the five finger grids
 GRID_W = 5 * 4 * CELL + 4 * GRID_GAP
 GRID_H = 4 * CELL
+GRID_LABEL = 34  # pixels above a grid for the glove label and the finger names
 
 
 def screen_grid(block):
@@ -288,17 +298,22 @@ def paste(image, patch, x, y):
 def draw_gloves(frame, items):
     """Finger grids at the bottom, one block per glove: the left glove in the bottom-left
     corner, the right glove in the bottom-right one, where each hand shows up in an
-    egocentric view.
+    egocentric view. On an image too narrow for both side by side (a 640 px webcam) the
+    right glove's block sits above the left one's instead of covering it.
 
     ``items`` = [(label, values, thr)] or [(label, values, thr, scale)]; ``scale`` is
     the count that saturates a cell (``HEAT_SCALE`` unless given). The label starts with
     the glove's side.
     """
-    y = frame.shape[0] - GRID_H - 10
-    for label, values, thr, *rest in items:
-        side = "left" if label.lower().startswith("l") else "right"
-        x = 10 if side == "left" else frame.shape[1] - GRID_W - 10
-        darken(frame, x - 4, y - 34, x + GRID_W + 4, y)  # under the label and finger names
+    height, width = frame.shape[:2]
+    sides = ["left" if item[0].lower().startswith("l") else "right" for item in items]
+    stacked = len(set(sides)) == 2 and width < 2 * GRID_W + 30
+    for (label, values, thr, *rest), side in zip(items, sides):
+        x = 10 if side == "left" else width - GRID_W - 10
+        y = height - GRID_H - 10
+        if stacked and side == "right":
+            y -= GRID_H + GRID_LABEL + 10
+        darken(frame, x - 4, y - GRID_LABEL, x + GRID_W + 4, y)  # under the label and finger names
         if values is not None:
             paste(frame, finger_grids(values, thr, side, rest[0] if rest else HEAT_SCALE), x, y)
             names = oglo.FINGERS if side == "right" else oglo.FINGERS[::-1]
@@ -362,10 +377,11 @@ class RecordingOverlay:
     saved video is decoded back after the stop, which takes seconds for a long episode.
     """
 
-    def __init__(self, display, control, label, task, cap_seconds, gloves=lambda: ()):
+    def __init__(self, display, control, label, task, cap_seconds, gloves=lambda: (), size=None):
         self._display, self._control = display, control
         self._gloves = gloves  # () -> [(label, (5, 4, 4) values or None)]
         self._label, self._task, self._cap = label, task, cap_seconds
+        self._size = size  # (h, w) of the idle frames, for the placeholder
         self.last = None
         self._started = None
 
@@ -375,7 +391,8 @@ class RecordingOverlay:
         if self._started is None:
             self._started = time.monotonic()
         elapsed = time.monotonic() - self._started
-        frame = self.last if self.last is not None else placeholder("waiting for the first camera keyframe")
+        frame = self.last if self.last is not None else placeholder("waiting for the first camera keyframe",
+                                                                     self._size)
         # Once h or x decided the episode, the window only refreshes (the video check
         # after the stop takes seconds); whatever is typed then is not a second decision.
         key = self._display.show(draw_recording(frame, elapsed, self._cap, self._label,
@@ -462,6 +479,14 @@ class OvisionIdleSource:
     window is paced here. A capture thread that died, an adapter error, or no new frame
     for OVISION_STALL_SECONDS reads as a failed camera (``reason`` says which); the
     Collector then reopens the camera, and ``release`` closes the preview with it.
+
+    While the preview runs, a packet the adapter hands it counts as the camera alive
+    even when no frame comes back: a decoder that stalls is the preview's to give up
+    (it hands the window back to the keyframes), never a reason to reopen the camera.
+    Only time spent reading counts towards the stall: no read happens while an episode
+    records, and the first one after it must not find the camera "silent" for the whole
+    episode. A preview that fails starts the count over, so the adapter's keyframes get
+    their full allowance to take over before anything is reopened.
     """
 
     def __init__(self, worker, period=None, stall_seconds=None, preview=None):
@@ -471,10 +496,24 @@ class OvisionIdleSource:
         self.stall_seconds = OVISION_STALL_SECONDS if stall_seconds is None else stall_seconds
         self.last = None
         self.reason = None
-        self._changed = time.monotonic()
+        self._unseen = 0.0  # seconds watched since the last new frame (or, previewing, packet)
+        self._read_at = None
+        self._offered_at = None
+        self._previewing = self.previewing
+
+    @property
+    def previewing(self):
+        return self.preview is not None and self.preview.running
+
+    @property
+    def shape(self):
+        """``(h, w)`` of the frames this source hands out."""
+        if self.previewing:
+            return self.preview.size[::-1]
+        return preview_shape(OVISION_SIZE[0] // 2, OVISION_SIZE[1])  # the adapter's left eye
 
     def read(self):
-        if self.preview is not None and self.preview.running:
+        if self.previewing:
             self.preview.wait(self.period)
         else:
             time.sleep(self.period)
@@ -486,14 +525,25 @@ class OvisionIdleSource:
             return False, None
         frame = ovision.live_frame(stream, self.preview)
         now = time.monotonic()
-        if frame is not None and frame is not self.last:
-            self.last, self._changed = frame, now
-        elif now - self._changed > self.stall_seconds:
-            kind = "frame" if self.preview is not None and self.preview.running else "keyframe"
-            self.reason = f"no {kind} from the camera for {self.stall_seconds:g} s"
-            return False, None
+        watched = 0.0 if self._read_at is None else min(now - self._read_at, WATCH_STEP)
+        self._read_at = now
+        if self.previewing != self._previewing:  # The preview failed: the keyframes start afresh.
+            self._previewing, self._unseen = self.previewing, 0.0
+        alive = frame is not None and frame is not self.last
+        if alive:
+            self.last = frame
+        if self._previewing and self.preview.offered_at != self._offered_at:
+            self._offered_at, alive = self.preview.offered_at, True
+        if alive:
+            self._unseen = 0.0
+        else:
+            self._unseen += watched
+            if self._unseen > self.stall_seconds:
+                kind = "video" if self._previewing else "keyframe"
+                self.reason = f"no {kind} from the camera for {self.stall_seconds:g} s"
+                return False, None
         if self.last is None:
-            return True, placeholder("waiting for the first camera keyframe")
+            return True, placeholder("waiting for the first camera keyframe", self.shape)
         return True, self.last
 
     def release(self):
@@ -508,7 +558,7 @@ def start_preview(stream):
     """Both eyes at full rate in the window, or None (the left-eye keyframe preview) when
     the decoder process cannot start; the recording never depends on it."""
     try:
-        return stereo_preview.StereoPreview(stream, OVISION_SIZE, PREVIEW_WIDTH)
+        return stereo_preview.StereoPreview(stream, preview_shape(*OVISION_SIZE)[::-1])
     except Exception as exc:
         print(f"stereo preview unavailable ({exc}); the window shows the left eye at keyframes",
               file=sys.stderr, flush=True)
@@ -855,12 +905,29 @@ class Collector:
         self.episodes = []    # dicts: session, complete, outcome (saved / discarded / failed)
         self.unaligned = []   # complete sessions whose alignment Ctrl-C interrupted
         self.interrupted_session = None  # where the episode Ctrl-C ended was moved
-        self.status = "ready"
+        self._status = ("ready", WHITE)  # set_status()
+        self.frame_shape = None  # (h, w) of the idle frames; placeholders take it so the window keeps its size
         self.show_raw = False  # c toggles the grids between raw ADC and counts above zero
         self.reconnect_pause = 1.0  # seconds between connect attempts to a dead device
         self._jobs = queue.Queue()  # saved sessions waiting for alignment
         self._worker = None
         self._stop_worker = False
+
+    @property
+    def status(self):
+        """``last:`` on the idle screen: what happened most recently."""
+        return self._status[0]
+
+    @property
+    def status_color(self):
+        return self._status[1]
+
+    def set_status(self, text, color=WHITE):
+        """``text`` for ``last:``, in the colour of what happened: red failed or refused,
+        yellow discarded (or a number another collector took), green saved or calibrated.
+        Chosen here rather than read back from the text, which carries the task name. One
+        assignment, so the alignment thread never leaves a text with another's colour."""
+        self._status = (text, color)
 
     # devices ---------------------------------------------------------------
 
@@ -915,6 +982,7 @@ class Collector:
         self.worker = ovision.open_worker(self.video_device, self.args.out, self.args.camera)
         self.preview = start_preview(self.worker.stream)
         self.camera = OvisionIdleSource(self.worker, preview=self.preview)
+        self.frame_shape = self.camera.shape
 
     def camera_live(self):
         """The worker has no error and, for OVISION, its capture thread still runs."""
@@ -1026,7 +1094,8 @@ class Collector:
             worker = threading.Thread(target=connect, name="reconnect-camera", daemon=True)
             worker.start()
             while True:  # At least one listening frame per attempt, however fast it fails.
-                frame = placeholder("CAMERA NOT RESPONDING" if attempt > 1 else "Reconnecting the camera...")
+                frame = placeholder("CAMERA NOT RESPONDING" if attempt > 1 else "Reconnecting the camera...",
+                                    self.frame_shape)
                 put_lines(frame, ["Unplug the camera, wait 10 s, plug it back in.  q = quit",
                                   f"reconnect attempt {attempt}   last: {reason}"], color=(0, 80, 255))
                 draw_gloves(frame, self.glove_grids())
@@ -1040,7 +1109,7 @@ class Collector:
             if "error" not in result:
                 if attempt > 1:
                     print("Camera is back.", flush=True)
-                self.status = f"camera reconnected on {self.video_device}"
+                self.set_status(f"camera reconnected on {self.video_device}")
                 return True
             print(f"camera reconnect attempt {attempt} failed: {result['error']}", file=sys.stderr, flush=True)
             self.close_camera()
@@ -1104,7 +1173,9 @@ class Collector:
     def read_frame(self):
         """A display-sized copy; idle frames are never recorded."""
         image, _ = capture.read_camera(self.camera)
-        return fit_preview(image)
+        frame = fit_preview(image)
+        self.frame_shape = frame.shape[:2]
+        return frame
 
     def frame_or_placeholder(self, text):
         """``read_frame`` for a phase that must go on while the camera is dead (a sweep,
@@ -1113,7 +1184,7 @@ class Collector:
         try:
             return self.read_frame()
         except RuntimeError:
-            return placeholder(text)
+            return placeholder(text, self.frame_shape)
 
     def poll_gloves(self):
         """The readers run on their own; surface a glove that stopped answering."""
@@ -1196,7 +1267,7 @@ class Collector:
         lines += [[(self.glove_line(g), WHITE if g.info.zero_valid else RED, False)] for g in self.gloves]
         pending = self._jobs.unfinished_tasks
         lines += [[(f"task: {self.args.task}   next: {next_session.name}   ", WHITE, False),
-                   (f"last: {self.status}", status_color(self.status), False)]
+                   (f"last: {self.status}", self.status_color, False)]
                   + ([(f"   aligning: {pending}", WHITE, False)] if pending else []),
                   self.camera_note]
         put_lines(frame, lines, origin=(TEXT_X, 24), band_left=DOT[0] - 10)
@@ -1250,7 +1321,7 @@ class Collector:
                 self.display.show(frame, listen=False)
             worker.join()
             if "error" in result:
-                self.status = f"{side} zero failed: {result['error']}"
+                self.set_status(f"{side} zero failed: {result['error']}", RED)
                 print(self.status, file=sys.stderr, flush=True)
                 return
             recipe = result["recipe"]
@@ -1262,12 +1333,12 @@ class Collector:
                 else:
                     glove.clean(threshold=self.args.clean)
             except Exception as exc:
-                self.status = f"{side} mode change failed: {exc}"
+                self.set_status(f"{side} mode change failed: {exc}", RED)
                 print(self.status, file=sys.stderr, flush=True)
                 return
             print(f"{side} calibrated: 80 taxels, mode "
                   f"{'CLEAN' if glove.info.stream_clean else 'RAW'} (kept on the glove)", flush=True)
-        self.status = "calibrated " + " + ".join(g.info.side for g in self.gloves)
+        self.set_status("calibrated " + " + ".join(g.info.side for g in self.gloves), GREEN)
 
     def zero_ready(self):
         """g is refused until every glove holds a valid sweep zero.
@@ -1279,7 +1350,7 @@ class Collector:
         missing = [g.info.serial for g in self.gloves if not g.info.zero_valid]
         if not missing:
             return True
-        self.status = f"refused: no zero on {', '.join(missing)} -- press z first"
+        self.set_status(f"refused: no zero on {', '.join(missing)} -- press z first", RED)
         print(self.status, flush=True)
         self.show_for(1.5, ["NOT RECORDING: no sweep zero on " + ", ".join(missing),
                             "press z to calibrate first"], color=(0, 0, 255))
@@ -1298,7 +1369,7 @@ class Collector:
         )
         control = RecordingControl(on_view=self.toggle_view)
         overlay = RecordingOverlay(self.display, control, session.name, self.args.task,
-                                   self.args.seconds, self.glove_grids)
+                                   self.args.seconds, self.glove_grids, size=self.frame_shape)
         if self.args.camera_backend == "realsense":
             def camera_factory(args, output):
                 return realsense.RealSenseCapture(args, output, worker=self.worker, tick=overlay.show,
@@ -1328,7 +1399,8 @@ class Collector:
             if Path(exc.filename or "") != session:
                 failure = exc
             else:  # Another collector on the same --out took the number first. Nothing of ours to move.
-                self.status = f"{session.name} exists already (another collector writing to {self.args.out}?)"
+                self.set_status(f"{session.name} exists already (another collector writing to "
+                                f"{self.args.out}?)", YELLOW)
                 print(self.status, file=sys.stderr, flush=True)
                 self.start_readers()
                 return True
@@ -1343,7 +1415,7 @@ class Collector:
         elif control.outcome == "discard":
             self.discard(session)
         else:
-            self.status = f"{session.name} aligning..."
+            self.set_status(f"{session.name} aligning...")
             self._jobs.put(session)
         if failure is not None:  # The camera or a glove may be the cause; start over with fresh handles.
             if not self.recover_camera():
@@ -1363,14 +1435,14 @@ class Collector:
 
     def discard(self, session, reason=None):
         target = self.set_aside(session, DISCARDED)
-        self.status = f"{session.name} discarded" + (f": {reason}" if reason else "")
+        self.set_status(f"{session.name} discarded" + (f": {reason}" if reason else ""), YELLOW)
         self.episodes.append({"session": target, "complete": False, "outcome": "discarded"})
         print(f"{self.status} -> {target}", flush=True)
 
     def fail(self, session, error, stage="capture"):
         """A capture or alignment error: keep the files for diagnosis, out of the dataset."""
         target = self.set_aside(session, FAILED)
-        self.status = f"{session.name} {stage} FAILED: {error}"
+        self.set_status(f"{session.name} {stage} FAILED: {error}", RED)
         self.episodes.append({"session": target, "complete": False, "outcome": "failed"})
         print(f"{self.status} -> {target}", file=sys.stderr, flush=True)
         return target
@@ -1416,7 +1488,7 @@ class Collector:
                          f"(hit {hit.get('tactile', 0):.0%}), imu "
                          f"{summary.get('imu', {}).get('n', '?')} rows (hit {hit.get('imu', 0):.0%})")
         self.episodes.append({"session": session, "complete": True, "outcome": "saved"})
-        self.status = f"{session.name} ok"
+        self.set_status(f"{session.name} ok", GREEN)
         print("; ".join(parts), flush=True)
 
     # background alignment ----------------------------------------------------
@@ -1591,7 +1663,11 @@ def build_parser():
                         help="record even when a glove shares a USB controller with the camera "
                              "(the glove then stops answering now and then; replug to recover)")
     parser.add_argument("--preview-width", type=int, default=PREVIEW_WIDTH, metavar="PX",
-                        help="on-screen window width in pixels; the recording keeps the camera's full size")
+                        help="largest on-screen image width in pixels (default: 1920, both OVISION eyes at "
+                             "960 px each); the recording keeps the camera's full size")
+    parser.add_argument("--preview-height", type=int, default=PREVIEW_HEIGHT, metavar="PX",
+                        help="largest on-screen image height in pixels (default: 720, so a 16:9 image "
+                             "shows at 1280x720 and the window fits a 1080p screen)")
     return parser
 
 
@@ -1605,8 +1681,14 @@ def main(argv=None):
         raise SystemExit("--sweep must be 1..30 seconds")
     if args.preview_width < 160:
         raise SystemExit("--preview-width must be at least 160")
-    global PREVIEW_WIDTH
-    PREVIEW_WIDTH = args.preview_width
+    if args.preview_height < 120:
+        raise SystemExit("--preview-height must be at least 120")
+    global PREVIEW_WIDTH, PREVIEW_HEIGHT
+    PREVIEW_WIDTH, PREVIEW_HEIGHT = args.preview_width, args.preview_height
+    problem = dataset.unmoved_recordings(args.out)
+    if problem:
+        print(problem, file=sys.stderr, flush=True)
+        return 2
     if not 0 <= args.video_quality <= 51:
         raise SystemExit("--video-quality must be 0..51")
     try:

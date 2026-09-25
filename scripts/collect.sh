@@ -9,7 +9,8 @@
 # camera's V4L2 name, because /dev/video numbers change across reboots), --codec $OGLO_CODEC
 # for the OpenCV backend, --out $OGLO_DATA (default <project>/hf-data, beside the checkouts; see
 # _env.sh). The variables come from scripts/workstation.env (see workstation.env.example); without
-# them the camera is index 0 and the codec collect.py's default.
+# them the camera is index 0 and the codec collect.py's default. collect.py refuses that default
+# folder while a checkout's captures/ (the default before it) still holds episodes: move them first.
 # If dialout was added with usermod but you have not re-logged in, this re-runs itself
 # under `sg dialout` so the glove port opens anyway.
 set -euo pipefail

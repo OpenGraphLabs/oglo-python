@@ -29,7 +29,15 @@ Both root files are derived from the manifests, so they are regenerated rather
 than maintained. The Hub skips files whose content did not change, so running the
 upload after a session only transfers the new episodes. Files deleted locally stay
 on the Hub until removed there (``hf repos delete-files``); their episode numbers
-are never reused by collect.py.
+are never reused by collect.py. An episode whose folder on the Hub holds another
+recording (the Hub's index names another start time: a second machine, or numbers
+that started over) is refused rather than mixed into it. ``download`` fills the
+folder from the Hub and rebuilds the two root files from what it then holds.
+
+The default folder is ``$OGLO_DATA``, else ``hf-data`` beside the main checkout, which
+every worktree shares (``data-dir`` prints it). While the old default, a checkout's
+``captures/``, still holds episodes, recording or uploading with the default refuses:
+numbering in the new folder would start over and overwrite the old episodes on the Hub.
 
 The Hub repo comes from ``--repo`` or ``$OGLO_HF_REPO`` (``scripts/workstation.env``).
 It must be private: ``hf upload --private`` only applies to a repo it creates, so
@@ -53,7 +61,9 @@ import urllib.request
 from uuid import uuid4
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_OUT = Path(os.environ.get("OGLO_DATA") or HERE.parent.parent / "captures")  # scripts/_env.sh sets it
+CHECKOUT = HERE.parent.parent
+OLD_OUT = "captures"  # the scripts' dataset folder inside each checkout before <project>/hf-data
+COUNTER = ".next_session"  # collect.py's per-task counter: a task folder holds recordings
 DEFAULT_REPO = os.environ.get("OGLO_HF_REPO")  # workstation configuration; --repo overrides
 INDEX = "episodes.jsonl"
 CARD = "README.md"
@@ -99,6 +109,66 @@ def atomic_text(path, text):
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+# -- where the dataset lives ------------------------------------------------------
+
+def checkouts(root=CHECKOUT):
+    """This repository's checkouts, the main one first: the worktrees ``git worktree list``
+    names, led by the one whose ``.git`` is a folder (the checkout that holds the
+    repository). Without such a checkout (``--separate-git-dir``, a submodule, a bare
+    repository: git then lists the repository folder itself as the main worktree)
+    ``root`` leads; ``root`` alone when it is not the top of a git checkout of its own
+    (a source tree unpacked on its own or inside another repository) or git does not run."""
+    root = Path(root).resolve()
+
+    def git(*args):
+        try:
+            done = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return done.stdout if done.returncode == 0 else None
+
+    top = git("rev-parse", "--show-toplevel")
+    if top is None or Path(top.strip()).resolve() != root:
+        return [root]
+    trees = [Path(line[len("worktree "):]).resolve()
+             for line in (git("worktree", "list", "--porcelain") or "").splitlines() if line.startswith("worktree ")]
+    main = next((tree for tree in trees if (tree / ".git").is_dir()), root)
+    return [main] + [tree for tree in trees if tree != main]
+
+
+def default_out():
+    """``$OGLO_DATA``, else ``hf-data`` beside the main checkout: one dataset folder for
+    the main checkout and all its worktrees, inside none of them."""
+    return Path(os.environ.get("OGLO_DATA") or checkouts()[0].parent / "hf-data")
+
+
+def unmoved_recordings(out):
+    """Why the default dataset folder ``out`` must not be recorded into or uploaded yet,
+    or None: episodes are still in a checkout's ``captures/``, the default before. The
+    numbering in ``out`` cannot see them and would hand their numbers out again, and the
+    upload would put the new episodes into the old ones' folders on the Hub. An ``--out``
+    given by hand is not checked."""
+    out = Path(out).resolve()
+    if out != default_out().resolve():
+        return None
+    left = []
+    for tree in checkouts():
+        folder = tree / OLD_OUT
+        if not folder.is_dir() or folder.resolve() == out:
+            continue
+        for task in folder.iterdir():
+            if task.is_dir() and ((task / COUNTER).exists() or any(
+                    re.fullmatch(re.escape(task.name) + r"_\d{3,}", child.name) for child in task.iterdir())):
+                left.append(str(folder))
+                break
+    if not left:
+        return None
+    return (f"episodes recorded before the dataset moved to {out} are still in {', '.join(left)}. "
+            f"Move those task folders into {out} first (a task in both: merge it by hand and keep the "
+            f"higher {COUNTER}); otherwise its numbers start over at _001 there and the upload puts the "
+            f"new episodes into the old ones on the Hub. Or set OGLO_DATA to that folder.")
 
 
 # -- index -------------------------------------------------------------------------
@@ -610,6 +680,63 @@ def repo_visibility(repo):
     return "private" if info.get("private") else "public"
 
 
+def hub_index(repo):
+    """The rows of ``episodes.jsonl`` on the Hub, [] when the repo has none or is not
+    there (yet). Raises OSError when the Hub cannot be asked."""
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
+    request = urllib.request.Request(f"{endpoint}/datasets/{repo}/resolve/main/{INDEX}")
+    token = hf_token()
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            text = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403, 404):
+            return []
+        raise
+    rows = []
+    for line in text.splitlines():
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def hub_collisions(rows, hub_rows):
+    """Paths of the local episodes whose folder on the Hub holds another recording: the
+    Hub's index row for that path names another start time. Uploading would overwrite
+    that episode's files with these and leave the rest of it in place."""
+    def instant(text):
+        try:
+            return datetime.fromisoformat(text)
+        except (TypeError, ValueError):
+            return None
+
+    theirs = {row.get("path"): instant(row.get("recorded_at")) for row in hub_rows}
+    clashes = []
+    for row in rows:
+        if row["path"] in theirs:
+            ours, hub = instant(row["recorded_at"]), theirs[row["path"]]
+            if ours is not None and hub is not None and ours != hub:
+                clashes.append(row["path"])
+    return clashes
+
+
+def hf_problem(verb, flag):
+    """Why the hf CLI cannot run ``verb`` safely, or None: it must run, and be 1.0 or newer,
+    since older ones keep only the last of repeated ``flag`` options."""
+    version = hf_version()
+    if version is None:
+        return (f"{hf_cli()} does not run; install huggingface_hub>=1.0 "
+                "(uv tool install 'huggingface_hub[cli]') or set HF_CLI")
+    if version < (1, 0, 0):
+        return (f"hf {'.'.join(map(str, version))} keeps only the last {flag} and would {verb} "
+                "everything; install huggingface_hub>=1.0")
+    return None
+
+
 def preflight(repo):
     """Why the upload must not start, or None.
 
@@ -618,13 +745,9 @@ def preflight(repo):
     would receive the recordings as they are: ``--private`` only applies to a repo hf
     creates itself.
     """
-    version = hf_version()
-    if version is None:
-        return (f"{hf_cli()} does not run; install huggingface_hub>=1.0 "
-                "(uv tool install 'huggingface_hub[cli]') or set HF_CLI")
-    if version < (1, 0, 0):
-        return (f"hf {'.'.join(map(str, version))} keeps only the last --include and would upload "
-                "everything; install huggingface_hub>=1.0")
+    problem = hf_problem("upload", "--include")
+    if problem:
+        return problem
     try:
         visibility = repo_visibility(repo)
     except OSError as exc:
@@ -639,13 +762,19 @@ def upload(out, repo=DEFAULT_REPO, dry_run=False, message=None):
     """Index, then push the tree. Returns the exit code of ``hf upload`` (0 on a dry run).
 
     Refuses while anything under a task folder is not a publishable episode or belongs
-    to no indexed episode, while the hf CLI is too old, and while the repo is public.
+    to no indexed episode, while the hf CLI is too old, while the repo is public, while
+    an episode's folder on the Hub holds another recording, and while the default
+    folder's older episodes still sit in a checkout's ``captures/``.
     """
     if not repo:
         print("no Hub repo: pass --repo or set OGLO_HF_REPO (scripts/workstation.env)",
               file=sys.stderr, flush=True)
         return 2
     out = Path(out).resolve()
+    problem = unmoved_recordings(out)
+    if problem:
+        print(problem, file=sys.stderr, flush=True)
+        return 1
     rows, held = scan(out)
     write_files(out, rows)
     if held:
@@ -664,6 +793,17 @@ def upload(out, repo=DEFAULT_REPO, dry_run=False, message=None):
     problem = preflight(repo)
     if problem:
         print(problem, file=sys.stderr, flush=True)
+        return 1
+    try:
+        clashes = hub_collisions(rows, hub_index(repo))
+    except OSError as exc:
+        print(f"cannot read {INDEX} on {repo} ({exc}); not uploading", file=sys.stderr, flush=True)
+        return 1
+    if clashes:
+        print("refusing to upload: on the Hub these episode folders hold other recordings (the Hub's "
+              f"{INDEX} names another start time), which this upload would mix into:\n  " + "\n  ".join(clashes)
+              + "\nMove them out of their task folder (a _-prefixed folder such as <task>/_held/ stays "
+              "local) and compare them with the Hub before they get new numbers.", file=sys.stderr, flush=True)
         return 1
     files = upload_files(out, rows)
     tasks = {row["task_slug"] for row in rows}
@@ -691,29 +831,73 @@ def upload(out, repo=DEFAULT_REPO, dry_run=False, message=None):
     return 0
 
 
+# -- download ----------------------------------------------------------------------
+
+def download(out, repo=DEFAULT_REPO, options=()):
+    """``hf download`` the repo into ``out``, then rebuild the index and card from what the
+    folder holds. The Hub's two root files are not fetched: both are derived from the
+    manifests, and rebuilt here they list exactly the episodes this folder has. hf
+    overwrites a local file that differs from the Hub's. ``options`` pass on to hf
+    (``--include "<task>/*"``). Returns hf's exit code."""
+    if not repo:
+        print("no Hub repo: pass --repo or set OGLO_HF_REPO (scripts/workstation.env)",
+              file=sys.stderr, flush=True)
+        return 2
+    problem = hf_problem("download", "--exclude")
+    if problem:
+        print(problem, file=sys.stderr, flush=True)
+        return 1
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    command = [hf_cli(), "download", repo, "--repo-type", "dataset", "--local-dir", str(out),
+               "--exclude", INDEX, "--exclude", CARD, *options]
+    print("  " + " ".join(shlex.quote(part) for part in command), flush=True)
+    code = subprocess.run(command).returncode
+    if code:
+        return code
+    rows = write_index(out)
+    print(f"{len(rows)} episodes indexed: {out / INDEX} and {out / CARD}", flush=True)
+    return 0
+
+
 # -- CLI ---------------------------------------------------------------------------
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
+    out_help = "dataset root (default: $OGLO_DATA, else hf-data beside the main checkout)"
+    repo_help = "Hub dataset repo (default: $OGLO_HF_REPO" + (f" = {DEFAULT_REPO})" if DEFAULT_REPO else ", unset)")
     index = commands.add_parser("index", help="rewrite episodes.jsonl and README.md from the manifests")
-    index.add_argument("--out", type=Path, default=DEFAULT_OUT, help=f"dataset root (default: {DEFAULT_OUT})")
+    index.add_argument("--out", type=Path, help=out_help)
     push = commands.add_parser("upload", help="index, then hf upload the indexed episodes and the index")
-    push.add_argument("--out", type=Path, default=DEFAULT_OUT, help=f"dataset root (default: {DEFAULT_OUT})")
-    push.add_argument("--repo", default=DEFAULT_REPO,
-                      help="Hub dataset repo (default: $OGLO_HF_REPO" + (f" = {DEFAULT_REPO})" if DEFAULT_REPO else ", unset)"))
+    push.add_argument("--out", type=Path, help=out_help)
+    push.add_argument("--repo", default=DEFAULT_REPO, help=repo_help)
     push.add_argument("--dry-run", action="store_true", help="index and show what would be sent, send nothing")
     push.add_argument("--message", help="commit message (default: episode and task counts)")
+    pull = commands.add_parser("download", help="hf download the repo into the dataset root, then index it; "
+                                                "other hf download options (--include) pass through")
+    pull.add_argument("--out", type=Path, help=out_help)
+    pull.add_argument("--repo", default=DEFAULT_REPO, help=repo_help)
+    commands.add_parser("data-dir", help="print the default dataset root")
     return parser
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
-    if not args.out.is_dir():
-        print(f"{args.out} is not a folder; record something with collect.py first", file=sys.stderr)
-        return 2
+    parser = build_parser()
+    args, extra = parser.parse_known_args(argv)
+    if extra and args.command != "download":
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
+    if args.command == "data-dir":
+        print(default_out(), flush=True)
+        return 0
+    args.out = args.out or default_out()
     try:
+        if args.command == "download":
+            return download(args.out, args.repo, extra)
+        if not args.out.is_dir():
+            print(f"{args.out} is not a folder; record something with collect.py first", file=sys.stderr)
+            return 2
         if args.command == "index":
             rows = write_index(args.out)
             print(f"{len(rows)} episodes indexed: {args.out / INDEX} and {args.out / CARD}", flush=True)

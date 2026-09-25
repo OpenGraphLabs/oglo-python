@@ -182,7 +182,17 @@ and `hf_download.sh` fills it, so a worktree can be removed without losing data:
   hf-data/          $OGLO_DATA: recordings, and the Hub repo's local copy
 ```
 
-`OGLO_DATA` in `scripts/workstation.env` (or the shell) moves it elsewhere.
+`OGLO_DATA` in `scripts/workstation.env` (or the shell) moves it elsewhere;
+`dataset.py data-dir` prints the folder in use. A checkout whose repository lives
+elsewhere (`--separate-git-dir`, a submodule) or a source tree without one gets its
+`hf-data/` beside itself.
+
+Before, the scripts recorded into each checkout's own `captures/`. While one of them
+still holds episodes, `collect.sh` and `hf_upload.sh` refuse the default folder and name
+it: numbering in `hf-data/` cannot see those episodes, so it would start again at `_001`
+and the upload would put the new episodes into the old ones' folders on the Hub. Move
+the task folders into `hf-data/` (a task in both: merge it by hand and keep the higher
+`.next_session`), or set `OGLO_DATA` to the old folder.
 
 The scripts also put the checkout's own `src/` first on `PYTHONPATH`, so one
 environment serves every checkout and worktree, whichever of them it was installed
@@ -236,7 +246,7 @@ IMU, calibration, clock anchor and capture report), its glove folders present, a
 `alignment.preview.jsonl` with exactly one row per decoded frame (`align.py` publishes
 that file in one step, exclusively, so a partial or half-overwritten one never exists).
 That one test decides what `episodes.jsonl` lists and what may leave the machine:
-`dataset.py index --out ../hf-data` rebuilds the index from the publishable episodes and
+`dataset.py index` rebuilds the index of `hf-data/` from the publishable episodes and
 names every folder it held back; `scripts/hf_upload.sh` (`--dry-run` to list first)
 refuses while any folder under a task is not a publishable episode or any file under
 a task belongs to no indexed episode, then runs `hf upload` twice: first the indexed
@@ -245,15 +255,19 @@ meanwhile is not swept up), then `episodes.jsonl` and `README.md`, so the index 
 Hub never lists an episode whose files are not there yet. The repo comes from
 `OGLO_HF_REPO` in `scripts/workstation.env` (or `--repo`) and must be private: `hf
 upload --private` only applies to a repo it creates, so an existing public repo is
-refused before anything is sent. Needs `hf` 1.0 or newer (older ones keep only the last
-`--include`); the logged-in token needs write access to that repo's organization.
-Files deleted locally stay on the Hub until removed there.
+refused before anything is sent. So is an episode whose folder on the Hub holds another
+recording (the Hub's `episodes.jsonl` names another start time for it: a second machine
+that recorded the task without downloading first, or numbers that started over), which
+the upload would otherwise mix into that folder. Needs `hf` 1.0 or newer (older ones
+keep only the last `--include`); the logged-in token needs write access to that repo's
+organization. Files deleted locally stay on the Hub until removed there.
 
-`scripts/hf_download.sh` pulls the repo into the same folder, on a new machine or
-after another one uploaded; `hf download` options such as `--include "<task>/*"` pass
-through. It skips `episodes.jsonl` and `README.md`, which `dataset.py` derives from the
-manifests (run `dataset.py index` or the next upload to rebuild them), and overwrites
-local files that differ from the Hub, so upload first on a machine that records.
+`scripts/hf_download.sh` (`dataset.py download`) pulls the repo into the same folder, on
+a new machine or after another one uploaded; `hf download` options such as
+`--include "<task>/*"` pass through. It skips the Hub's `episodes.jsonl` and `README.md`
+and rebuilds both from the manifests that are then in the folder, so they list exactly
+the episodes it holds. It overwrites local files that differ from the Hub, so upload
+first on a machine that records. Needs `hf` 1.0 or newer, like the upload.
 
 ### Camera backend and the camera IMU
 
@@ -271,13 +285,15 @@ local files that differ from the Hub, so upload first on a machine that records.
   [OVISION.md](OVISION.md) describes them. Needs Linux and
   `pip install -r examples/camera_glove/requirements-ovision.txt` (SyncField 0.8.14).
   `--codec`, `--video-quality` and `--fps` do not apply. The window shows what the
-  episode records: both eyes side by side, every frame, at 30 fps, scaled to
-  `--preview-width` (default 1920, so 960 px per eye), so a take with a bad view can be
-  discarded on the spot. `stereo_preview.py` decodes the very H.264 packets the
-  adapter writes, in a separate niced process (about half a core), so neither the
-  recorded files nor the glove readers are affected; if that process cannot keep up it
-  skips to the next keyframe, and if it dies the window falls back to the adapter's own
-  left-eye preview (about once a second) and recording carries on. Each episode's
+  episode records: both eyes side by side, every frame, at 30 fps, scaled to fit
+  `--preview-width` x `--preview-height` (default 1920 x 720, so 960 px per eye), so a
+  take with a bad view can be discarded on the spot. `stereo_preview.py` decodes the
+  very H.264 packets the adapter writes, in a separate niced process (about half a
+  core), so neither the recorded files nor the glove readers are affected; if that
+  process cannot keep up it skips to the next keyframe, and if it dies, or takes video
+  for three seconds without returning a frame, the window falls back to the adapter's
+  own left-eye preview (about once a second, shown at 1280x720) and recording carries
+  on. Only a camera that sends nothing is reopened. Each episode's
   video starts at the first keyframe
   after `g`, up to a second after the gloves; `h` or `x` before that keyframe leaves
   nothing to keep and counts as a discard. The worker's watchdog ends an episode whose

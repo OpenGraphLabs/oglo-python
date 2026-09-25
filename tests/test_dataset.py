@@ -1,7 +1,11 @@
 """dataset.py: the episode index, the dataset card, and the upload commands."""
 
+from datetime import datetime, timedelta, timezone
 import json
+import os
+from pathlib import Path
 import subprocess
+import urllib.error
 
 import pytest
 
@@ -13,10 +17,14 @@ dataset = load_example("dataset")
 
 
 @pytest.fixture(autouse=True)
-def hub_checks(monkeypatch):
-    """The upload preflight asks the hf CLI and the Hub; tests answer for them."""
+def hub_checks(monkeypatch, tmp_path):
+    """The upload preflight asks the hf CLI and the Hub; tests answer for them. The default
+    dataset folder is one no test uploads from, so the check for episodes left in the old
+    one does not look at this machine's checkouts."""
+    monkeypatch.setenv("OGLO_DATA", str(tmp_path / "default-hf-data"))
     monkeypatch.setattr(dataset, "hf_version", lambda: (1, 28, 0))
     monkeypatch.setattr(dataset, "repo_visibility", lambda repo: "private")
+    monkeypatch.setattr(dataset, "hub_index", lambda repo: [])
 
 
 def test_index_lists_saved_episodes_only(tmp_path, monkeypatch):
@@ -445,3 +453,179 @@ def test_a_realsense_episode_missing_its_gyro_file_is_held(tmp_path, capsys):
     (out / "pick" / "pick_001" / "camera" / "realsense.gyro.jsonl").unlink()
     assert dataset.write_index(out) == []
     assert "camera gyro file missing: camera/realsense.gyro.jsonl" in capsys.readouterr().err
+
+
+# -- where the dataset lives ------------------------------------------------------------
+
+def git(*args, cwd=None):
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+               GIT_COMMITTER_EMAIL="t@t")
+    subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True)
+
+
+def test_the_dataset_folder_sits_beside_the_main_checkout_in_any_layout(tmp_path, monkeypatch):
+    """Worktrees share the main checkout's; a checkout whose repository lives elsewhere
+    (--separate-git-dir, a submodule) and a source tree without a repository of its own
+    (even inside another one) get theirs beside themselves, never inside a .git folder."""
+    monkeypatch.delenv("OGLO_DATA", raising=False)
+    git("init", "-q", str(tmp_path / "proj" / "main"))
+    git("commit", "-q", "--allow-empty", "-m", "x", cwd=tmp_path / "proj" / "main")
+    git("worktree", "add", "-q", str(tmp_path / "proj" / "task"), cwd=tmp_path / "proj" / "main")
+    git("init", "-q", "--separate-git-dir", str(tmp_path / "gitdir"), str(tmp_path / "sep" / "checkout"))
+    git("init", "-q", str(tmp_path / "outer"))
+    (tmp_path / "outer" / "unpacked").mkdir()
+    (tmp_path / "plain" / "tree").mkdir(parents=True)
+    for root, data in [("proj/main", "proj"), ("proj/task", "proj"), ("sep/checkout", "sep"),
+                       ("outer/unpacked", "outer"), ("plain/tree", "plain")]:
+        main = dataset.checkouts(tmp_path / root)[0]
+        assert main.parent / "hf-data" == (tmp_path / data / "hf-data").resolve(), root
+    trees = [(tmp_path / "proj" / name).resolve() for name in ("main", "task")]
+    assert dataset.checkouts(tmp_path / "proj" / "task") == trees
+    monkeypatch.setattr(dataset, "checkouts", lambda root=None: [tmp_path / "proj" / "main"])
+    assert dataset.default_out() == tmp_path / "proj" / "hf-data"
+    monkeypatch.setenv("OGLO_DATA", str(tmp_path / "elsewhere"))
+    assert dataset.default_out() == tmp_path / "elsewhere"
+
+
+def old_default_layout(tmp_path, monkeypatch):
+    """A project whose main checkout still holds episodes in captures/, the scripts' folder
+    before hf-data; the worktree beside it has a Studio recording there, which is not one."""
+    monkeypatch.delenv("OGLO_DATA", raising=False)
+    main, task = tmp_path / "proj" / "main", tmp_path / "proj" / "task"
+    minimal_tree(main / "captures")
+    (task / "captures" / "studio" / "session_1").mkdir(parents=True)
+    for module in (dataset, collect.dataset):  # collect.py loads a copy of its own.
+        monkeypatch.setattr(module, "checkouts", lambda root=None: [main, task])
+    return tmp_path / "proj" / "hf-data", main / "captures"
+
+
+def test_the_default_folder_is_refused_while_the_old_one_still_holds_episodes(tmp_path, monkeypatch, capsys):
+    """Numbering in the new folder cannot see the old episodes: pick_001 would be handed
+    out again and uploaded into the Hub's pick_001."""
+    out, old = old_default_layout(tmp_path, monkeypatch)
+    problem = dataset.unmoved_recordings(out)
+    assert str(old) in problem and str(out) in problem and "studio" not in problem
+    assert dataset.unmoved_recordings(tmp_path / "chosen") is None  # An --out given by hand is the caller's.
+    minimal_tree(out)
+    monkeypatch.setattr(dataset.subprocess, "run", lambda *a, **k: pytest.fail("must not upload"))
+    assert dataset.upload(out, "me/test", dry_run=True) == 1
+    assert str(old) in capsys.readouterr().err
+    (old / "pick" / ".next_session").unlink()  # Numbered episode folders alone count too.
+    assert dataset.unmoved_recordings(out) is not None
+    old.rename(old.with_name("captures.old"))  # Moved away: nothing left in the old place.
+    assert dataset.unmoved_recordings(out) is None
+    assert dataset.upload(out, "me/test", dry_run=True) == 0
+
+
+def test_collect_refuses_the_default_folder_while_the_old_one_holds_episodes(tmp_path, monkeypatch, capsys):
+    out, old = old_default_layout(tmp_path, monkeypatch)
+    monkeypatch.setattr(collect, "resolve_camera", lambda camera: (0, None))
+    monkeypatch.setattr(collect, "Collector", lambda args: pytest.fail("must not record"))
+    assert collect.main(["--out", str(out), "--task", "pick", "--skip-doctor", "--camera-backend", "opencv"]) == 2
+    assert str(old) in capsys.readouterr().err
+
+
+def test_an_episode_whose_hub_folder_holds_another_recording_is_not_uploaded(tmp_path, monkeypatch, capsys):
+    out = tmp_path / "hf-data"
+    minimal_tree(out)
+    write_episode(out / "pick" / "pick_001", {**webcam_manifest(), "started_wall_time_ns": 1_700_000_000_000_000_000},
+                  frames=1)
+    rows, _ = dataset.scan(out)
+    (row,) = rows
+    ours = datetime.fromisoformat(row["recorded_at"])
+    same_instant_elsewhere = ours.astimezone(timezone(timedelta(hours=-7))).isoformat()
+    hub = [{"path": "pick/pick_001", "recorded_at": same_instant_elsewhere},
+           {"path": "pick/pick_009", "recorded_at": "2020-01-01T00:00:00+00:00"}]
+    monkeypatch.setattr(dataset, "hub_index", lambda repo: hub)
+    assert dataset.upload(out, "me/test", dry_run=True) == 0  # The same recording, indexed in another time zone.
+    other = (ours + timedelta(days=3)).isoformat()
+    monkeypatch.setattr(dataset, "hub_index", lambda repo: [{"path": "pick/pick_001", "recorded_at": other}])
+    monkeypatch.setattr(dataset.subprocess, "run", lambda *a, **k: pytest.fail("must not upload"))
+    assert dataset.upload(out, "me/test", dry_run=True) == 1
+    assert "pick/pick_001" in capsys.readouterr().err
+
+    def unreachable(repo):
+        raise OSError("timed out")
+
+    monkeypatch.setattr(dataset, "hub_index", unreachable)
+    assert dataset.upload(out, "me/test", dry_run=True) == 1
+    assert "cannot read episodes.jsonl on me/test" in capsys.readouterr().err
+
+
+def test_hub_index_reads_the_rows_or_nothing(monkeypatch):
+    answers = []
+
+    class Response:
+        def __init__(self, text):
+            self.text = text
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return self.text.encode()
+
+    def urlopen(request, timeout):
+        answers.append(request.full_url)
+        answer = answers_to_give.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return Response(answer)
+
+    monkeypatch.undo()  # The autouse fixture stubs hub_index; this test wants the real one.
+    monkeypatch.setattr(dataset.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(dataset, "hf_token", lambda: "tok")
+    answers_to_give = ['{"path": "a/a_001", "recorded_at": "x"}\nnot json\n',
+                       urllib.error.HTTPError("u", 404, "Not Found", {}, None),
+                       urllib.error.HTTPError("u", 500, "Server Error", {}, None)]
+    assert dataset.hub_index("org/data") == [{"path": "a/a_001", "recorded_at": "x"}]
+    assert answers[0].endswith("/datasets/org/data/resolve/main/episodes.jsonl")
+    assert dataset.hub_index("org/data") == []  # No index yet, or no repo yet.
+    with pytest.raises(OSError):
+        dataset.hub_index("org/data")
+
+
+def test_download_fetches_the_repo_without_its_derived_files_and_indexes_it(tmp_path, monkeypatch, capsys):
+    out = tmp_path / "hf-data"
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        minimal_tree(out)  # What the Hub holds arrives.
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(dataset.subprocess, "run", run)
+    monkeypatch.setenv("HF_CLI", "/opt/fake/hf")
+    assert dataset.main(["download", "--out", str(out), "--repo", "me/test", "--include", "pick/*"]) == 0
+    (command,) = calls
+    assert command[:3] == ["/opt/fake/hf", "download", "me/test"]
+    assert command[command.index("--local-dir") + 1] == str(out)
+    excluded = [command[i + 1] for i, part in enumerate(command) if part == "--exclude"]
+    assert excluded == ["episodes.jsonl", "README.md"] and command[-2:] == ["--include", "pick/*"]
+    rows = [json.loads(line) for line in (out / "episodes.jsonl").read_text().splitlines()]
+    assert [r["path"] for r in rows] == ["pick/pick_001"]  # Rebuilt from what arrived.
+    assert "1 episodes indexed" in capsys.readouterr().out
+
+    calls.clear()
+    monkeypatch.setattr(dataset, "hf_version", lambda: (0, 36, 2))  # Keeps only the last --exclude.
+    assert dataset.main(["download", "--out", str(out), "--repo", "me/test"]) == 1
+    assert not calls and "install huggingface_hub>=1.0" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        dataset.main(["index", "--out", str(out), "--include", "x"])  # Pass-through is download's only.
+
+
+def test_data_dir_prints_the_default_folder(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("OGLO_DATA", str(tmp_path / "data"))
+    assert dataset.main(["data-dir"]) == 0
+    assert capsys.readouterr().out.strip() == str(tmp_path / "data")
+    monkeypatch.delenv("OGLO_DATA")
+    script = Path(dataset.__file__)
+    done = subprocess.run(["bash", "-c", 'source "$1"; printf %s "$OGLO_DATA"', "_",
+                           str(script.parents[2] / "scripts" / "_env.sh")],
+                          capture_output=True, text=True, env={**os.environ, "OGLO_PYTHON": subprocess.sys.executable,
+                                                               "OGLO_WORKSTATION": str(tmp_path / "none.env")})
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == str(dataset.default_out())
