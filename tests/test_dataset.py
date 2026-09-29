@@ -621,6 +621,51 @@ def test_download_fetches_the_repo_without_its_derived_files_and_indexes_it(tmp_
         dataset.main(["index", "--out", str(out), "--include", "x"])  # Pass-through is download's only.
 
 
+def test_download_never_overwrites_a_local_episode_that_is_another_recording(tmp_path, monkeypatch, capsys):
+    """hf download overwrites what differs from the Hub: a local episode (uploaded or not,
+    aligned or not) whose namesake on the Hub is another recording stops it."""
+    out = tmp_path / "hf-data"
+    write_episode(out / "pick" / "pick_001", {**webcam_manifest(), "started_wall_time_ns": 1_700_000_000_000_000_000},
+                  frames=1)
+    ours = datetime.fromisoformat(dataset.scan(out)[0][0]["recorded_at"])
+    later = (ours + timedelta(days=3)).isoformat()
+    calls = []
+    monkeypatch.setattr(dataset.subprocess, "run",
+                        lambda command, **kwargs: calls.append(command) or subprocess.CompletedProcess(command, 0))
+
+    def hub_says(rows):
+        monkeypatch.setattr(dataset, "hub_index", lambda repo: rows)
+
+    hub_says([{"path": "pick/pick_001", "recorded_at": later}])
+    assert dataset.download(out, "me/test", ["--include", "other/*"]) == 1
+    assert not calls
+    err = capsys.readouterr().err
+    assert "refusing to download" in err and "pick/pick_001" in err
+
+    hub_says([{"path": "pick/pick_001", "recorded_at": ours.astimezone(timezone(timedelta(hours=-7))).isoformat()},
+              {"path": "pick/pick_002", "recorded_at": later}])
+    assert dataset.download(out, "me/test") == 0  # The same recording, indexed in another time zone.
+    assert len(calls) == 1
+
+    calls.clear()
+    write_episode(out / "pick" / "pick_003", {**webcam_manifest(), "started_wall_time_ns": 1_700_000_100_000_000_000},
+                  frames=1, aligned_rows=None)  # Recorded here, not aligned yet: not publishable, still ours.
+    (out / "pick" / "pick_004").mkdir()  # What an interrupted download left: no manifest, not ours.
+    hub_says([{"path": "pick/pick_003", "recorded_at": later}, {"path": "pick/pick_004", "recorded_at": later}])
+    assert dataset.download(out, "me/test") == 1
+    err = capsys.readouterr().err
+    assert not calls and "pick/pick_003" in err and "pick/pick_004" not in err
+
+    def unreadable(repo):
+        raise urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(dataset, "hub_index", unreadable)
+    assert dataset.download(out, "me/test") == 1
+    assert not calls and "cannot read episodes.jsonl on me/test" in capsys.readouterr().err
+    assert dataset.download(tmp_path / "empty", "me/test") == 0  # Nothing here to lose: no need to ask.
+    assert len(calls) == 1
+
+
 def test_data_dir_prints_the_default_folder(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("OGLO_DATA", str(tmp_path / "data"))
     assert dataset.main(["data-dir"]) == 0

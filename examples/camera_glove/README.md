@@ -267,8 +267,11 @@ organization. Files deleted locally stay on the Hub until removed there.
 a new machine or after another one uploaded; `hf download` options such as
 `--include "<task>/*"` pass through. It skips the Hub's `episodes.jsonl` and `README.md`
 and rebuilds both from the manifests that are then in the folder, so they list exactly
-the episodes it holds. It overwrites local files that differ from the Hub, so upload
-first on a machine that records. Needs `hf` 1.0 or newer, like the upload.
+the episodes it holds. `hf download` overwrites local files that differ from the Hub,
+so nothing is downloaded while a local episode (aligned or not) has a namesake on the
+Hub that is another recording (another start time in the Hub's `episodes.jsonl`), or
+while that index cannot be read; move such an episode to `<task>/_held/` first. Needs
+`hf` 1.0 or newer, like the upload.
 
 ### Camera backend and the camera IMU
 

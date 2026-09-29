@@ -7,7 +7,9 @@
 #   scripts/hf_download.sh --include "pickupacup/*" # one task; other `hf download` options pass through
 #
 # Files already here with the same content are skipped; a local file that differs from the Hub is
-# overwritten, so upload before downloading on a machine that records. The Hub's episodes.jsonl and
+# overwritten, so nothing is downloaded while a local episode's namesake on the Hub is another
+# recording (another start time in the Hub's episodes.jsonl) or that index cannot be read; move
+# such an episode to <task>/_held/ first. The Hub's episodes.jsonl and
 # README.md are not fetched: both are derived from the manifests, and the rebuilt ones list exactly
 # the episodes this folder holds. Needs hf 1.0 or newer. hf keeps its bookkeeping in
 # $OGLO_DATA/.cache/, which dataset.py ignores.

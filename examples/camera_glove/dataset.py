@@ -835,11 +835,27 @@ def upload(out, repo=DEFAULT_REPO, dry_run=False, message=None):
 
 # -- download ----------------------------------------------------------------------
 
+def local_recordings(out):
+    """``path`` and ``recorded_at`` of every episode folder under ``out`` with a readable
+    manifest, publishable or not (an episode not aligned yet is a recording too): what
+    a download could write into. A folder without one, such as what an interrupted
+    download left, is not a recording of this machine."""
+    rows = []
+    for session in iter_sessions(out):
+        manifest, _ = load_manifest(session)
+        if manifest is not None:
+            rows.append({"path": session.relative_to(out).as_posix(),
+                         "recorded_at": iso_local(manifest.get("started_wall_time_ns"))})
+    return rows
+
+
 def download(out, repo=DEFAULT_REPO, options=()):
     """``hf download`` the repo into ``out``, then rebuild the index and card from what the
     folder holds. The Hub's two root files are not fetched: both are derived from the
     manifests, and rebuilt here they list exactly the episodes this folder has. hf
-    overwrites a local file that differs from the Hub's. ``options`` pass on to hf
+    overwrites a local file that differs from the Hub's, so while a local episode's
+    folder on the Hub holds another recording (``hub_collisions``), or the Hub's index
+    cannot be read to tell, nothing is downloaded. ``options`` pass on to hf
     (``--include "<task>/*"``). Returns hf's exit code."""
     if not repo:
         print("no Hub repo: pass --repo or set OGLO_HF_REPO (scripts/workstation.env)",
@@ -851,6 +867,21 @@ def download(out, repo=DEFAULT_REPO, options=()):
         return 1
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
+    ours = local_recordings(out)
+    if ours:  # An empty folder has nothing to lose.
+        try:
+            clashes = hub_collisions(ours, hub_index(repo))
+        except OSError as exc:
+            print(f"cannot read {INDEX} on {repo} ({exc}) to check the local episodes against it; "
+                  "not downloading", file=sys.stderr, flush=True)
+            return 1
+        if clashes:
+            print("refusing to download: these local episodes are other recordings than the Hub's "
+                  f"episodes of the same name (the Hub's {INDEX} names another start time), and the "
+                  "download would overwrite their files with the Hub's:\n  " + "\n  ".join(clashes)
+                  + "\nMove them out of their task folder (a _-prefixed folder such as <task>/_held/ "
+                  "is left alone) before downloading, --include or not.", file=sys.stderr, flush=True)
+            return 1
     command = [hf_cli(), "download", repo, "--repo-type", "dataset", "--local-dir", str(out),
                "--exclude", INDEX, "--exclude", CARD, *options]
     print("  " + " ".join(shlex.quote(part) for part in command), flush=True)
