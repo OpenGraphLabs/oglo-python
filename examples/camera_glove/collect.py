@@ -22,7 +22,8 @@ goes through the SDK's native OVISION worker via ``ovision.py`` (original H.264,
 IMU, exposure timing, calibration), kept live for the whole session and reopened when
 the camera dies or is replugged, and the window shows both eyes at the camera's frame
 rate through ``stereo_preview.py`` (a separate decoder process; the recording is not
-touched). A RealSense D455 (``--camera`` naming it, pyrealsense2
+touched; one that fails is started again once the window has been idle a while). A
+RealSense D455 (``--camera`` naming it, pyrealsense2
 installed, Linux) goes the same way through the SDK's RealSense worker via
 ``realsense.py`` (color through ``--codec``, accelerometer, gyroscope, factory
 calibration, all on the camera clock). Any other camera goes through OpenCV and
@@ -75,6 +76,8 @@ BACKENDS = ("auto", "opencv", "ovision", "realsense")
 OVISION_IDLE_PERIOD = 0.05  # longest idle wait for a new OVISION preview frame before redrawing anyway
 OVISION_STALL_SECONDS = 5.0  # idle: no new preview frame for this long means the camera stopped
 WATCH_STEP = 1.0  # a stall counts only time spent watching: longer gaps between idle reads count this much
+PREVIEW_RETRY_SECONDS = 5.0  # idle this long after the stereo preview failed, then it is started again
+PREVIEW_RETRIES = 3  # restarts per camera open; a decoder that keeps failing leaves the keyframe preview on
 OVISION_SIZE = (3840, 1080)  # both eyes side by side, the only mode the adapter records
 REALSENSE_IDLE_PERIOD = 0.03  # seconds per idle window refresh from the RealSense worker
 REALSENSE_STALL_SECONDS = 5.0  # idle: no color frame for this long means the camera stopped
@@ -486,7 +489,9 @@ class OvisionIdleSource:
     Only time spent reading counts towards the stall: no read happens while an episode
     records, and the first one after it must not find the camera "silent" for the whole
     episode. A preview that fails starts the count over, so the adapter's keyframes get
-    their full allowance to take over before anything is reopened.
+    their full allowance to take over before anything is reopened; so does one the
+    Collector starts again (``preview`` is reassigned then), whose decoder takes a moment
+    before its first frame.
     """
 
     def __init__(self, worker, period=None, stall_seconds=None, preview=None):
@@ -527,8 +532,8 @@ class OvisionIdleSource:
         now = time.monotonic()
         watched = 0.0 if self._read_at is None else min(now - self._read_at, WATCH_STEP)
         self._read_at = now
-        if self.previewing != self._previewing:  # The preview failed: the keyframes start afresh.
-            self._previewing, self._unseen = self.previewing, 0.0
+        if self.previewing != self._previewing:  # Failed, or started again: this source starts afresh.
+            self._previewing, self._unseen, self._offered_at = self.previewing, 0.0, None
         alive = frame is not None and frame is not self.last
         if alive:
             self.last = frame
@@ -897,6 +902,8 @@ class Collector:
         self.camera = None    # cv2.VideoCapture, or an idle source over ``worker``
         self.worker = None    # the SDK's OVISION or RealSense worker for those backends
         self.preview = None   # StereoPreview over the OVISION worker's stream, or None
+        self.preview_restarts = 0  # stereo previews started again since the camera opened
+        self._preview_failed_at = None  # when the idle loop first found the preview failed
         self.camera_spec = str(getattr(args, "camera_spec", args.camera))  # --camera as typed
         self.camera_info = {}  # OpenCV: fps_request_accepted and backend, asked once at open
         self.camera_note = ""  # one idle line: which backend records, and why
@@ -981,8 +988,32 @@ class Collector:
             return
         self.worker = ovision.open_worker(self.video_device, self.args.out, self.args.camera)
         self.preview = start_preview(self.worker.stream)
+        self.preview_restarts, self._preview_failed_at = 0, None
         self.camera = OvisionIdleSource(self.worker, preview=self.preview)
         self.frame_shape = self.camera.shape
+
+    def revive_preview(self):
+        """Idle only: start the stereo preview again PREVIEW_RETRY_SECONDS after it failed,
+        so one decoder stall (a busy moment) does not cost the rest of the session its
+        full-rate window; at most PREVIEW_RETRIES times per camera open. Never during an
+        episode: the recording does not depend on the preview, and the adapter's
+        keyframes cover the window until the next idle moment."""
+        preview = self.preview
+        if preview is None or preview.error is None or self.preview_restarts >= PREVIEW_RETRIES:
+            return
+        now = time.monotonic()
+        if self._preview_failed_at is None:
+            self._preview_failed_at = now
+        if now - self._preview_failed_at < PREVIEW_RETRY_SECONDS:
+            return
+        self._preview_failed_at = None
+        self.preview_restarts += 1
+        preview.close()  # First: the new preview takes the stream's hook after it.
+        print(f"restarting the stereo preview ({self.preview_restarts}/{PREVIEW_RETRIES})",
+              file=sys.stderr, flush=True)
+        # None when it cannot start (start_preview said why): the keyframes stay, and there
+        # is nothing left to start again until the camera is reopened.
+        self.preview = self.camera.preview = start_preview(self.worker.stream)
 
     def camera_live(self):
         """The worker has no error and, for OVISION, its capture thread still runs."""
@@ -1550,6 +1581,7 @@ class Collector:
             # (a directory listing per existing episode) would otherwise run every frame.
             next_session = next_session_dir(self.args.out, self.args.task)
             while True:
+                self.revive_preview()
                 try:
                     image = self.read_frame()
                 except RuntimeError as exc:

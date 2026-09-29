@@ -294,7 +294,9 @@ first on a machine that records. Needs `hf` 1.0 or newer, like the upload.
   process cannot keep up it skips to the next keyframe, and if it dies, or takes video
   for three seconds without returning a frame, the window falls back to the adapter's
   own left-eye preview (about once a second, shown at 1280x720) and recording carries
-  on. Only a camera that sends nothing is reopened. Each episode's
+  on; once the window has been idle for five seconds the full-rate preview is started
+  again, up to three times per camera open. Only a camera that sends nothing is
+  reopened. Each episode's
   video starts at the first keyframe
   after `g`, up to a second after the gloves; `h` or `x` before that keyframe leaves
   nothing to keep and counts as a discard. The worker's watchdog ends an episode whose

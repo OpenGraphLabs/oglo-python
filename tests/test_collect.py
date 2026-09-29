@@ -994,6 +994,8 @@ def patch_ovision(monkeypatch, previews=None, **stream_kwargs):
     monkeypatch.setattr(native, "OvisionCameraStream", fake_stream_class(streams, **stream_kwargs))
     monkeypatch.setattr(collect.ovision, "problem", lambda device: None)
     monkeypatch.setattr(collect, "OVISION_IDLE_PERIOD", 0.01)
+    # The fallback to the keyframes stays put; the restart has a test of its own.
+    monkeypatch.setattr(collect, "PREVIEW_RETRY_SECONDS", 1e9)
     if previews is None:
         monkeypatch.setattr(collect, "start_preview", lambda stream: None)
     else:
@@ -1257,6 +1259,79 @@ def test_ovision_preview_decoder_that_dies_late_in_an_episode_leaves_the_camera_
     assert "reconnecting" not in capsys.readouterr().err
     assert previews[0].superseded_frame is not None
     assert after == [(540, 1920)]  # The last preview frame, not the left eye from before the episode.
+
+
+def test_ovision_failed_stereo_preview_is_started_again_when_idle(tmp_path, monkeypatch, capsys):
+    """One decoder stall must not cost the session its full-rate window: once the window
+    has been idle PREVIEW_RETRY_SECONDS a new preview takes over, never during an
+    episode, at most PREVIEW_RETRIES times per camera open, and the camera, still
+    delivering, is never reopened for it."""
+    patch_devices(monkeypatch, pair=False)
+    previews = []
+    streams = patch_ovision(monkeypatch, previews=previews)
+    monkeypatch.setattr(collect, "PREVIEW_RETRY_SECONDS", 0.2)
+    monkeypatch.setattr(collect, "PREVIEW_RETRIES", 2)
+    monkeypatch.setattr(collect, "OVISION_STALL_SECONDS", 0.5)
+    seen = {"restart_after": [], "during_episode": set(), "end_shapes": []}
+
+    class Operator(ScriptedDisplay):
+        """Fails the running preview idle, then mid-episode, then idle again; keys by state."""
+
+        def __init__(self):
+            super().__init__([])
+            self.step, self.since = "warm", time.monotonic()
+            self.deadline = time.monotonic() + 30
+
+        def go(self, step):
+            self.step, self.since = step, time.monotonic()
+
+        def show(self, image, listen=True):
+            self.shown += 1
+            if not listen:
+                return -1
+            stream, preview, now = streams[-1], previews[-1], time.monotonic()
+            if now > self.deadline:
+                return ord("q")
+            if stream._recording:
+                seen["during_episode"].add(len(previews))
+                if self.step == "record" and preview.running and stream.frames >= 5:
+                    preview.fail()
+                    self.go("record-failed")
+                elif self.step == "record-failed" and now - self.since > 0.6:  # Three retry periods.
+                    self.go("after-episode")
+                    return ord("h")
+                return -1
+            if self.step == "warm" and preview.frames > 3:
+                preview.fail()
+                self.go("idle-failed")
+            elif self.step == "idle-failed" and len(previews) == 2:
+                seen["restart_after"].append(now - self.since)
+                self.go("restarted")
+            elif self.step == "restarted" and preview.frames > 3 and image.shape[:2] == (540, 1920):
+                self.go("record")
+                return ord("g")
+            elif self.step == "after-episode" and len(previews) == 3 and preview.frames > 3:
+                preview.fail()  # The last one this camera open gets.
+                self.go("exhausted")
+            elif self.step == "exhausted":
+                if now - self.since > 1.0:  # Five retry periods.
+                    return ord("q")
+                if now - self.since > 0.8:
+                    seen["end_shapes"].append(image.shape[:2])
+            return -1
+
+    collector = collect.Collector(make_args(tmp_path, pair=False, seconds=5, camera_backend="ovision"),
+                                  display=Operator())
+    collector.reconnect_pause = 0
+    assert [e["outcome"] for e in collector.run()] == ["saved"]
+    err = capsys.readouterr().err
+    assert len(streams) == 1 and "reconnecting" not in err  # The camera was fine all along.
+    assert collector.display.step == "exhausted"
+    assert len(previews) == 3 and all(p.closed for p in previews)
+    assert seen["restart_after"][0] >= 0.2  # Not before the window was idle that long.
+    assert seen["during_episode"] == {2}  # Failed mid-episode: not started again until it ended.
+    assert "restarting the stereo preview (1/2)" in err and "(2/2)" in err and "(3/2)" not in err
+    assert seen["end_shapes"] and set(seen["end_shapes"]) == {(720, 1280)}  # The keyframes stay.
 
 
 def test_ovision_stop_before_the_first_keyframe_is_a_discard_not_a_failure(tmp_path, monkeypatch):

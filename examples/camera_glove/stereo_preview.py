@@ -14,7 +14,8 @@ the MP4 and every sidecar are exactly what they were.
 When the decoder cannot keep up, packets are dropped up to the next keyframe (an
 H.264 frame needs the ones before it); when it dies, or takes video for
 ``DECODER_STALL_SECONDS`` without returning a frame, the adapter's own left-eye
-keyframe preview takes over again and recording carries on.
+keyframe preview takes over again and recording carries on (collect.py starts a new
+``StereoPreview`` once its window has been idle a few seconds).
 
 Run as a script it is that decoder: length-prefixed Annex B packets on stdin, the
 index of each finished frame's shared-memory slot on stdout.
