@@ -215,8 +215,12 @@ def test_a_camera_that_goes_quiet_does_not_fail_the_preview(monkeypatch):
 
 def test_a_dead_decoder_hands_the_window_back_to_the_adapter():
     stream = Stream()
+    stream.latest_frame = np.zeros((1, 1, 3), np.uint8)
     preview = stereo_preview.StereoPreview(stream, SIZE)
     try:
+        # The adapter decodes on a thread of its own: a keyframe handed to it just before
+        # the takeover (the camera's first, right after it opened) can finish after it.
+        late = stream.latest_frame = np.ones((1, 1, 3), np.uint8)
         frames, _ = collect_frames(preview)
         feed(stream, packets(5))
         settle(preview, 5)
@@ -225,9 +229,27 @@ def test_a_dead_decoder_hands_the_window_back_to_the_adapter():
         while preview.running and time.monotonic() < deadline:
             time.sleep(0.02)
         assert not preview.running and "exited" in preview.error
+        assert preview.superseded_frame is late  # Old, never to be shown as live.
         assert "_queue_preview" not in stream.__dict__
         stream._queue_preview(b"", True)  # Packets go to the adapter's own preview again.
         assert stream.class_hook_calls == 1
         assert preview.latest_frame is not None  # The last frame stays until the caller switches.
     finally:
         preview.close()
+    assert preview.superseded_frame is late  # Closing after the failure gives nothing back twice.
+
+
+def test_closing_an_old_preview_leaves_a_newer_one_in_place():
+    stream = Stream()
+    old = stereo_preview.StereoPreview(stream, SIZE)
+    old._process.kill()
+    deadline = time.monotonic() + 5
+    while old.running and time.monotonic() < deadline:
+        time.sleep(0.02)
+    new = stereo_preview.StereoPreview(stream, SIZE)
+    try:
+        old.close()
+        assert stream.__dict__["_queue_preview"] == new._offer
+    finally:
+        new.close()
+    assert "_queue_preview" not in stream.__dict__

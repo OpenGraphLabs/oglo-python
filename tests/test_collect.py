@@ -1396,9 +1396,9 @@ def test_ovision_idle_source_with_the_preview_tells_a_dead_decoder_from_a_dead_c
     try:
         results = read_for(source, 0.3)
         assert all(ok for ok, _ in results) and results[-1][1].shape == (54, 192, 3)  # Both eyes.
-        stale = stream.latest_frame
-        assert stale is preview.superseded_frame  # The adapter decodes nothing while the preview runs.
+        stale = stream.latest_frame  # The adapter decodes nothing while the preview runs.
         preview.fail()  # Decoder gone; the camera still sends.
+        assert stale is preview.superseded_frame
         results = read_for(source, 1.0)  # Over three stall allowances.
         assert all(ok for ok, _ in results)  # Nothing to reopen: the keyframes took over.
         assert results[-1][1].shape == (1080, 1920, 3) and results[-1][1] is not stale

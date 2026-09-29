@@ -62,8 +62,11 @@ class StereoPreview:
     was copied; ``offered_at`` is when the adapter last handed over a packet, the
     camera's own sign of life whatever the decoder does. ``running`` turns False for
     good when the decoder failed (``error`` says why); the stream's own preview is back
-    in place by then, and ``superseded_frame`` is the frame that preview held when this
-    one took over: stale from then on, never to be shown as live.
+    in place by then, and ``superseded_frame`` is the frame that preview held when it
+    got the packets back: decoded before this one took over (its decoder has been idle
+    since), so stale, never to be shown as live. It is taken then, not at the takeover:
+    the adapter decodes on a thread of its own, and a keyframe it was handed just before
+    can finish after the takeover.
     """
 
     def __init__(self, stream, size):
@@ -71,7 +74,7 @@ class StereoPreview:
         self.error = None
         self.decoded = 0
         self.offered_at = None
-        self.superseded_frame = stream.latest_frame
+        self.superseded_frame = None
         self._stream = stream
         self._frame_bytes = w * h * 3
         self._latest = None
@@ -190,19 +193,28 @@ class StereoPreview:
             self._waiting_since = None
             self._fresh.set()
 
+    def _give_back(self):
+        """The adapter's left-eye preview again, if the hook is still this preview's (not
+        given back already, not a newer preview's); what the adapter holds then is
+        ``superseded_frame``."""
+        if self._stream.__dict__.get("_queue_preview") != self._offer:
+            return
+        self.superseded_frame = self._stream.latest_frame
+        self._stream.__dict__.pop("_queue_preview", None)
+
     def _fail(self, reason):
         if self.error is not None or self._closed:
             return
+        self._give_back()  # Before ``running`` turns False: whoever sees it False finds the stale frame.
         self.error = reason
-        self._stream.__dict__.pop("_queue_preview", None)  # The adapter's left-eye preview again.
-        print(f"{reason}; the window shows the left eye at keyframes only from now on",
+        print(f"{reason}; the window shows the left eye at keyframes instead",
               file=sys.stderr, flush=True)
 
     def close(self):
         if self._closed:
             return
         self._closed = True  # _offer queues nothing more.
-        self._stream.__dict__.pop("_queue_preview", None)
+        self._give_back()
         while True:  # Whatever still waits is not worth decoding; the end marker must fit.
             try:
                 self._packets.get_nowait()

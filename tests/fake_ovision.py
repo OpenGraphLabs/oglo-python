@@ -220,7 +220,7 @@ class FakeStereoPreview:
         self.frames = 0
         self.decoding = True
         self.offered_at = None
-        self.superseded_frame = stream.latest_frame
+        self.superseded_frame = None  # The stream's frame when it gets its packets back, like the real one.
         self._latest = None
         self._fresh = threading.Event()
         stream._queue_preview = self._offer
@@ -247,13 +247,19 @@ class FakeStereoPreview:
         self._fresh.clear()
         return fresh
 
-    def fail(self, reason="preview decoder exited (fake)"):
-        self.error = reason
+    def _give_back(self):
+        if self.stream.__dict__.get("_queue_preview") != self._offer:
+            return  # Given back already, or a newer preview's.
+        self.superseded_frame = self.stream.latest_frame
         self.stream.__dict__.pop("_queue_preview", None)
 
+    def fail(self, reason="preview decoder exited (fake)"):
+        self._give_back()
+        self.error = reason
+
     def close(self):
+        self._give_back()
         self.closed = True
-        self.stream.__dict__.pop("_queue_preview", None)
 
 
 def fake_stream_class(streams, **defaults):

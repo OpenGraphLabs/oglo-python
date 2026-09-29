@@ -80,8 +80,8 @@ def open_worker(video_device, root, index=0):
 def live_frame(stream, preview=None):
     """The newest frame to show: from ``preview`` (both eyes, every frame) while it runs,
     else the adapter's own left-eye keyframe. After the preview failed, the frame the
-    adapter held when the preview took over is stale (its decoder sat idle meanwhile):
-    None until the adapter decodes a new one."""
+    adapter held when it got the packets back is stale (its decoder sat idle while the
+    preview ran): None until the adapter decodes a new one."""
     if preview is None:
         return stream.latest_frame
     if preview.running:
