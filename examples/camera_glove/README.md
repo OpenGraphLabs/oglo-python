@@ -258,7 +258,8 @@ upload --private` only applies to a repo it creates, so an existing public repo 
 refused before anything is sent. So is an episode whose folder on the Hub holds another
 recording (the Hub's `episodes.jsonl` names another start time for it: a second machine
 that recorded the task without downloading first, or numbers that started over), which
-the upload would otherwise mix into that folder. Needs `hf` 1.0 or newer (older ones
+the upload would otherwise mix into that folder; an index the Hub will not show (no
+token, a bad one, or one without access) stops the upload too. Needs `hf` 1.0 or newer (older ones
 keep only the last `--include`); the logged-in token needs write access to that repo's
 organization. Files deleted locally stay on the Hub until removed there.
 

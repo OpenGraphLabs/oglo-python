@@ -580,12 +580,16 @@ def test_hub_index_reads_the_rows_or_nothing(monkeypatch):
     monkeypatch.setattr(dataset, "hf_token", lambda: "tok")
     answers_to_give = ['{"path": "a/a_001", "recorded_at": "x"}\nnot json\n',
                        urllib.error.HTTPError("u", 404, "Not Found", {}, None),
-                       urllib.error.HTTPError("u", 500, "Server Error", {}, None)]
+                       urllib.error.HTTPError("u", 500, "Server Error", {}, None),
+                       urllib.error.HTTPError("u", 401, "Unauthorized", {}, None),
+                       urllib.error.HTTPError("u", 403, "Forbidden", {}, None)]
     assert dataset.hub_index("org/data") == [{"path": "a/a_001", "recorded_at": "x"}]
     assert answers[0].endswith("/datasets/org/data/resolve/main/episodes.jsonl")
     assert dataset.hub_index("org/data") == []  # No index yet, or no repo yet.
-    with pytest.raises(OSError):
-        dataset.hub_index("org/data")
+    for _ in range(3):  # Down, no or a bad token, no access: an index nobody read is not an empty one.
+        with pytest.raises(OSError):
+            dataset.hub_index("org/data")
+    assert not answers_to_give
 
 
 def test_download_fetches_the_repo_without_its_derived_files_and_indexes_it(tmp_path, monkeypatch, capsys):

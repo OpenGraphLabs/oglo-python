@@ -682,7 +682,9 @@ def repo_visibility(repo):
 
 def hub_index(repo):
     """The rows of ``episodes.jsonl`` on the Hub, [] when the repo has none or is not
-    there (yet). Raises OSError when the Hub cannot be asked."""
+    there (yet): 404, which is what the Hub answers a valid token for either. Raises
+    OSError when the Hub cannot be asked or will not say (401/403: no token, a bad one,
+    or one without access), since an index it cannot read is not an empty one."""
     endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
     request = urllib.request.Request(f"{endpoint}/datasets/{repo}/resolve/main/{INDEX}")
     token = hf_token()
@@ -692,7 +694,7 @@ def hub_index(repo):
         with urllib.request.urlopen(request, timeout=60) as response:
             text = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403, 404):
+        if exc.code == 404:
             return []
         raise
     rows = []
