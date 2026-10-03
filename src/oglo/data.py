@@ -24,7 +24,7 @@ class _CameraFrame(CameraTiming):
 
 
 class CameraFrameData(_CameraFrame, total=False):
-    """One camera/timestamps.jsonl row; native references are OVISION-only."""
+    """One camera/timestamps.jsonl row; native references come from native camera backends."""
 
     native_metadata: str  # Relative to the timestamps file's directory.
     native_frame_number: int
@@ -37,7 +37,7 @@ class CameraData(TypedDict, total=False):
     listed in the specification, plus the fields for its camera kind.
     """
 
-    kind: Literal["usb_webcam", "ovision"]
+    kind: Literal["usb_webcam", "ovision", "realsense"]
     video: str  # Session-relative path.
     timestamps: str  # Session-relative path.
     codec: str
@@ -72,6 +72,26 @@ class CameraData(TypedDict, total=False):
     mag: str
     sync_point: str  # camera/sync_point.json: host clock anchor of the recording
     finalization: str  # camera/finalization.json: the adapter's capture report
+    # RealSense (kind "realsense"): color + the camera's accelerometer and gyroscope
+    # on the camera clock; ``accel`` / ``gyro`` / ``calibration`` name its files.
+    firmware_version: Optional[str]
+    recommended_firmware_version: Optional[str]
+    usb_type: Optional[str]
+    physical_port: Optional[str]
+    pyrealsense2_version: Optional[str]
+    accel_hz: int
+    gyro_hz: int
+    accel_unit: str  # "m/s^2"
+    gyro_unit: str  # "rad/s"
+    accel_samples: int
+    gyro_samples: int
+    accel_expected_samples: int  # What accel_hz would give over the color frames' camera time.
+    gyro_expected_samples: int
+    accel_max_gap_us: int  # Largest camera-time step between two samples.
+    gyro_max_gap_us: int
+    device_clock_unwrapped: bool  # The 32-bit camera clock is saved unwrapped (increasing).
+    native_frames_dropped: int  # Gaps in the camera's color frame counter.
+    device_clock_domain: str  # "realsense_hw_clock"
 
 
 class _GloveData(TypedDict):

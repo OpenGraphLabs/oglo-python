@@ -10,6 +10,7 @@ import uvicorn
 
 from test_camera_glove import Camera
 from studio_fake_devices import simulated_studio_glove
+import fake_realsense
 from oglo.studio import Studio, create_app
 import oglo.studio as studio_module
 
@@ -27,6 +28,7 @@ def main() -> None:
             self.eye = eye
 
     studio_module.FFmpegEyeCapture = EyeCamera
+    fake_realsense.install_globally()
     oglo.connect_pair = lambda: (simulated_studio_glove("left"),
                                  simulated_studio_glove("right"))
     studio_module._camera_choices = lambda: [
@@ -36,6 +38,8 @@ def main() -> None:
         {"index": 1, "mode": "ovision_right", "name": "OVISION USB camera",
          "label": "OVISION USB camera · right preview · saves both eyes"},
         {"index": 1, "mode": "default", "label": "OVISION USB camera · standard view"},
+        {"index": 2, "mode": "realsense", "name": "123456789012",
+         "label": "Intel RealSense D455 · color + camera IMU · serial 123456789012"},
     ]
     studio_module.list_candidates = lambda: [
         SimpleNamespace(device="/dev/oglo-left", product="OGLO"),

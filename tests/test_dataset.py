@@ -409,3 +409,39 @@ def test_card_reading_example_picks_the_glove_by_side(tmp_path):
     card = dataset.dataset_card(out, dataset.write_index(out))
     assert 'glove["side"] == "right"' in card and "gloves\"][0]" not in card
     assert "not on PyPI" in card and "pip install oglo" not in card
+
+
+def realsense_manifest():
+    return {"task_description": "Pick", "complete": True, "started_wall_time_ns": 1_700_000_000_000_000_000,
+            "camera": {"kind": "realsense", "codec": "mp4v", "width": 1280, "height": 720,
+                       "playback_fps": 30, "requested_fps": 30, "frames_decoded": 90,
+                       "first_host_received_ns": 1_000_000_000,
+                       "last_host_received_ns": 1_000_000_000 + 89 * 33_333_333,
+                       "video": "camera/video.mp4", "timestamps": "camera/timestamps.jsonl",
+                       "accel": "camera/realsense.accel.jsonl", "gyro": "camera/realsense.gyro.jsonl",
+                       "calibration": "camera/realsense.calibration.json",
+                       "native_artifacts": ["camera/realsense.accel.jsonl", "camera/realsense.gyro.jsonl",
+                                            "camera/realsense.calibration.json"]},
+            "gloves": []}
+
+
+def test_a_realsense_episode_is_indexed_with_its_camera_imu_and_described_on_the_card(tmp_path):
+    out = tmp_path / "captures"
+    minimal_tree(out)  # pick_001: an OpenCV episode
+    write_episode(out / "pick" / "pick_002", realsense_manifest(), frames=90)
+    rows = dataset.write_index(out)
+    assert [(r["session"], r["camera_kind"], r["camera_imu"]) for r in rows] == [
+        ("pick_001", "usb_webcam", False), ("pick_002", "realsense", True)]
+    card = (out / "README.md").read_text()
+    assert "RealSense D455 recorded through pyrealsense2: color video (1280x720, mp4v at 30.0 fps)" in card
+    assert "camera/realsense.gyro.jsonl" in card and "or, per episode," in card
+    assert "realsense = RealSense D455 through pyrealsense2" in card  # The field list names the kind.
+
+
+def test_a_realsense_episode_missing_its_gyro_file_is_held(tmp_path, capsys):
+    out = tmp_path / "captures"
+    write_episode(out / "pick" / "pick_001", realsense_manifest(), frames=90)
+    assert [r["camera_imu"] for r in dataset.write_index(out)] == [True]
+    (out / "pick" / "pick_001" / "camera" / "realsense.gyro.jsonl").unlink()
+    assert dataset.write_index(out) == []
+    assert "camera gyro file missing: camera/realsense.gyro.jsonl" in capsys.readouterr().err

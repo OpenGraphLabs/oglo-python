@@ -18,7 +18,7 @@ oglo doctor
 oglo studio --port 18768 --output ./captures/local-ui-test
 ```
 
-For **native OVISION on Linux**, use Python 3.12+, install `v4l2-ctl` (`v4l-utils`), and install `'.[studio,studio-ovision]'` instead. On Windows PowerShell, use `py -3 -m venv .venv` and `.venv\Scripts\Activate.ps1`; set `$env:OGLO_STATE_DIR = "$PWD/captures/local-ui-test/.state"` before `oglo doctor`.
+For **native OVISION on Linux**, use Python 3.12+, install `v4l2-ctl` (`v4l-utils`), and install `'.[studio,studio-ovision]'` instead. For a **RealSense D455 on Linux** (not yet tested on hardware), install `'.[studio,studio-realsense]'` instead and complete the udev rules step in the [RealSense guide](../examples/camera_glove/REALSENSE.md#2-install) first. On Windows PowerShell, use `py -3 -m venv .venv` and `.venv\Scripts\Activate.ps1`; set `$env:OGLO_STATE_DIR = "$PWD/captures/local-ui-test/.state"` before `oglo doctor`.
 
 Open the exact URL printed by Studio, normally **http://127.0.0.1:18768/**. Only this Python server is needed; do not run `npm run dev`. If the port is occupied, choose another with `--port`. A `501 Unsupported method ('GET')` page means you opened a different service. On macOS or Linux, `lsof -nP -iTCP:18768 -sTCP:LISTEN` shows which process owns that example port.
 
@@ -31,7 +31,7 @@ Open the exact URL printed by Studio, normally **http://127.0.0.1:18768/**. Only
 | **Connect & check** | Select the intended camera and one left plus one right glove. Click **Connect selected devices**. Touch a fingertip on each glove. | Camera preview is live; both glove frame counters advance; touched taxels light up. Both hands and the work surface are visible. |
 | **Calibrate** | Explicitly choose **Use saved calibration** if the fit still matches, or run a new five-second sweep with hands clear of contact. Touch each fingertip afterward. | Both baselines show verified; fingertips respond. A new sweep replaces the baselines stored on the gloves. |
 | **Set up button** | Skip a pedal or test/map a keyboard-style USB pedal. | On-screen controls remain available, or the pedal keys appear and map correctly. |
-| **Record** | Enter a task description. On macOS choose **Portable source archive**; on native OVISION/Linux choose **OG Center sensor source** for the experimental sensor check. Record about 10 seconds with visible hand/object interaction, then click **Stop**. | The recording finalizes without **Capture needs attention**. Video and both tactile streams remained live during the take. |
+| **Record** | Enter a task description. On macOS choose **Portable source archive**; on native OVISION/Linux choose **OG Center sensor source** for the experimental sensor check; on a RealSense D455 choose **Annotation handoff**. Record about 10 seconds with visible hand/object interaction, then click **Stop**. | The recording finalizes without **Capture needs attention**. Video and both tactile streams remained live during the take. |
 | **Review** | Play the take. For OVISION, use **Download original packed stereo video** to inspect both eyes if needed. Click **Keep** only if the task is visible. | Review video plays; selected eye is correct; the take changes to **KEPT**. Incomplete takes cannot be kept. |
 | **Export** | Click **Export kept takes**, then **Download dataset ZIP**. | A ZIP downloads, and a copy appears under `captures/local-ui-test/exports/`. |
 
@@ -71,6 +71,13 @@ with zipfile.ZipFile(archive_path) as archive:
         if camera["kind"] == "ovision_native_stereo":
             for relative in camera["native_artifacts"] + [camera["sync_point"]]:
                 assert f"{episode_id}/{relative}" in archive.namelist()
+        if camera["kind"] == "realsense":
+            for field in ("accel", "gyro", "calibration"):
+                assert f"{episode_id}/{camera[field]}" in archive.namelist()
+            timestamps = archive.read(f"{episode_id}/{camera['timestamps']}").splitlines()
+            for line in timestamps:
+                row = json.loads(line)
+                assert isinstance(row["device_timestamp"], int)
         assert {hand["side"] for hand in manifest["gloves"]} == {"left", "right"}
         for hand in manifest["gloves"]:
             side = hand["side"]

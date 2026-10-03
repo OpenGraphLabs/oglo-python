@@ -108,7 +108,7 @@ def create_app(root: Path | str, studio: Collection | None = None):
         camera_mode = body.get("camera_mode", "default")
         camera_name = body.get("camera_name")
         if camera_mode not in {"default", "ovision_left", "ovision_right",
-                               "ovision_native_left", "ovision_native_right"} or (
+                               "ovision_native_left", "ovision_native_right", "realsense"} or (
             camera_mode != "default" and (type(camera_name) is not str or not camera_name
                                           or len(camera_name) > 200)
         ):
