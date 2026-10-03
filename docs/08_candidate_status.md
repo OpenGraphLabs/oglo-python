@@ -16,6 +16,23 @@ installed-device checks from simulated failure tests.
 
 ## Firmware status
 
+The included firmware is the same signed 0.9.17 application as
+`oglo-hardware` tag `fw/rdr02-tia/v0.9.17`. The
+[cross-repository status](https://github.com/OpenGraphLabs/oglo-hardware/blob/main/docs/firmware-0.9.17-status.md)
+separates the SDK, web test channel and factory rollout.
+
+Earlier **rc7 NPZ** recordings with this firmware completed paired Linux/Mac
+75-minute captures and a Pi recording with **8 h 59 min 33 s of continuous
+overlap and zero observed sample loss**. The overnight first connection attempt
+failed GET STATUS before recording; its strict nine-hour verdict remains FAIL.
+See the [overnight results](validation/2026-09-22-overnight-results.md) and
+[earlier experiment overview](validation/2026-09-22-experiment-overview.md).
+These results do not qualify this checkout's newer JSONL recording/update path.
+
+On 2026-09-25, a separate stock 0.9.16 R-00023 reproduced three USB receive
+stalls without the SDK. The owner retained 0.9.16; no update or same-unit
+0.9.17 comparison was performed. See [the controlled comparison](validation/2026-09-25-stock-0916-r00023.md).
+
 The Mac bench unit L-00006 was updated through the USB application protocol from
 its verified stock 0.9.16 image to the signed 0.9.17 image, with automatic reboot
 and unchanged CONFIG/ZERO preservation fields. A repeat preparation skipped

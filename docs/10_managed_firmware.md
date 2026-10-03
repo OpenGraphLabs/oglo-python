@@ -113,6 +113,34 @@ BLE update or assumption that a version string identifies the executable image.
 
 ## Explicit preparation and saved observations
 
+### Using og-skill, SyncField or another collector
+
+Those collectors have their own OGLO transport. Installing this SDK or enabling
+its automatic setting does not make their existing adapters call the updater.
+For a supervised 0.9.17 test, stop the collector and other glove apps first,
+then use this SDK as a separate preparation tool on macOS/Linux:
+
+```sh
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev2/install.py | python -
+python -m oglo firmware prepare --serial OGLO-L-00001 --serial OGLO-R-00001
+```
+
+Replace the example serials with the actual intended pair. Without
+`--auto-firmware`, installation does not enable future automatic writes;
+`firmware prepare` explicitly authorizes this preparation call. Wait for successful
+completion and retain its evidence before restarting the original collector.
+Preparation can reject an unhealthy or unknown device; it is not a repair for an
+unresponsive USB endpoint. Do not run preparation concurrently with recording.
+
+The SDK stores its own local update journal. It does not activate hardware-ops
+`field`/`manufacturing` tracks or automatically write the remote installation
+ledger. If that ledger is required, use the approved operations reconciliation
+procedure with the actual running-image evidence. The
+[current release status](https://github.com/OpenGraphLabs/oglo-hardware/blob/main/docs/firmware-0.9.17-status.md)
+lists the tested combinations and remaining checks.
+
+### Explicit commands
+
 ```sh
 python -m oglo firmware prepare
 python -m oglo firmware prepare --watch
