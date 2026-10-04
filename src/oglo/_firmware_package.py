@@ -20,11 +20,21 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaQPeZy9FP2htR+bFEJLP/hE5KohX
 OIw/oWCZrADOjiV59AUtZuD3yXTimjGaQZGIPieWOcu2qNl7qGco9JVnUQ==
 -----END PUBLIC KEY-----
 '''
-# This first implementation intentionally supports only this reviewed migration.
-VERSION = '0.9.17'
-FILE_SHA = 'bcfdb9944e27bc38289d44edb6b1a6d6c3838244fa805723c8dd2ee3a8c4a3ad'
-RUNNING_SHA = 'eddf0ca99dcd929e202464d2a9c311923e895bee95fd7aa0c5dd7ec013a01615'
-FROM_SHA = 'b1c53157df9fc259a64ebe8a2c0454d916d2c2ccac163f083335496234345897'
+# Only reviewed migrations are supported. The target is the bundled image; the
+# sources are the exact released images a glove may be running before it.
+VERSION = '0.9.18'
+FILE_SHA = '64275ef98a3df6679109c61c7fe119ebaf47a8e5860b6b0fdbb37e3820ca1ab1'
+RUNNING_SHA = 'f83f4e5b8e706d7b53868b5537c5afb9549c9cf95c23a03be86182de2b31bdb1'
+# 0.9.17 became the field release on 2026-10-03, so a glove reaching the SDK may
+# already be on it. Accepting only 0.9.16 would refuse exactly the up-to-date
+# fleet. Each entry is an exact released running image, never a version string
+# on its own.
+FROM_IMAGES = {
+    '0.9.16': 'b1c53157df9fc259a64ebe8a2c0454d916d2c2ccac163f083335496234345897',
+    '0.9.17': 'eddf0ca99dcd929e202464d2a9c311923e895bee95fd7aa0c5dd7ec013a01615',
+}
+# Retained for the policy description: the oldest accepted source image.
+FROM_SHA = FROM_IMAGES['0.9.16']
 
 
 class FirmwareError(UsbError):
@@ -103,8 +113,10 @@ class FirmwarePolicy:
 def bundled_policy():
     # This describes compatible products/images, never customers or glove IDs.
     rules = {'schema': 1, 'part': PART, 'hardware': HARDWARE, 'key_id': KEY_ID,
-             'from_sha256': FROM_SHA, 'target_sha256': RUNNING_SHA, 'file_sha256': FILE_SHA}
-    return FirmwarePolicy(None, 'oglo-compatible-0917-v1', digest(rules),
+             'from_sha256': FROM_SHA,
+             'from_sha256_accepted': dict(sorted(FROM_IMAGES.items())),
+             'target_sha256': RUNNING_SHA, 'file_sha256': FILE_SHA}
+    return FirmwarePolicy(None, 'oglo-compatible-0918-v1', digest(rules),
                           Path(__file__).parent / 'firmware_bundle', ())
 
 
