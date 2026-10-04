@@ -4,7 +4,7 @@ This is a development candidate, not a fleet deployment approval. It integrates
 upstream JSONL recording with a bounded storage worker and opt-in signed firmware
 preparation. See [managed updates](10_managed_firmware.md).
 
-This checkout is `0.1.0rc8.dev2`, a build for evaluation. Find published packages on
+This checkout is `0.1.0rc8.dev3`, a build for evaluation. Find published packages on
 [GitHub Releases](https://github.com/OpenGraphLabs/oglo-python/releases).
 See the [changelog](../CHANGELOG.md) for changes and
 [compatibility](06_compatibility.md) for supported versions.
@@ -16,10 +16,31 @@ installed-device checks from simulated failure tests.
 
 ## Firmware status
 
-The bundled target is the signed **0.9.18** image since 2026-10-04, and 0.9.17
-was added to the accepted source images alongside stock 0.9.16. **No device has
-been updated to 0.9.18 by this SDK.** The installed-device evidence below is the
-0.9.17 migration and does not transfer.
+The bundled target is the signed **0.9.18** image since 2026-10-04
+(`oglo-hardware` tag `fw/rdr02-tia/v0.9.18`), and 0.9.17 was added to the
+accepted source images alongside stock 0.9.16. **No device has been updated to
+0.9.18 by this SDK**, and no fleet or field measurement has run on it. Every
+result in this section was recorded with 0.9.17 and does not transfer to 0.9.18.
+0.9.18 changes the IMU sample rate only, so recordings and host code are
+unaffected: see
+[0.9.18 IMU ODR](https://github.com/OpenGraphLabs/oglo-hardware/blob/main/docs/firmware-0.9.18-imu-odr.md).
+
+The firmware this SDK shipped through `0.1.0rc8.dev2` was the signed 0.9.17
+application from `oglo-hardware` tag `fw/rdr02-tia/v0.9.17`. The
+[cross-repository status](https://github.com/OpenGraphLabs/oglo-hardware/blob/main/docs/firmware-0.9.17-status.md)
+separates the SDK, web test channel and factory rollout.
+
+Earlier **rc7 NPZ** recordings with that firmware completed paired Linux/Mac
+75-minute captures and a Pi recording with **8 h 59 min 33 s of continuous
+overlap and zero observed sample loss**. The overnight first connection attempt
+failed GET STATUS before recording; its strict nine-hour verdict remains FAIL.
+See the [overnight results](validation/2026-09-22-overnight-results.md) and
+[earlier experiment overview](validation/2026-09-22-experiment-overview.md).
+These results do not qualify this checkout's newer JSONL recording/update path.
+
+On 2026-09-25, a separate stock 0.9.16 R-00023 reproduced three USB receive
+stalls without the SDK. The owner retained 0.9.16; no update or same-unit
+0.9.17 comparison was performed. See [the controlled comparison](validation/2026-09-25-stock-0916-r00023.md).
 
 The Mac bench unit L-00006 was updated through the USB application protocol from
 its verified stock 0.9.16 image to the signed 0.9.17 image, with automatic reboot
@@ -49,7 +70,7 @@ For the published common package with automatic firmware preparation, run this
 once in the Python environment used by your collection program (macOS/Linux):
 
 ```bash
-curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev2/install.py | python - --auto-firmware
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev3/install.py | python - --auto-firmware
 ```
 
 The download/check/install steps below are an alternative for manually evaluating
@@ -66,7 +87,7 @@ copy. Older runs may not include the package-upload step.
 
 ```text
 oglo-0.1.0rc8.dev3-py3-none-any.whl   SDK to install
-oglo-0.1.0rc8.dev2.tar.gz            matching source, docs, and examples
+oglo-0.1.0rc8.dev3.tar.gz            matching source, docs, and examples
 handoff.json                  source commit and CI run
 SHA256SUMS.txt                 file checksums
 ```
@@ -115,8 +136,8 @@ oglo --help
 ### 4. Open the matching examples
 
 ```bash
-python -m tarfile -e oglo-0.1.0rc8.dev2.tar.gz .
-cd oglo-0.1.0rc8.dev2
+python -m tarfile -e oglo-0.1.0rc8.dev3.tar.gz .
+cd oglo-0.1.0rc8.dev3
 ```
 
 Follow the included README. Run examples from this extracted folder so they match
