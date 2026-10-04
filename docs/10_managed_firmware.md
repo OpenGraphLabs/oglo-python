@@ -1,7 +1,7 @@
 # Automatic firmware updates
 
 The SDK uses **hardware and firmware compatibility**, not a lab-specific package
-or a list of glove numbers. The common wheel includes the signed 0.9.17 application
+or a list of glove numbers. The common wheel includes the signed 0.9.18 application
 and verifies its production signature and hashes before opening a device. There
 is no firmware download, browser, login, serial registration or JSON editing during
 normal use. Serial numbers identify the physical device and its saved evidence;
@@ -32,7 +32,7 @@ installation and installation itself never flashes a glove.
 For an offline wheel or an existing SDK install:
 
 ```sh
-python -m pip install './oglo-0.1.0rc8.dev2-py3-none-any.whl[firmware]'
+python -m pip install './oglo-0.1.0rc8.dev3-py3-none-any.whl[firmware]'
 python -m oglo firmware enable
 ```
 
@@ -82,8 +82,23 @@ update protocol 1, the production signing key and the following exact images:
 | Image | SHA-256 |
 | --- | --- |
 | Allowed 0.9.16 running image | `b1c53157df9fc259a64ebe8a2c0454d916d2c2ccac163f083335496234345897` |
-| Target 0.9.17 application file | `bcfdb9944e27bc38289d44edb6b1a6d6c3838244fa805723c8dd2ee3a8c4a3ad` |
-| Target 0.9.17 running image | `eddf0ca99dcd929e202464d2a9c311923e895bee95fd7aa0c5dd7ec013a01615` |
+| Allowed 0.9.17 running image | `eddf0ca99dcd929e202464d2a9c311923e895bee95fd7aa0c5dd7ec013a01615` |
+| Target 0.9.18 application file | `64275ef98a3df6679109c61c7fe119ebaf47a8e5860b6b0fdbb37e3820ca1ab1` |
+| Target 0.9.18 running image | `f83f4e5b8e706d7b53868b5537c5afb9549c9cf95c23a03be86182de2b31bdb1` |
+
+0.9.17 joined the accepted source images on 2026-10-04 because it became the
+field release on 2026-10-03: accepting only 0.9.16 would refuse exactly the
+up-to-date gloves. Each entry remains an exact running image, never a version
+string on its own.
+
+0.9.18 changes the IMU sample rate and nothing else. Through 0.9.17 the
+ICM-42688-P ran at ODR 200 Hz while the firmware polled it every 2 ms, so the
+500 Hz IMU stream carried 200 Hz of information and three of every five packets
+repeated the previous sample. Packet format, packet rates, schema, tactile and
+magnetometer behaviour are unchanged, so recordings and host code need no
+change. **Its evidence is one bench unit in one session:** no unit has run the
+signed image, and no fleet or field measurement has run on it. See
+[0.9.18 IMU ODR](https://github.com/OpenGraphLabs/oglo-hardware/blob/main/docs/firmware-0.9.18-imu-odr.md).
 
 Unknown hardware, source hashes, update contracts or same-version alternative
 images are rejected before firmware writes. There is no `latest` lookup, downgrade,

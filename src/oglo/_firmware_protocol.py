@@ -10,8 +10,8 @@ from dataclasses import asdict
 
 from . import _wire
 from ._config import parse_config
-from ._firmware_package import (FILE_SHA, FROM_SHA, HARDWARE, KEY_ID, RUNNING_SHA,
-                                VERSION, FirmwareError)
+from ._firmware_package import (FILE_SHA, FROM_IMAGES, HARDWARE, KEY_ID,
+                                RUNNING_SHA, VERSION, FirmwareError)
 from ._usb import UsbTransport
 
 PRESERVED_CONFIG = ('serial', 'side', 'device_id', 'pair_id', 'batch', 'hw_rev',
@@ -89,7 +89,9 @@ def snapshot(port, expected):
             fw.get('rollback_supported') is not True or fw.get('max_chunk') != 1024):
         raise FirmwareError('unsupported application update contract')
     running = fw.get('running_image_sha256')
-    if (info.fw_rev, running) not in {('0.9.16', FROM_SHA), (VERSION, RUNNING_SHA)}:
+    approved = {(version, image) for version, image in FROM_IMAGES.items()}
+    approved.add((VERSION, RUNNING_SHA))
+    if (info.fw_rev, running) not in approved:
         raise FirmwareError(f'firmware {info.fw_rev}/{running} is outside the approved migration; no reinstall or downgrade')
     zero = io.query('GET ZERO', '#TZERO ')
     if set(zero) != ZERO_FIELDS or zero.get('count') != 80:

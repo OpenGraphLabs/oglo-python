@@ -16,6 +16,11 @@ installed-device checks from simulated failure tests.
 
 ## Firmware status
 
+The bundled target is the signed **0.9.18** image since 2026-10-04, and 0.9.17
+was added to the accepted source images alongside stock 0.9.16. **No device has
+been updated to 0.9.18 by this SDK.** The installed-device evidence below is the
+0.9.17 migration and does not transfer.
+
 The Mac bench unit L-00006 was updated through the USB application protocol from
 its verified stock 0.9.16 image to the signed 0.9.17 image, with automatic reboot
 and unchanged CONFIG/ZERO preservation fields. A repeat preparation skipped
@@ -60,7 +65,7 @@ You need to sign in to GitHub. Artifacts expire after 90 days, so keep a local
 copy. Older runs may not include the package-upload step.
 
 ```text
-oglo-0.1.0rc8.dev2-py3-none-any.whl   SDK to install
+oglo-0.1.0rc8.dev3-py3-none-any.whl   SDK to install
 oglo-0.1.0rc8.dev2.tar.gz            matching source, docs, and examples
 handoff.json                  source commit and CI run
 SHA256SUMS.txt                 file checksums
@@ -102,7 +107,7 @@ Activate it with `source .venv/bin/activate` on macOS/Linux, or
 `.venv\Scripts\Activate.ps1` in Windows PowerShell. Then:
 
 ```bash
-python -m pip install ./oglo-0.1.0rc8.dev2-py3-none-any.whl
+python -m pip install ./oglo-0.1.0rc8.dev3-py3-none-any.whl
 python -c "import oglo; print(oglo.__version__)"
 oglo --help
 ```

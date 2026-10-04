@@ -3,6 +3,24 @@
 User-facing changes by version. Version numbers follow
 [Semantic Versioning](https://semver.org/) and [PEP 440](https://peps.python.org/pep-0440/).
 
+## 0.1.0rc8.dev3 - Signed 0.9.18 firmware, IMU sample rate corrected
+
+- Bundle the production-signed 0.9.18 application in place of 0.9.17. 0.9.18
+  changes the IMU sample rate only: through 0.9.17 the ICM-42688-P ran at ODR
+  200 Hz while the firmware polled it every 2 ms, so the 500 Hz IMU stream
+  carried 200 Hz of information and three of every five packets repeated the
+  previous sample. Packet format, rates, schema, tactile and magnetometer
+  behaviour are unchanged, so recordings and host code need no change.
+- Accept **both** stock 0.9.16 and signed 0.9.17 as source images. 0.9.17 became
+  the field release on 2026-10-03, so accepting only 0.9.16 would have refused
+  exactly the up-to-date gloves. Each accepted source is still an exact running
+  image, never a version string, and an unknown image is still refused before
+  any firmware write.
+- 0.9.18's evidence is one bench unit in one session. No device has been updated
+  to it by this SDK, and no fleet or field measurement has run on it. The
+  installed-device evidence in the docs is the 0.9.17 migration and does not
+  transfer.
+
 ## 0.1.0rc8.dev2 - Generic firmware preparation
 
 - Discover attached devices and decide updates by hardware, update contract and
