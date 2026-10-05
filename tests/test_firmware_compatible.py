@@ -17,6 +17,16 @@ from oglo import firmware as fw
 from test_firmware import DEVICE, RIGHT, SnapshotPort, make_snapshot, setup_worker, pending_entry
 
 
+# tools/install_template.py refuses interpreters below the packages own floor
+# (pyproject requires-python >= 3.10), so the three tests that exec it cannot
+# pass on an older one. On macOS the system python3 is 3.9, which made a local
+# run show three failures that CI, on 3.10 to 3.13, never sees.
+needs_supported_python = pytest.mark.skipif(
+    sys.version_info < (3, 10),
+    reason="tools/install_template.py requires Python 3.10 or newer, as pyproject does",
+)
+
+
 @pytest.fixture(autouse=True)
 def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setenv('OGLO_STATE_DIR', str(tmp_path / 'state'))
@@ -199,6 +209,7 @@ def test_persistent_setting_drives_existing_connect_without_code_change(monkeypa
     assert len(called) == 2
 
 
+@needs_supported_python
 def test_release_installer_hash_failure_never_installs_or_enables(tmp_path, monkeypatch):
     import importlib.util
     path = Path(__file__).parents[1] / 'tools/install_template.py'
@@ -211,6 +222,7 @@ def test_release_installer_hash_failure_never_installs_or_enables(tmp_path, monk
         module.main([])
 
 
+@needs_supported_python
 def test_release_installer_stops_when_pip_fails(monkeypatch):
     import importlib.util, hashlib
     path = Path(__file__).parents[1] / 'tools/install_template.py'
@@ -284,6 +296,7 @@ def test_cli_enable_refuses_unsupported_host_before_touching_usb(monkeypatch):
     assert not pkg.auto_update_enabled()
 
 
+@needs_supported_python
 def test_installer_uses_invoking_python_and_enables_only_after_install(monkeypatch):
     import importlib.util, hashlib
     path = Path(__file__).parents[1] / 'tools/install_template.py'
