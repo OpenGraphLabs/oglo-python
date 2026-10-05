@@ -7,6 +7,26 @@ import math
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_real_firmware_channel(monkeypatch, tmp_path_factory):
+    """Keep every test off the real firmware channel and off shared state.
+
+    The channel is a network fetch now. A suite that reaches github.com is slow,
+    flaky offline, and would quietly start writing a real release into a
+    developer's state directory. Tests that mean to exercise the channel point
+    it at their own loopback server and reload the module, which overrides this.
+    """
+    monkeypatch.setenv("OGLO_FIRMWARE_CHANNEL_URL", "http://127.0.0.1:1/unused")
+    monkeypatch.setenv("OGLO_FIRMWARE_CHANNEL_TIMEOUT", "1")
+    monkeypatch.setenv(
+        "OGLO_STATE_DIR", str(tmp_path_factory.mktemp("oglo-state")))
+    try:
+        from oglo import _firmware_channel
+        _firmware_channel.reset_cache()
+    except Exception:
+        pass
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("oglo hardware")
     group.addoption(

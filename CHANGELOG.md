@@ -3,6 +3,32 @@
 User-facing changes by version. Version numbers follow
 [Semantic Versioning](https://semver.org/) and [PEP 440](https://peps.python.org/pep-0440/).
 
+## 0.1.0rc8.dev4 - Firmware arrives without an SDK release
+
+- **The firmware is no longer pinned to the SDK version.** The SDK reads the
+  current signed release from a fixed public URL at connect time, so a new
+  firmware reaches an already-installed SDK without anyone reinstalling. This is
+  the interface the original managed-update plan deferred, and the reason a
+  firmware release previously meant contacting every customer.
+- The copy inside the wheel is the offline floor. Every failure path lands on
+  it: no network, a moved URL, a malformed pointer, bytes that fail
+  verification, or a channel offering something not newer. None of them raise.
+- **The transport is not trusted.** Fetched bytes become a release only by
+  verifying the detached signature over their manifest against the public key
+  compiled into the SDK. `load_bundle` now derives version, file hash and
+  running hash from that signed manifest instead of hardcoded constants, while
+  the wheel's own bundle is still checked against the pinned values.
+- A glove is accepted as an update source if it is on the reviewed floor, on the
+  wheel's release, on any release this install fetched and verified, or already
+  on the target. Each entry is an exact running image, never a version string.
+- The channel is consulted at most once per process with a 5 second timeout, and
+  an offline machine that already fetched a newer release keeps it instead of
+  moving a glove backwards.
+- `tools/publish_firmware_channel.py` publishes a signed bundle to the channel
+  and fails unless it can read the result back. A test fails when the live
+  channel is behind the wheel, so a missed publish is a red signal rather than a
+  silent return to asking customers.
+
 ## 0.1.0rc8.dev3 - Signed 0.9.18 firmware, automatic updates on by default
 
 - **Automatic firmware updates are now on by default.** Installing enables them,

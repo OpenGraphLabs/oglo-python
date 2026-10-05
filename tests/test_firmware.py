@@ -84,7 +84,8 @@ class UpdatePort:
                     self.out += f'#FW RECEIVED session=123456ab bytes={end}\n'.encode()
         elif data.startswith(b'FW COMMIT'):
             if self.failure != 'commit':
-                self.out += f'#FW COMMIT OK session=123456ab sha256={pkg.FILE_SHA}\n'.encode()
+                self.out += (f'#FW COMMIT OK session=123456ab '
+                             f'sha256={hashlib.sha256(self.image).hexdigest()}\n').encode()
         else:
             raise AssertionError(f'unexpected command: {data!r}')
         return len(data)
@@ -107,7 +108,8 @@ def quick_wait(monkeypatch):
 @pytest.mark.parametrize('failure', [None, 'last_ack', 'commit'])
 def test_transfer_accepts_only_proven_completion(failure, quick_wait):
     port = UpdatePort(failure=failure)
-    bundle = pkg.Bundle(port.image, b'', b'x' * 70)
+    bundle = pkg.Bundle(port.image, b'', b'x' * 70, '0.0.0',
+                           hashlib.sha256(port.image).hexdigest(), '0' * 64)
     progress = []
     assert protocol.transfer(port, bundle, lambda **e: progress.append(e)) is (failure != 'commit')
     assert port.data == port.image
@@ -119,7 +121,8 @@ def test_transfer_accepts_only_proven_completion(failure, quick_wait):
 def test_uncertain_binary_transfer_sends_no_abort_stop_or_retry(failure, quick_wait):
     port = UpdatePort(failure=failure)
     with pytest.raises((TimeoutError, pkg.FirmwareError)):
-        protocol.transfer(port, pkg.Bundle(port.image, b'', b'x' * 70))
+        protocol.transfer(port, pkg.Bundle(port.image, b'', b'x' * 70, '0.0.0',
+                           hashlib.sha256(port.image).hexdigest(), '0' * 64))
     assert not any(d.startswith((b'FW ABORT', b'FW COMMIT', b'STREAM', b'LINK')) for d in port.writes)
     frames = [d for d in port.writes if d.startswith(b'OGFW')]
     assert len(frames) == len(set(frames))
@@ -132,7 +135,8 @@ def test_short_write_never_follows_with_another_command():
             return len(data) - 1
     port = Short()
     with pytest.raises(pkg.FirmwareError, match='short'):
-        protocol.transfer(port, pkg.Bundle(port.image, b'', b'x' * 70))
+        protocol.transfer(port, pkg.Bundle(port.image, b'', b'x' * 70, '0.0.0',
+                           hashlib.sha256(port.image).hexdigest(), '0' * 64))
     assert len(port.writes) == 1
 
 
