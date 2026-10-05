@@ -319,6 +319,70 @@ def test_installer_uses_invoking_python_and_enables_only_after_install(monkeypat
     assert calls[-1][1:] == ['-m', 'oglo', 'firmware', 'enable']
 
 
+@needs_supported_python
+def test_installer_enables_firmware_without_being_asked(monkeypatch):
+    """Default on, because an operator should not need to know a flag exists."""
+    import importlib.util, hashlib
+    path = Path(__file__).parents[1] / 'tools/install_template.py'
+    spec = importlib.util.spec_from_file_location('installer', path)
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    module.VERSION = '0.1.0test'; module.WHEEL = 'oglo-test.whl'; module.SHA256 = hashlib.sha256(b'wheel').hexdigest()
+    monkeypatch.setattr(module.sys, 'platform', 'linux')
+    monkeypatch.setattr(module.urllib.request, 'urlopen', lambda *a, **kw: io.BytesIO(b'wheel'))
+    calls = []
+    monkeypatch.setattr(module.subprocess, 'run', lambda args, **kw: calls.append(args))
+    module.main([])
+    assert '[firmware]' in calls[0][-1]
+    assert calls[-1][1:] == ['-m', 'oglo', 'firmware', 'enable']
+
+
+@needs_supported_python
+def test_installer_opt_out_installs_without_enabling(monkeypatch):
+    import importlib.util, hashlib
+    path = Path(__file__).parents[1] / 'tools/install_template.py'
+    spec = importlib.util.spec_from_file_location('installer', path)
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    module.VERSION = '0.1.0test'; module.WHEEL = 'oglo-test.whl'; module.SHA256 = hashlib.sha256(b'wheel').hexdigest()
+    monkeypatch.setattr(module.sys, 'platform', 'linux')
+    monkeypatch.setattr(module.urllib.request, 'urlopen', lambda *a, **kw: io.BytesIO(b'wheel'))
+    calls = []
+    monkeypatch.setattr(module.subprocess, 'run', lambda args, **kw: calls.append(args))
+    module.main(['--no-auto-firmware'])
+    assert '[firmware]' not in calls[0][-1]
+    assert not any(a[1:] == ['-m', 'oglo', 'firmware', 'enable'] for a in calls)
+
+
+@needs_supported_python
+def test_installer_default_does_not_fail_on_an_unsupported_platform(monkeypatch):
+    """Defaulting must not break a Windows install; asking for it still errors."""
+    import importlib.util, hashlib
+    path = Path(__file__).parents[1] / 'tools/install_template.py'
+    spec = importlib.util.spec_from_file_location('installer', path)
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    module.VERSION = '0.1.0test'; module.WHEEL = 'oglo-test.whl'; module.SHA256 = hashlib.sha256(b'wheel').hexdigest()
+    monkeypatch.setattr(module.sys, 'platform', 'win32')
+    monkeypatch.setattr(module.urllib.request, 'urlopen', lambda *a, **kw: io.BytesIO(b'wheel'))
+    calls = []
+    monkeypatch.setattr(module.subprocess, 'run', lambda args, **kw: calls.append(args))
+    module.main([])
+    assert not any(a[1:] == ['-m', 'oglo', 'firmware', 'enable'] for a in calls)
+    with pytest.raises(RuntimeError, match='macOS/Linux'):
+        module.main(['--auto-firmware'])
+
+
+def test_default_policy_does_not_break_a_ble_connect(monkeypatch):
+    """An automatic policy skips BLE; one that was asked for still refuses it."""
+    import oglo
+    monkeypatch.setattr(pkg, 'auto_update_enabled', lambda: True)
+    monkeypatch.delenv('OGLO_FIRMWARE_POLICY', raising=False)
+    reached = []
+    monkeypatch.setattr('oglo._ble.connect_ble', lambda *a, **kw: reached.append('ble') or 'glove')
+    assert oglo.connect(transport='ble') == 'glove'
+    assert reached == ['ble']
+    with pytest.raises(pkg.FirmwareError, match='requires USB'):
+        oglo.connect(transport='ble', firmware_policy=True)
+
+
 def test_prepare_all_rejects_partial_worker_success(monkeypatch):
     monkeypatch.setattr(fw.sys, 'platform', 'linux')
     monkeypatch.setattr(fw, 'load_bundle', lambda _: None)

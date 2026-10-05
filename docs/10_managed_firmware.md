@@ -1,5 +1,15 @@
 # Automatic firmware updates
 
+Automatic updates are **on by default** since `0.1.0rc8.dev3`. Installing puts a
+compatible USB glove on the bundled release before capture, with no flag to
+remember. `--no-auto-firmware` installs without it, and
+`python -m oglo firmware disable` turns it off afterwards; `firmware status`
+reports which it is. On Windows the default simply does not engage, because the
+feature needs macOS or Linux, and the install still succeeds. A BLE connect also
+skips preparation rather than failing, since preparation needs USB: only a
+policy you asked for, by argument or `OGLO_FIRMWARE_POLICY`, refuses a
+transport.
+
 The SDK uses **hardware and firmware compatibility**, not a lab-specific package
 or a list of glove numbers. The common wheel includes the signed 0.9.18 application
 and verifies its production signature and hashes before opening a device. There
@@ -19,7 +29,7 @@ installer verifies the exact wheel checksum, installs the common SDK and firmwar
 extra, then enables automatic updates in that environment:
 
 ```sh
-curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev3/install.py | python - --auto-firmware
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev3/install.py | python -
 ```
 
 The command requires Python 3.10+, pip, HTTPS access to GitHub and the package index,
@@ -140,9 +150,9 @@ curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0
 python -m oglo firmware prepare --serial OGLO-L-00001 --serial OGLO-R-00001
 ```
 
-Replace the example serials with the actual intended pair. Without
-`--auto-firmware`, installation does not enable future automatic writes;
-`firmware prepare` explicitly authorizes this preparation call. Wait for successful
+Replace the example serials with the actual intended pair. With
+`--no-auto-firmware`, installation does not enable future automatic writes, and
+`firmware prepare` explicitly authorizes a single preparation call. Wait for successful
 completion and retain its evidence before restarting the original collector.
 Preparation can reject an unhealthy or unknown device; it is not a repair for an
 unresponsive USB endpoint. Do not run preparation concurrently with recording.

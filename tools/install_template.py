@@ -18,13 +18,25 @@ URL = f'https://github.com/OpenGraphLabs/oglo-python/releases/download/v{VERSION
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--auto-firmware', action='store_true',
-                        help='enable signed compatible firmware updates before USB capture')
+    # On by default: a glove should be on the release the SDK ships without the
+    # operator knowing a flag exists. --no-auto-firmware opts out, and
+    # `oglo firmware disable` turns it off after the fact.
+    parser.add_argument('--auto-firmware', dest='auto_firmware', action='store_true', default=None,
+                        help='enable signed compatible firmware updates before USB capture (default)')
+    parser.add_argument('--no-auto-firmware', dest='auto_firmware', action='store_false',
+                        help='install without enabling automatic firmware updates')
     args = parser.parse_args(argv)
     if sys.version_info < (3, 10):
         raise RuntimeError('Python 3.10 or newer is required; use the Python environment of your collection program')
-    if args.auto_firmware and sys.platform not in ('darwin', 'linux'):
-        raise RuntimeError('automatic firmware updates currently require macOS/Linux')
+    asked = args.auto_firmware is not None
+    auto_firmware = True if args.auto_firmware is None else args.auto_firmware
+    if auto_firmware and sys.platform not in ('darwin', 'linux'):
+        # Refuse only what was asked for. Defaulting must not fail an install on
+        # a platform the feature does not support yet.
+        if asked:
+            raise RuntimeError('automatic firmware updates currently require macOS/Linux')
+        auto_firmware = False
+        print('Automatic firmware updates need macOS or Linux; installing without them.', flush=True)
     if VERSION.startswith('@'):
         raise RuntimeError('use install.py from a published OGLO release, not this template')
     print(f'Installing OGLO {VERSION} into {sys.executable}', flush=True)
@@ -35,7 +47,7 @@ def main(argv=None):
         if len(data) > 20 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != SHA256:
             raise RuntimeError('release wheel checksum failed; nothing was installed')
         wheel.write_bytes(data)
-        target = str(wheel) + ('[firmware]' if args.auto_firmware else '')
+        target = str(wheel) + ('[firmware]' if auto_firmware else '')
         subprocess.run([sys.executable, '-m', 'pip', 'install', '--upgrade', target], check=True)
         # An editable/local build can share the version label. Replace the SDK
         # with these exact wheel bytes without needlessly reinstalling its deps.
@@ -45,10 +57,10 @@ def main(argv=None):
     check = ("import oglo; from importlib.metadata import version; "
              f"assert oglo.__version__ == version('oglo') == {VERSION!r}, 'wrong OGLO environment'")
     subprocess.run([sys.executable, '-c', check], check=True)
-    if args.auto_firmware:
+    if auto_firmware:
         subprocess.run([sys.executable, '-m', 'oglo', 'firmware', 'enable'], check=True)
     print('Installation complete. Run your existing collection program in this Python environment.', flush=True)
-    if args.auto_firmware:
+    if auto_firmware:
         print('Compatible USB gloves will be checked and updated before capture. No glove registration or separate files are needed.')
 
 
