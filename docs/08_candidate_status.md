@@ -1,7 +1,7 @@
 # Candidate status
 
 This is a development candidate, not a fleet deployment approval. It integrates
-upstream JSONL recording with a bounded storage worker and opt-in signed firmware
+upstream JSONL recording with a bounded storage worker and signed firmware
 preparation. See [managed updates](10_managed_firmware.md).
 
 This checkout is `0.1.0rc8.dev3`, a build for evaluation. Find published packages on
@@ -70,7 +70,7 @@ For the published common package with automatic firmware preparation, run this
 once in the Python environment used by your collection program (macOS/Linux):
 
 ```bash
-curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev3/install.py | python - --auto-firmware
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev3/install.py | python -
 ```
 
 The download/check/install steps below are an alternative for manually evaluating

@@ -3,7 +3,18 @@
 User-facing changes by version. Version numbers follow
 [Semantic Versioning](https://semver.org/) and [PEP 440](https://peps.python.org/pep-0440/).
 
-## 0.1.0rc8.dev3 - Signed 0.9.18 firmware, IMU sample rate corrected
+## 0.1.0rc8.dev3 - Signed 0.9.18 firmware, automatic updates on by default
+
+- **Automatic firmware updates are now on by default.** Installing enables them,
+  so a compatible USB glove is put on the bundled release before capture without
+  anyone remembering a flag. `--no-auto-firmware` installs without it,
+  `python -m oglo firmware disable` turns it off afterwards, and
+  `firmware status` reports which it is.
+- The default never makes a working call fail. On Windows it does not engage,
+  because the feature needs macOS or Linux, and the install still succeeds. A BLE
+  connect skips preparation instead of raising, since preparation needs USB;
+  only a policy you asked for, by argument or `OGLO_FIRMWARE_POLICY`, still
+  refuses a transport.
 
 - Bundle the production-signed 0.9.18 application in place of 0.9.17. 0.9.18
   changes the IMU sample rate only: through 0.9.17 the ICM-42688-P ran at ODR

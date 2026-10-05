@@ -20,6 +20,7 @@ hardware time-synchronisation contract.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import List, Optional, Tuple
 
@@ -92,7 +93,14 @@ def connect(serial: Optional[str] = None, *, transport: str = "usb",
     to BLE only when no matching USB glove is found.
     """
     from ._firmware_package import resolve_policy, FirmwareError
+    # A policy the caller did not ask for must not turn a working call into an
+    # error. Firmware preparation needs USB, so a BLE connect simply skips it
+    # when the policy came from the installed default; only a policy that was
+    # asked for, by argument or by OGLO_FIRMWARE_POLICY, refuses the transport.
+    requested = firmware_policy is not None or bool(os.environ.get("OGLO_FIRMWARE_POLICY"))
     policy = resolve_policy(firmware_policy)
+    if policy is not None and not requested and transport not in ("usb", "auto"):
+        policy = None
     if policy is not None:
         if transport not in ("usb", "auto"):
             raise FirmwareError("managed firmware preparation requires USB")

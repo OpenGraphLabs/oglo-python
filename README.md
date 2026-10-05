@@ -15,7 +15,7 @@ For automatic USB firmware updates on macOS/Linux, run this in the Python
 environment used by your collection program:
 
 ```sh
-curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev3/install.py | python - --auto-firmware
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev3/install.py | python -
 ```
 
 The same SDK serves every lab. Signed firmware is included; no glove list,
