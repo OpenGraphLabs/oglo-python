@@ -4,7 +4,7 @@ This is a development candidate, not a fleet deployment approval. It integrates
 upstream JSONL recording with a bounded storage worker and signed firmware
 preparation. See [managed updates](10_managed_firmware.md).
 
-This checkout is `0.1.0rc8.dev3`, a build for evaluation. Find published packages on
+This checkout is `0.1.0rc8.dev4`, a build for evaluation. Find published packages on
 [GitHub Releases](https://github.com/OpenGraphLabs/oglo-python/releases).
 See the [changelog](../CHANGELOG.md) for changes and
 [compatibility](06_compatibility.md) for supported versions.
@@ -70,7 +70,7 @@ For the published common package with automatic firmware preparation, run this
 once in the Python environment used by your collection program (macOS/Linux):
 
 ```bash
-curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev3/install.py | python -
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev4/install.py | python -
 ```
 
 The download/check/install steps below are an alternative for manually evaluating
@@ -86,8 +86,8 @@ You need to sign in to GitHub. Artifacts expire after 90 days, so keep a local
 copy. Older runs may not include the package-upload step.
 
 ```text
-oglo-0.1.0rc8.dev3-py3-none-any.whl   SDK to install
-oglo-0.1.0rc8.dev3.tar.gz            matching source, docs, and examples
+oglo-0.1.0rc8.dev4-py3-none-any.whl   SDK to install
+oglo-0.1.0rc8.dev4.tar.gz            matching source, docs, and examples
 handoff.json                  source commit and CI run
 SHA256SUMS.txt                 file checksums
 ```
@@ -128,7 +128,7 @@ Activate it with `source .venv/bin/activate` on macOS/Linux, or
 `.venv\Scripts\Activate.ps1` in Windows PowerShell. Then:
 
 ```bash
-python -m pip install ./oglo-0.1.0rc8.dev3-py3-none-any.whl
+python -m pip install ./oglo-0.1.0rc8.dev4-py3-none-any.whl
 python -c "import oglo; print(oglo.__version__)"
 oglo --help
 ```
@@ -136,8 +136,8 @@ oglo --help
 ### 4. Open the matching examples
 
 ```bash
-python -m tarfile -e oglo-0.1.0rc8.dev3.tar.gz .
-cd oglo-0.1.0rc8.dev3
+python -m tarfile -e oglo-0.1.0rc8.dev4.tar.gz .
+cd oglo-0.1.0rc8.dev4
 ```
 
 Follow the included README. Run examples from this extracted folder so they match

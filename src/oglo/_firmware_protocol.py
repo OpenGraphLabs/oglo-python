@@ -10,8 +10,8 @@ from dataclasses import asdict
 
 from . import _wire
 from ._config import parse_config
-from ._firmware_package import (FILE_SHA, FROM_IMAGES, HARDWARE, KEY_ID,
-                                RUNNING_SHA, VERSION, FirmwareError)
+from ._firmware_package import (HARDWARE, KEY_ID, FirmwareError,
+                                accepted_sources)
 from ._usb import UsbTransport
 
 PRESERVED_CONFIG = ('serial', 'side', 'device_id', 'pair_id', 'batch', 'hw_rev',
@@ -71,7 +71,7 @@ def read_identity(port, usb_serial):
     return {'serial': info.serial, 'usb_serial': usb_serial.upper(), 'side': info.side}
 
 
-def snapshot(port, expected):
+def snapshot(port, expected, approved=None):
     io = LineChannel(port)
     io.write(b'\nSTREAM BIN OFF\nSTREAM TAXEL OFF\nSTREAM TAG OFF\n')
     time.sleep(0.4)
@@ -89,9 +89,11 @@ def snapshot(port, expected):
             fw.get('rollback_supported') is not True or fw.get('max_chunk') != 1024):
         raise FirmwareError('unsupported application update contract')
     running = fw.get('running_image_sha256')
-    approved = {(version, image) for version, image in FROM_IMAGES.items()}
-    approved.add((VERSION, RUNNING_SHA))
-    if (info.fw_rev, running) not in approved:
+    # The caller passes the target so the set covers it; without one this still
+    # answers for every release this SDK knows, which is what a post-update
+    # re-read needs.
+    allowed = accepted_sources() if approved is None else dict(approved)
+    if allowed.get(info.fw_rev) != running:
         raise FirmwareError(f'firmware {info.fw_rev}/{running} is outside the approved migration; no reinstall or downgrade')
     zero = io.query('GET ZERO', '#TZERO ')
     if set(zero) != ZERO_FIELDS or zero.get('count') != 80:
@@ -154,7 +156,7 @@ def transfer(port, bundle, progress=lambda **event: None):
     # A lost COMMIT response is ambiguous, not a reason to resend. Rebind and prove
     # the running image. An explicit error is different and fails immediately.
     try:
-        io.wait(lambda line: True if line == f'#FW COMMIT OK session={sid} sha256={FILE_SHA}' else None, 10)
+        io.wait(lambda line: True if line == f'#FW COMMIT OK session={sid} sha256={bundle.file_sha256}' else None, 10)
     except (TimeoutError, OSError):
         return False
     return True

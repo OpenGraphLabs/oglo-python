@@ -110,14 +110,73 @@ class FirmwarePolicy:
         return cls(path, data['id'], digest(data), (path.parent / data['bundle']).resolve(), tuple(normalized))
 
 
-def bundled_policy():
+BUNDLE_DIR = Path(__file__).parent / 'firmware_bundle'
+
+
+def accepted_sources(target=None) -> dict:
+    """Running images a glove may legitimately be on before an update.
+
+    Four sources, and none of them is a server's word:
+
+    * `FROM_IMAGES`, the reviewed floor compiled into this SDK.
+    * the release inside the wheel, because a glove this SDK already updated is
+      sitting on exactly that image.
+    * every release this install has itself fetched and verified, so a glove is
+      still recognised several firmware versions later.
+    * the target, which makes re-running an update a no-op instead of a refusal.
+
+    A version string alone is never enough: each entry is an exact running
+    image, which is what the glove reports and what cannot be faked by
+    relabelling a build.
+    """
+    sources = dict(FROM_IMAGES)
+    sources.setdefault(VERSION, RUNNING_SHA)
+    try:
+        from ._firmware_channel import known_releases
+        sources.update(known_releases())
+    except Exception:
+        # A missing or unreadable cache must never widen or block the floor.
+        pass
+    if target is not None:
+        version, running = target
+        sources[version] = running
+    return sources
+
+
+def current_policy():
+    """The newest verified release available: fetched if there is one, else the wheel.
+
+    This is what removes "new firmware needs a new SDK, which needs every
+    customer to reinstall". `fetch_current` returns None for every failure, so
+    the wheel's copy remains the floor and an offline machine behaves exactly
+    as it did before this existed.
+    """
+    directory, bundle = BUNDLE_DIR, None
+    try:
+        from ._firmware_channel import fetch_current
+        fetched = fetch_current()
+        if fetched is not None:
+            bundle = load_bundle(fetched)
+            directory = fetched
+    except FirmwareError:
+        directory, bundle = BUNDLE_DIR, None
+    if bundle is None:
+        version, file_sha, running = VERSION, FILE_SHA, RUNNING_SHA
+    else:
+        version, file_sha, running = bundle.version, bundle.file_sha256, bundle.running_sha256
     # This describes compatible products/images, never customers or glove IDs.
     rules = {'schema': 1, 'part': PART, 'hardware': HARDWARE, 'key_id': KEY_ID,
              'from_sha256': FROM_SHA,
-             'from_sha256_accepted': dict(sorted(FROM_IMAGES.items())),
-             'target_sha256': RUNNING_SHA, 'file_sha256': FILE_SHA}
-    return FirmwarePolicy(None, 'oglo-compatible-0918-v1', digest(rules),
-                          Path(__file__).parent / 'firmware_bundle', ())
+             'from_sha256_accepted': dict(sorted(accepted_sources((version, running)).items())),
+             'target_version': version,
+             'target_sha256': running, 'file_sha256': file_sha}
+    return FirmwarePolicy(None, f'oglo-compatible-{version}-v2', digest(rules),
+                          directory, ())
+
+
+def bundled_policy():
+    """Retained name; resolves to the current release, fetched or bundled."""
+    return current_policy()
 
 
 def settings_path():
@@ -174,14 +233,64 @@ class Bundle:
     image: bytes
     manifest: bytes
     signature: bytes
+    version: str
+    file_sha256: str
+    running_sha256: str
 
     @property
     def begin(self):
         sig = base64.b64encode(self.signature).decode('ascii')
-        return f'FW BEGIN 1 {PART} {HARDWARE} {VERSION} {len(self.image)} {FILE_SHA} {KEY_ID} {sig}\n'.encode('ascii')
+        return (f'FW BEGIN 1 {PART} {HARDWARE} {self.version} {len(self.image)} '
+                f'{self.file_sha256} {KEY_ID} {sig}\n').encode('ascii')
 
 
-def load_bundle(directory: Path) -> Bundle:
+# The manifest is the release identity, and the detached KMS signature over its
+# exact bytes is what makes it one. Everything below is derived from a manifest
+# that verified against the public key pinned in this file, never from a file
+# name, a version string or whatever served the bytes. That is what lets a
+# release arrive at runtime without the transport having to be trusted: the only
+# thing that can produce a loadable bundle is the signing key.
+VERSION_RE = re.compile(r'^[0-9]+\.[0-9]+\.[0-9]+$')
+SHA256_RE = re.compile(r'^[0-9a-f]{64}$')
+
+
+def version_tuple(version: str) -> tuple:
+    if not VERSION_RE.match(version):
+        raise FirmwareError(f'malformed firmware version: {version!r}')
+    return tuple(int(part) for part in version.split('.'))
+
+
+def parse_manifest(manifest: bytes, image_len: int) -> tuple:
+    """Return (version, file_sha256) from the canonical manifest, or raise."""
+    expected_keys = ('part', 'hw_rev', 'version', 'size', 'sha256', 'key_id')
+    text = manifest.decode('ascii')
+    lines = text.split('\n')
+    if len(lines) != 8 or lines[0] != 'OGLO-FW-MANIFEST-V1' or lines[7] != '':
+        raise ValueError('noncanonical manifest shape')
+    fields = {}
+    for line, key in zip(lines[1:7], expected_keys):
+        name, sep, value = line.partition('=')
+        if not sep or name != key:
+            raise ValueError(f'manifest expected {key} at this line')
+        fields[name] = value
+    # Identity this SDK will not accept a substitution for, at any version.
+    if fields['part'] != PART or fields['hw_rev'] != HARDWARE or fields['key_id'] != KEY_ID:
+        raise ValueError('manifest describes another product or signing key')
+    if not VERSION_RE.match(fields['version']) or not SHA256_RE.match(fields['sha256']):
+        raise ValueError('manifest version or hash is malformed')
+    if fields['size'] != str(image_len):
+        raise ValueError('manifest size does not match the application')
+    return fields['version'], fields['sha256']
+
+
+def load_bundle(directory: Path, *, expect=None) -> Bundle:
+    """Load and fully verify a signed bundle directory.
+
+    `expect` is a (version, file_sha256, running_sha256) triple the bundle must
+    equal. The bundle shipped inside the wheel passes the pinned constants, so
+    it stays byte-identical to what was reviewed. A bundle fetched at runtime
+    passes None, and its identity comes from its own signed manifest.
+    """
     try:
         def bounded(name, size):
             with (directory / name).open('rb') as f:
@@ -192,21 +301,25 @@ def load_bundle(directory: Path) -> Bundle:
         image = bounded('application.bin', 0x330000)
         manifest = bounded('manifest.txt', 1024)
         signature = bounded('signature.der', 80)
-        expected = (f'OGLO-FW-MANIFEST-V1\npart={PART}\nhw_rev={HARDWARE}\nversion={VERSION}\n'
-                    f'size={len(image)}\nsha256={FILE_SHA}\nkey_id={KEY_ID}\n').encode('ascii')
-        if manifest != expected or not 64 <= len(signature) <= 80:
-            raise ValueError('noncanonical manifest or signature')
-        if hashlib.sha256(image).hexdigest() != FILE_SHA:
-            raise ValueError('application file hash does not match approved release')
-        if len(image) < 64 or image[-32:].hex() != RUNNING_SHA or hashlib.sha256(image[:-32]).digest() != image[-32:]:
-            raise ValueError('ESP application runtime digest does not match approved release')
+        if not 64 <= len(signature) <= 80:
+            raise ValueError('implausible signature length')
+        version, file_sha = parse_manifest(manifest, len(image))
+        if hashlib.sha256(image).hexdigest() != file_sha:
+            raise ValueError('application file hash does not match its manifest')
+        # The running digest is the last 32 bytes of the image and must be the
+        # hash of everything before it, so a tampered image cannot keep it.
+        if len(image) < 64 or hashlib.sha256(image[:-32]).digest() != image[-32:]:
+            raise ValueError('ESP application runtime digest is inconsistent')
+        running_sha = image[-32:].hex()
+        if expect is not None and (version, file_sha, running_sha) != tuple(expect):
+            raise ValueError('bundle is not the release this SDK pins')
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import ec
         key = serialization.load_pem_public_key(PUBLIC_KEY)
         if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, ec.SECP256R1):
             raise ValueError('unexpected signing key')
         key.verify(signature, manifest, ec.ECDSA(hashes.SHA256()))
-        return Bundle(image, manifest, signature)
+        return Bundle(image, manifest, signature, version, file_sha, running_sha)
     except ImportError as exc:
         raise FirmwareError('managed firmware requires installing oglo[firmware]') from exc
     except Exception as exc:
