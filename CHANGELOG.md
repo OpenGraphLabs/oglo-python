@@ -3,6 +3,23 @@
 User-facing changes by version. Version numbers follow
 [Semantic Versioning](https://semver.org/) and [PEP 440](https://peps.python.org/pep-0440/).
 
+## 0.1.0rc8.dev5 - Bundled firmware 0.9.25
+
+- Bundle the production-signed **0.9.25** application in place of 0.9.18.
+  0.9.25 fixes a USB fault where the device cleared its own USB address and
+  endpoint configuration on an unknown status bit the host never asked about,
+  so a glove stayed enumerated but silent and reconnecting the program did not
+  recover it.
+- **This release was not required to deliver 0.9.25.** The runtime channel had
+  already been serving it since 2026-10-07, so an installed dev4 picks it up at
+  connect time without reinstalling. What the bundle governs is the offline
+  floor: a machine with no network, and the image a fresh install carries before
+  its first connect.
+- Accept **0.9.18** as a source image alongside 0.9.16 and 0.9.17. 0.9.18 was
+  the field release from 2026-10-05 to 2026-10-07, so gloves updated by dev3 and
+  dev4 are sitting on exactly that image; leaving it out would refuse the fleet
+  this SDK had just finished updating.
+
 ## 0.1.0rc8.dev4 - Firmware arrives without an SDK release
 
 - **The firmware is no longer pinned to the SDK version.** The SDK reads the

@@ -49,7 +49,7 @@ def test_bundled_real_production_signature_and_image():
     pytest.importorskip('cryptography')
     policy = pkg.bundled_policy()
     assert not policy.devices and policy.path is None
-    assert len(pkg.load_bundle(policy.bundle).image) == 1051600
+    assert len(pkg.load_bundle(policy.bundle).image) == 1054592
 
 
 def test_enable_is_environment_scoped_persistent_and_opens_no_usb(monkeypatch):
