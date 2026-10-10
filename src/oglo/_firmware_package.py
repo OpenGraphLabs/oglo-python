@@ -22,9 +22,9 @@ OIw/oWCZrADOjiV59AUtZuD3yXTimjGaQZGIPieWOcu2qNl7qGco9JVnUQ==
 '''
 # Only reviewed migrations are supported. The target is the bundled image; the
 # sources are the exact released images a glove may be running before it.
-VERSION = '0.9.18'
-FILE_SHA = '64275ef98a3df6679109c61c7fe119ebaf47a8e5860b6b0fdbb37e3820ca1ab1'
-RUNNING_SHA = 'f83f4e5b8e706d7b53868b5537c5afb9549c9cf95c23a03be86182de2b31bdb1'
+VERSION = '0.9.25'
+FILE_SHA = '3e9d2f1e3c8d085c19ffd345f2f34572f7c5ce65164d2c3b9ef52148ca408d63'
+RUNNING_SHA = 'd024e7296cec141ce1f02fbcdbd787895bb2da6fa2ad4808d80c174b85e6bbb4'
 # 0.9.17 became the field release on 2026-10-03, so a glove reaching the SDK may
 # already be on it. Accepting only 0.9.16 would refuse exactly the up-to-date
 # fleet. Each entry is an exact released running image, never a version string
@@ -32,6 +32,10 @@ RUNNING_SHA = 'f83f4e5b8e706d7b53868b5537c5afb9549c9cf95c23a03be86182de2b31bdb1'
 FROM_IMAGES = {
     '0.9.16': 'b1c53157df9fc259a64ebe8a2c0454d916d2c2ccac163f083335496234345897',
     '0.9.17': 'eddf0ca99dcd929e202464d2a9c311923e895bee95fd7aa0c5dd7ec013a01615',
+    # 0.9.18 was the field release from 2026-10-05 to 2026-10-07, and gloves
+    # updated by dev3/dev4 are sitting on exactly this image. Leaving it out
+    # would refuse the fleet this SDK had just finished updating.
+    '0.9.18': 'f83f4e5b8e706d7b53868b5537c5afb9549c9cf95c23a03be86182de2b31bdb1',
 }
 # Retained for the policy description: the oldest accepted source image.
 FROM_SHA = FROM_IMAGES['0.9.16']

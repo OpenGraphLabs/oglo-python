@@ -1,6 +1,6 @@
 # Automatic firmware updates
 
-**Firmware no longer rides on the SDK version.** Since `0.1.0rc8.dev4` the SDK
+**Firmware no longer rides on the SDK version.** Since `0.1.0rc8.dev5` the SDK
 reads the current signed release from a fixed public URL at connect time, so a
 new firmware reaches an installed SDK with nobody reinstalling anything. The
 copy inside the wheel is the offline floor, not the ceiling.
@@ -24,7 +24,7 @@ A glove is also recognised as a legal starting point if it is on the wheel's
 release or on any release this install has itself fetched and verified, so the
 first firmware after an SDK release does not refuse the gloves that SDK updated.
 
-Automatic updates are **on by default** since `0.1.0rc8.dev4`. Installing puts a
+Automatic updates are **on by default** since `0.1.0rc8.dev5`. Installing puts a
 compatible USB glove on the bundled release before capture, with no flag to
 remember. `--no-auto-firmware` installs without it, and
 `python -m oglo firmware disable` turns it off afterwards; `firmware status`
@@ -35,7 +35,7 @@ policy you asked for, by argument or `OGLO_FIRMWARE_POLICY`, refuses a
 transport.
 
 The SDK uses **hardware and firmware compatibility**, not a lab-specific package
-or a list of glove numbers. The common wheel includes the signed 0.9.18 application
+or a list of glove numbers. The common wheel includes the signed 0.9.25 application
 and verifies its production signature and hashes before opening a device. There
 is no firmware download, browser, login, serial registration or JSON editing during
 normal use. Serial numbers identify the physical device and its saved evidence;
@@ -53,7 +53,7 @@ installer verifies the exact wheel checksum, installs the common SDK and firmwar
 extra, then enables automatic updates in that environment:
 
 ```sh
-curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev4/install.py | python -
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev5/install.py | python -
 ```
 
 The command requires Python 3.10+, pip, HTTPS access to GitHub and the package index,
@@ -66,7 +66,7 @@ installation and installation itself never flashes a glove.
 For an offline wheel or an existing SDK install:
 
 ```sh
-python -m pip install './oglo-0.1.0rc8.dev4-py3-none-any.whl[firmware]'
+python -m pip install './oglo-0.1.0rc8.dev5-py3-none-any.whl[firmware]'
 python -m oglo firmware enable
 ```
 
@@ -117,8 +117,9 @@ update protocol 1, the production signing key and the following exact images:
 | --- | --- |
 | Allowed 0.9.16 running image | `b1c53157df9fc259a64ebe8a2c0454d916d2c2ccac163f083335496234345897` |
 | Allowed 0.9.17 running image | `eddf0ca99dcd929e202464d2a9c311923e895bee95fd7aa0c5dd7ec013a01615` |
-| Target 0.9.18 application file | `64275ef98a3df6679109c61c7fe119ebaf47a8e5860b6b0fdbb37e3820ca1ab1` |
-| Target 0.9.18 running image | `f83f4e5b8e706d7b53868b5537c5afb9549c9cf95c23a03be86182de2b31bdb1` |
+| Allowed 0.9.18 running image | `f83f4e5b8e706d7b53868b5537c5afb9549c9cf95c23a03be86182de2b31bdb1` |
+| Bundled 0.9.25 application file | `3e9d2f1e3c8d085c19ffd345f2f34572f7c5ce65164d2c3b9ef52148ca408d63` |
+| Bundled 0.9.25 running image | `d024e7296cec141ce1f02fbcdbd787895bb2da6fa2ad4808d80c174b85e6bbb4` |
 
 0.9.17 joined the accepted source images on 2026-10-04 because it became the
 field release on 2026-10-03: accepting only 0.9.16 would refuse exactly the
@@ -170,7 +171,7 @@ For a supervised 0.9.18 test, stop the collector and other glove apps first,
 then use this SDK as a separate preparation tool on macOS/Linux:
 
 ```sh
-curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev4/install.py | python -
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev5/install.py | python -
 python -m oglo firmware prepare --serial OGLO-L-00001 --serial OGLO-R-00001
 ```
 
