@@ -80,7 +80,15 @@ def _ports(rep: Report) -> List[Any]:
     gloves = list_candidates()
     others = [c for c in list_all_ports() if c not in gloves]
 
-    if not gloves:
+    stuck = [c for c in others if (c.vid, c.pid) == (0x303A, 0x1001)]
+    if stuck:
+        rep.add(
+            f"{len(stuck)} glove(s) in the ESP32 bootloader",
+            FAIL,
+            "; ".join(c.device for c in stuck) + " enumerates as 303a:1001, so it is "
+            "not running its firmware. Run `oglo recover` to restore it.",
+        )
+    if not gloves and not stuck:
         rep.add(
             "no glove found",
             FAIL,

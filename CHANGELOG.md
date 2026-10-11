@@ -3,6 +3,26 @@
 User-facing changes by version. Version numbers follow
 [Semantic Versioning](https://semver.org/) and [PEP 440](https://peps.python.org/pep-0440/).
 
+## 0.1.0rc8.dev6 - `oglo recover`
+
+- New `oglo recover` command for the two kinds of glove automatic updates cannot
+  reach: one on firmware older than 0.9.16, and one stuck in the ESP32-S3
+  bootloader (`303a:1001`). It writes the current signed application with
+  esptool through the ROM bootloader, together with the pinned bootloader,
+  partition table and boot selector, and **never writes the NVS partition**, so
+  the glove keeps its serial, hand, pairing and calibration. The result is
+  byte-identical to the factory merged image everywhere outside NVS.
+- A running glove is identified first and anything other than
+  `RDR02_FLEX5_REV_D_TIA` is refused; a glove already on the release is left
+  alone. A bootloader glove cannot be identified, so it needs a typed
+  confirmation. After the replug the command reads the glove again and fails
+  if the version, serial, hand or calibration state is not what it should be.
+- Install with the new `recover` extra (`esptool==4.5.1`, the version the
+  factory flashing helper pins).
+- `oglo doctor` now names a glove that is in the bootloader instead of
+  reporting that no glove was found.
+- The troubleshooting guide says what to do instead of "needs an update".
+
 ## 0.1.0rc8.dev5 - Bundled firmware 0.9.25
 
 - Bundle the production-signed **0.9.25** application in place of 0.9.18.

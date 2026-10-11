@@ -190,6 +190,11 @@ def _cmd_firmware(args):
         time.sleep(2)
 
 
+def _cmd_recover(args: argparse.Namespace) -> int:
+    from ._recover import recover
+    return recover(args.port, yes=args.yes)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="oglo", description="OGLO tactile glove")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -299,6 +304,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     f.add_argument("--merge", action="append", help="merge another host inventory export; inventory action only")
     f.add_argument("--watch", action="store_true", help="prepare attached compatible devices until interrupted")
     f.set_defaults(func=_cmd_firmware)
+
+    v = sub.add_parser(
+        "recover",
+        help="restore a glove on old firmware or stuck in its bootloader (303a:1001)",
+    )
+    v.add_argument("--port", help="serial port, if more than one device is attached")
+    v.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    v.set_defaults(func=_cmd_recover)
 
     args = p.parse_args(argv)
     try:

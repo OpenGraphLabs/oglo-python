@@ -3,7 +3,7 @@
 Read touch and motion data from OGLO gloves. Record it, replay it, or capture it
 alongside webcam or OVISION video.
 
-> This is the `0.1.0rc8.dev5` development candidate. Managed firmware and
+> This is the `0.1.0rc8.dev6` development candidate. Managed firmware and
 > JSONL recording are still under physical qualification; fleet rollout is not approved.
 > See [managed updates](docs/10_managed_firmware.md).
 
@@ -15,13 +15,15 @@ For automatic USB firmware updates on macOS/Linux, run this in the Python
 environment used by your collection program:
 
 ```sh
-curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev5/install.py | python -
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev6/install.py | python -
 ```
 
 The same SDK serves every lab. Signed firmware is included; no glove list,
 separate firmware file or configuration editing is needed. Installation does not
 flash devices; compatible gloves are prepared at the next `connect()` or
 `connect_pair()`. See [compatibility and disabling updates](docs/10_managed_firmware.md).
+A glove on firmware older than 0.9.16, or one that shows up as `303a:1001`, is
+restored with `oglo recover`; see [troubleshooting](docs/05_troubleshooting.md).
 
 From this repository:
 
