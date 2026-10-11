@@ -17,8 +17,10 @@ User-facing changes by version. Version numbers follow
   alone. A bootloader glove cannot be identified, so it needs a typed
   confirmation. After the replug the command reads the glove again and fails
   if the version, serial, hand or calibration state is not what it should be.
-- Install with the new `recover` extra (`esptool==4.5.1`, the version the
-  factory flashing helper pins).
+- Needs `esptool==4.5.1`, the version the factory flashing helper pins:
+  `python -m pip install "esptool==4.5.1"`. A source checkout can use the
+  `recover` extra instead. The SDK is not on PyPI, so the docs never say
+  `pip install "oglo[...]"` for an installed wheel.
 - `oglo doctor` now names a glove that is in the bootloader instead of
   reporting that no glove was found.
 - The troubleshooting guide says what to do instead of "needs an update".

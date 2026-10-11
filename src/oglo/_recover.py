@@ -246,8 +246,7 @@ def require_esptool() -> None:
     if found != ESPTOOL_VERSION:
         raise RecoveryError(
             f"oglo recover needs esptool {ESPTOOL_VERSION} (found {found or 'none'}). "
-            f'Install it with: python -m pip install "oglo[recover]"  '
-            f'(or: python -m pip install "esptool=={ESPTOOL_VERSION}")')
+            f'Install it in this environment with: python -m pip install "esptool=={ESPTOOL_VERSION}"')
 
 
 def write_images(device: str, images: Images, workdir: Path,
