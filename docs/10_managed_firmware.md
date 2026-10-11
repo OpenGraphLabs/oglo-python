@@ -1,6 +1,6 @@
 # Automatic firmware updates
 
-**Firmware no longer rides on the SDK version.** Since `0.1.0rc8.dev5` the SDK
+**Firmware no longer rides on the SDK version.** Since `0.1.0rc8.dev4` the SDK
 reads the current signed release from a fixed public URL at connect time, so a
 new firmware reaches an installed SDK with nobody reinstalling anything. The
 copy inside the wheel is the offline floor, not the ceiling.
@@ -24,7 +24,7 @@ A glove is also recognised as a legal starting point if it is on the wheel's
 release or on any release this install has itself fetched and verified, so the
 first firmware after an SDK release does not refuse the gloves that SDK updated.
 
-Automatic updates are **on by default** since `0.1.0rc8.dev5`. Installing puts a
+Automatic updates are **on by default** since `0.1.0rc8.dev3`. Installing puts a
 compatible USB glove on the bundled release before capture, with no flag to
 remember. `--no-auto-firmware` installs without it, and
 `python -m oglo firmware disable` turns it off afterwards; `firmware status`
@@ -53,7 +53,7 @@ installer verifies the exact wheel checksum, installs the common SDK and firmwar
 extra, then enables automatic updates in that environment:
 
 ```sh
-curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev5/install.py | python -
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev6/install.py | python -
 ```
 
 The command requires Python 3.10+, pip, HTTPS access to GitHub and the package index,
@@ -66,7 +66,7 @@ installation and installation itself never flashes a glove.
 For an offline wheel or an existing SDK install:
 
 ```sh
-python -m pip install './oglo-0.1.0rc8.dev5-py3-none-any.whl[firmware]'
+python -m pip install './oglo-0.1.0rc8.dev6-py3-none-any.whl[firmware]'
 python -m oglo firmware enable
 ```
 
@@ -107,6 +107,14 @@ For one call, `firmware_policy=True` enables the same bundled compatibility rule
 connections. `oglo info` and `oglo doctor` never initiate firmware updates. An
 unfinished firmware journal still blocks ordinary capture until it is resolved.
 Windows retains normal SDK support, but automatic firmware updates are not supported.
+
+## Gloves the automatic update cannot reach
+
+Automatic preparation starts only from the exact running images in the table below.
+A glove on older firmware, or one that enumerates as the ESP32-S3 bootloader
+(`303a:1001`), is restored with `oglo recover` instead. That command writes the same
+signed application through the ROM bootloader and preserves the NVS partition. See
+[troubleshooting](05_troubleshooting.md#glove-shows-as-303a1001-or-its-firmware-is-too-old-to-update).
 
 ## Compatibility and failure handling
 
@@ -171,7 +179,7 @@ For a supervised 0.9.18 test, stop the collector and other glove apps first,
 then use this SDK as a separate preparation tool on macOS/Linux:
 
 ```sh
-curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev5/install.py | python -
+curl -fsSL https://github.com/OpenGraphLabs/oglo-python/releases/download/v0.1.0rc8.dev6/install.py | python -
 python -m oglo firmware prepare --serial OGLO-L-00001 --serial OGLO-R-00001
 ```
 

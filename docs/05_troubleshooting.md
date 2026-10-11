@@ -15,9 +15,42 @@ command fails or writes only part of its message, close the connection and recon
 2. Close other programs using the glove's serial port.
 3. Check that the board runs supported OGLO firmware.
 
-Supported firmware identifies itself as `OGLO` from `OpenGraphLabs`. An older
-`XIAO_ESP32S3` / `Espressif Systems` build needs an update. The SDK also checks
-`GET CONFIG`, so another board with the same USB identifier is not accepted as a glove.
+Supported firmware identifies itself as `OGLO` from `OpenGraphLabs`. The SDK also
+checks `GET CONFIG`, so another board with the same USB identifier is not accepted as
+a glove. If the glove is on firmware the SDK will not update automatically, or shows up
+as `303a:1001`, see the next section.
+
+## Glove shows as `303a:1001`, or its firmware is too old to update
+
+`lsusb` (Linux) or System Information (macOS) listing the glove as
+`303a:1001 Espressif USB JTAG/serial debug unit` means it is sitting in the ESP32-S3
+bootloader instead of running its firmware, so the SDK cannot see it. Automatic updates
+also only start from 0.9.16, 0.9.17 or 0.9.18, so an older glove (for example 0.9.12)
+is never updated by `connect()`.
+
+Both are fixed by one command. Plug in **only the glove to restore**, then:
+
+```bash
+python -m pip install "oglo[recover]"   # adds esptool 4.5.1, once
+oglo recover
+```
+
+It writes the current signed firmware the same way the factory does, except that it
+never writes the area holding the glove's serial, hand, pairing and calibration, so
+those survive. A running glove is checked first: the command refuses any hardware other
+than `RDR02_FLEX5_REV_D_TIA` and does nothing if the glove is already current. A glove
+in the bootloader cannot be asked, so the command asks you to type `RECOVER` before
+writing.
+
+When it says so, **unplug the glove, wait three seconds and plug it back in** (switch it
+off as well if it has a power switch). A reset alone does not leave the bootloader; only
+removing power does. The command then waits for the glove, reads it again and reports
+the new firmware version. `oglo doctor` names any glove it sees in the bootloader.
+
+If the glove still shows as `303a:1001` after the replug, contact OpenGraph Labs; that
+is a hardware fault no software step repairs. On Linux, a permission error on
+`/dev/ttyACM0` means your user needs the `dialout` group
+(`sudo usermod -aG dialout $USER`, then log out and back in).
 
 ## Port already held
 
