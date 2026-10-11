@@ -31,7 +31,7 @@ is never updated by `connect()`.
 Both are fixed by one command. Plug in **only the glove to restore**, then:
 
 ```bash
-python -m pip install "oglo[recover]"   # adds esptool 4.5.1, once
+python -m pip install "esptool==4.5.1"   # once, in the SDK's environment
 oglo recover
 ```
 
