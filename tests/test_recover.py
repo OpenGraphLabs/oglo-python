@@ -19,6 +19,17 @@ APP_PORT = rc.Port("/dev/ttyACM0", 0x2886, 0x0056, "68EE8F4ED8CC")
 ROM_PORT = rc.Port("/dev/ttyACM1", 0x303A, 0x1001, "68:EE:8F:4E:D8:CC")
 CFG = {"serial": "OGLO-L-00005", "side": "left", "hw_rev": HARDWARE,
        "fw_rev": "0.9.12", "zero_valid": True}
+_REAL_LOAD_IMAGES = rc.load_images
+BUNDLED_APP = (Path(rc.__file__).parent / "firmware_bundle" / "application.bin").read_bytes()
+
+
+def unsigned_images():
+    """Real boot images and application bytes, without the signature check.
+
+    The signature path needs `cryptography`, which the minimum-dependency job
+    does not install; the decisions tested with this do not depend on it.
+    """
+    return _REAL_LOAD_IMAGES(bundle=SimpleNamespace(image=BUNDLED_APP, version=VERSION))
 
 
 def test_boot_images_are_the_pinned_factory_bytes():
@@ -26,8 +37,14 @@ def test_boot_images_are_the_pinned_factory_bytes():
         assert hashlib.sha256((rc.RECOVERY_DIR / name).read_bytes()).hexdigest() == digest
 
 
-def test_images_load_and_no_write_touches_nvs():
+def test_signed_images_load():
+    pytest.importorskip("cryptography")
     images = rc.load_images()
+    assert images.application == BUNDLED_APP
+
+
+def test_no_write_touches_nvs():
+    images = unsigned_images()
     assert images.version == VERSION and images.hardware == HARDWARE
     for offset, _name, data in images.segments():
         end = offset + len(data)
@@ -53,7 +70,8 @@ def test_a_tampered_boot_image_is_refused(tmp_path):
         (tmp_path / name).write_bytes((rc.RECOVERY_DIR / name).read_bytes())
     (tmp_path / "bootloader.bin").write_bytes(b"\0" * 100)
     with pytest.raises(rc.RecoveryError, match="pinned"):
-        rc.load_images(directory=tmp_path)
+        rc.load_images(directory=tmp_path,
+                       bundle=SimpleNamespace(image=BUNDLED_APP, version=VERSION))
 
 
 def test_rom_and_firmware_serials_name_the_same_chip():
@@ -89,6 +107,7 @@ def bench(monkeypatch):
                             touched=[], answers=[])
 
     monkeypatch.setattr(rc, "require_esptool", lambda: None)
+    monkeypatch.setattr(rc, "load_images", unsigned_images)
     monkeypatch.setattr(rc, "list_ports", lambda: list(state.ports))
     monkeypatch.setattr(rc, "read_config", lambda device: state.configs.pop(0))
 
@@ -164,7 +183,7 @@ def test_a_changed_identity_after_the_write_is_reported(bench):
 
 
 def test_failed_esptool_says_so(tmp_path):
-    images = rc.load_images()
+    images = unsigned_images()
     with pytest.raises(rc.RecoveryError, match="esptool failed"):
         rc.write_images("/dev/null", images, tmp_path, run=lambda cmd: SimpleNamespace(returncode=2))
     assert sorted(p.name for p in Path(tmp_path).iterdir()) == [
